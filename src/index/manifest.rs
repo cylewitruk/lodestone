@@ -24,6 +24,9 @@ pub struct Manifest {
     /// Files seen by the last full walk that no grammar or text rule accepts, per extension.
     #[serde(default)]
     pub skipped_extensions: BTreeMap<String, u64>,
+    /// Chunker fingerprint the files were chunked with; a mismatch re-chunks every file.
+    #[serde(default)]
+    pub chunker: String,
     /// Unix seconds of the last completed indexing run.
     #[serde(default)]
     pub updated_at: u64,

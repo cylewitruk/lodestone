@@ -485,6 +485,9 @@ impl WorktreeIndex {
             self.repair(st, ctx)?;
         }
         ctx.cache.register_model(&model_id, self.dim, None)?;
+        let chunker_fp = ctx.chunker.fingerprint();
+        // Chunking settings or queries changed: re-chunk everything (embeddings stay cached).
+        let rechunk = opts.paths.is_none() && st.manifest.chunker != chunker_fp;
         let graph = Arc::new(ProjectGraph::build(&self.root));
         fs::write(self.dir.join("graph.json"), serde_json::to_vec(&*graph)?)?;
         let registry = ctx.chunker.registry().clone();
@@ -548,7 +551,8 @@ impl WorktreeIndex {
             let Some((size, mtime)) = meta else { continue };
             match st.manifest.files.get(&rel) {
                 Some(e)
-                    if e.size == size
+                    if !rechunk
+                        && e.size == size
                         && e.mtime == mtime
                         && indexed_paths.contains(rel.as_str()) == !e.chunk_ids.is_empty() => {}
                 _ => changed.push((rel, size, mtime)),
@@ -597,7 +601,8 @@ impl WorktreeIndex {
             for (rel, size, mtime, hash, bytes) in read {
                 match st.manifest.files.get_mut(&rel) {
                     Some(e)
-                        if e.file_hash == hash
+                        if !rechunk
+                            && e.file_hash == hash
                             && (indexed_paths.contains(rel.as_str()) || e.chunk_ids.is_empty()) =>
                     {
                         e.size = size;
@@ -656,6 +661,9 @@ impl WorktreeIndex {
                 p.eta_secs = (p.files_done > 0)
                     .then(|| (elapsed / p.files_done as f64 * left as f64) as u64);
             });
+        }
+        if opts.paths.is_none() {
+            st.manifest.chunker = chunker_fp;
         }
         st.manifest.updated_at = now_secs();
         st.manifest.save(&self.dir.join("manifest.json"))?;

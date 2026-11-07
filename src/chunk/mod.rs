@@ -94,6 +94,18 @@ impl Chunker {
         self
     }
 
+    /// Changes whenever chunk output for unchanged files could change.
+    pub fn fingerprint(&self) -> String {
+        let key = format!(
+            "{}|{}|{}|{}",
+            self.registry.fingerprint(),
+            self.max_chars,
+            self.module_chunks,
+            self.summary_only
+        );
+        blake3::hash(key.as_bytes()).to_hex()[..16].to_string()
+    }
+
     pub fn registry(&self) -> &Arc<LanguageRegistry> {
         &self.registry
     }

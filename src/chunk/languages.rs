@@ -26,6 +26,8 @@ pub struct Language {
     pub tests: Option<Query>,
     pub extensions: Vec<String>,
     pub origin: Origin,
+    /// Hash of the query texts, so index-time chunking changes are detectable.
+    pub query_hash: String,
 }
 
 impl std::fmt::Debug for Language {
@@ -365,6 +367,23 @@ impl LanguageRegistry {
             .collect()
     }
 
+    /// Identity of everything that shapes chunks: languages, their queries and the extension map.
+    pub fn fingerprint(&self) -> String {
+        let mut h = blake3::Hasher::new();
+        for l in &self.languages {
+            h.update(l.query_hash.as_bytes());
+        }
+        let mut exts: Vec<_> = self
+            .by_extension
+            .iter()
+            .map(|(e, i)| format!("{e}={i}"))
+            .collect();
+        exts.sort();
+        h.update(exts.join(",").as_bytes());
+        h.update(self.text_extensions().join(",").as_bytes());
+        h.finalize().to_hex().to_string()
+    }
+
     pub fn text_extensions(&self) -> Vec<String> {
         let mut v: Vec<_> = self.text_extensions.iter().cloned().collect();
         v.sort();
@@ -394,11 +413,15 @@ fn build_language(
 ) -> anyhow::Result<Language> {
     let tags_config = TagsConfiguration::new(grammar.clone(), tags, locals)
         .map_err(|e| anyhow::anyhow!("tags query: {e}"))?;
+    let tests_text = tests.to_string();
     let tests = if tests.trim().is_empty() {
         None
     } else {
         Some(Query::new(&grammar, tests).map_err(|e| anyhow::anyhow!("tests query: {e}"))?)
     };
+    let query_hash = blake3::hash(format!("{name}\0{tags}\0{locals}\0{tests_text}").as_bytes())
+        .to_hex()
+        .to_string();
     Ok(Language {
         name: name.to_string(),
         grammar,
@@ -406,6 +429,7 @@ fn build_language(
         tests,
         extensions,
         origin,
+        query_hash,
     })
 }
 

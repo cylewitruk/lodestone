@@ -6,9 +6,9 @@ this codebase does X?" over MCP and HTTP in well under a second.
 
 - Definitions come from tree-sitter tags queries (Rust, Python, TypeScript/JavaScript, Go and
   Markdown built in; any other grammar via tree-sitter's own config).
-- Hybrid retrieval: code-tuned embeddings (CodeRankEmbed; Metal via candle, or ONNX via
-  fastembed) + BM25 for identifier-like queries, fused with reciprocal rank fusion, then a
-  cross-encoder reranker; one line per item.
+- Retrieval: code-tuned embeddings (CodeRankEmbed; Metal via candle, or ONNX via fastembed)
+  reranked by a cross-encoder, one line per item. A BM25 index is built alongside and can be
+  fused in with reciprocal rank fusion (`[search] lexical_weight`, `identifier_lexical_weight`).
 - Content-addressed embedding cache shared by every worktree: a second worktree of the same
   repository costs chunking and hashing only.
 - Two MCP tools (`search`, `status`); a REST API for scripts.

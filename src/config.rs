@@ -167,8 +167,8 @@ impl Default for SearchConfig {
             vector_weight: 1.0,
             sentence_weight: 0.0,
             lexical_weight: 0.0,
-            identifier_lexical_weight: 2.0,
-            exact_identifier_first: true,
+            identifier_lexical_weight: 0.0,
+            exact_identifier_first: false,
             test_weight: 0.8,
         }
     }

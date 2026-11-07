@@ -425,3 +425,37 @@ fn reindex_no_changes_is_noop_and_edits_are_incremental() {
             .all(|r| r.name != "retry_with_backoff")
     );
 }
+
+/// Changing an index-time chunking setting re-chunks unchanged files on the next full index,
+/// re-using cached embeddings for chunks whose text did not change.
+#[test]
+fn chunking_settings_change_rechunks() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    let first = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    drop((e, w));
+    let mut config = Config {
+        data_dir: Some(data.clone()),
+        module_chunks: true,
+        ..Config::default()
+    };
+    config.rerank.enabled = false;
+    let emb = Arc::new(HashEmbedder {
+        dim: 64,
+        id: "test/hash".into(),
+        delay_ms: 0,
+    });
+    let e = Engine::with_embedder(config, emb).unwrap();
+    let w = e.register(&root).unwrap();
+    let r = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert_eq!(r.files_changed, first.files_changed, "{r:?}");
+    assert!(
+        r.chunks_embedded > 0 && r.chunks_cached >= first.items,
+        "{r:?}"
+    );
+    assert!(w.snapshot().items.values().any(|i| i.item.kind == "module"));
+    let again = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert_eq!(again.files_changed, 0);
+}

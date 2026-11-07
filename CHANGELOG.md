@@ -175,3 +175,44 @@ the same scenarios also run as `tests/daemon.rs` with a deterministic embedder.
   daemon start) reconciles anything nested ignore rules would exclude.
 - `register` returns immediately and indexes on the worktree's worker; `index` over REST waits
   for completion (what `lode index` needs).
+
+## Phase 3 — Quality (gated)
+
+Each change was measured against the Phase 1 configuration on `eval/questions.json` and on a
+second repository (`eval/questions-tantivy.json`: 14 questions against the tantivy 0.27.0 crate
+source, 8,724 items, cold index 69.8 s) before trusting it. Gate: keep only if rank@5 or the
+hard-case hit rate rises; p50 ≤ 400 ms with rerank on (overridden by the user, see below).
+
+| Change | stacks-core rank@5 / MRR / hard | tantivy rank@5 / MRR | p50 | Kept |
+| ---- | ---- | ---- | ---- | ---- |
+| Baseline (dense only, no rerank) | 0.65 / 0.489 / 2/4 | 0.583 / 0.452 | 8.7 ms | — |
+| Reranker (gte-reranker-modernbert, top 50, 192 tok) | **0.75 / 0.585 / 4/4** | **0.667 / 0.601** | 948–1,025 ms | **yes** (user override of the 400 ms gate) |
+| Identifier boosting (exact name first + BM25 ×2 for identifier queries), on top of rerank | 0.75 / 0.585 / 4/4 vs 0.75 / 0.618 / 4/4 without | 0.667 / 0.601 either way | — | no (no gain; identifier hit rate 0.967 either way) |
+| Test down-weighting (`include_tests` + `test_weight` 0.5 / 0.8 / 1.0) vs filtering tests | 0.70 / 0.537–0.568 / 3/4 vs 0.75 / 0.585 / 4/4 | — | — | no (filtering stays the default) |
+| `module` chunks (one file-level item per tagged file) | 0.75 / 0.585 / 4/4 (797 extra items) | 0.667 / 0.588 | — | no |
+| Sentence-level query vectors (Phase 1 trial) | 0.55–0.60 without rerank | — | +6 ms | no |
+
+Other cross-encoders tried: `BAAI/bge-reranker-base` (MIT) lowered rank@5 to 0.45 at 1.3 s;
+`jina-reranker-v2-base-multilingual` (CC-BY-NC-4.0, fastembed CPU) did not finish 78 queries in
+25 minutes. Reranker token budget: 128 tok → 0.65 / 679 ms, 192 tok → 0.75 / 948 ms (f16),
+256 tok → 0.75 / 1,790 ms (f32), 512 tok → 0.70 / 5,426 ms (f32).
+
+### Decisions
+
+- **Reranker kept** despite p50 ≈ 0.95 s: the user judged ~1 s acceptable if it saves agent tool
+  calls; Phase 4 runs rerank-on and rerank-off arms to check that.
+- **Identifier boosting off by default** (`exact_identifier_first = false`,
+  `identifier_lexical_weight = 0`): it raised nothing on either set. The BM25 index is still
+  built and can be re-enabled per config; search is therefore dense + rerank by default.
+- **Index-time settings are fingerprinted**: chunk budget, module/summary chunking and every
+  language's query texts hash into `manifest.chunker`; a mismatch re-chunks all files on the next
+  full index (embeddings for unchanged text stay cached). Found because the first module-chunk
+  run silently re-used old chunks.
+- **ModernBERT reranker on candle**: candle's classification head ends in a softmax (constant
+  for one logit), so the head is applied in lodestone; the encoder is the vendored f16 ModernBERT.
+
+### Not met
+
+- p50 ≤ 400 ms with rerank on (measured ~950 ms; the cross-encoder runs at ≈ 3 TFLOPS effective
+  in candle's Metal kernels, sub-batching does not help). Accepted by the user's override.
+- rank@5 ≥ 0.85 remains unmet (0.75).
