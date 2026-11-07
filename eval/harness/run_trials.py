@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the helper-exists pilot: each (arm, question) is one headless `claude -p` run.
 
-Usage: run_trials.py <scratchpad> [--arms stock,rule,rule_ck] [--model sonnet] [--jobs 4] [--only q01,q02]
+Usage: run_trials.py <scratchpad> [--arms stock,rule,rule_ck,rule_lode] [--model sonnet] [--jobs 4] [--only q01,q02]
 """
 import argparse
 import json
@@ -51,6 +51,11 @@ def run_one(scratch: Path, arm: str, item: dict, model: str, rep: int, runs: str
         elif arm == "rule_skill":
             rule += "\n" + (scratch / "harness" / "skill-hint.md").read_text()
             cmd += ["--mcp-config", str(scratch / "harness" / "mcp-empty.json")]
+        elif arm == "rule_lode":
+            # Reuse rule + mandatory lodestone `search`, MCP pointed at the running daemon.
+            rule += "\n" + (scratch / "harness" / "lode-must.md").read_text()
+            cmd += ["--mcp-config", str(scratch / "harness" / "mcp-lode.json"),
+                    "--allowedTools", "mcp__lodestone__search,mcp__lodestone__status"]
         elif arm in ("rule_ck", "rule_ck_must"):
             rule += "\n" + (scratch / "harness" / ("ck-must.md" if arm == "rule_ck_must" else "ck-hint.md")).read_text()
             cmd += ["--mcp-config", str(scratch / "harness" / "mcp-ck.json"), "--allowedTools", "mcp__ck"]

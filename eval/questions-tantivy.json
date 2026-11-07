@@ -1,0 +1,150 @@
+[
+  {
+    "id": "t01",
+    "kind": "mismatch",
+    "question": "I have a list of byte ranges into a text that may overlap or repeat, and I need them merged into a sorted list of disjoint ranges. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "src/snippet/mod.rs",
+        "symbol": "collapse_overlapped_ranges"
+      }
+    ]
+  },
+  {
+    "id": "t02",
+    "kind": "mismatch",
+    "question": "A user gives me a dotted path into a nested JSON document, where a backslash before a dot means a literal dot in a key; I need it broken into its key segments. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "src/core/json_utils.rs",
+        "symbol": "split_json_path"
+      }
+    ]
+  },
+  {
+    "id": "t03",
+    "kind": "mismatch",
+    "question": "Before adding a column to the document schema I want to check that the user-supplied column name is acceptable: non-empty and not starting with a dash. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "src/schema/mod.rs",
+        "symbol": "is_valid_field_name"
+      }
+    ]
+  },
+  {
+    "id": "t04",
+    "kind": "mismatch",
+    "question": "I have two sets marking which documents of a segment are not deleted, and I need a set of the documents that are alive in both. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "src/fastfield/alive_bitset.rs",
+        "symbol": "intersect_alive_bitsets"
+      }
+    ]
+  },
+  {
+    "id": "t05",
+    "kind": "mismatch",
+    "question": "For a diagnostics endpoint I want a single human-readable line describing the library version, on-disk format version and the compression used for stored documents. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "src/lib.rs",
+        "symbol": "version_string"
+      }
+    ]
+  },
+  {
+    "id": "t06",
+    "kind": "mismatch",
+    "question": "I need to turn a floating-point bound from a range query into the order-preserving unsigned integer encoding that the columnar storage uses for that column's type. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "src/aggregation/mod.rs",
+        "symbol": "f64_to_fastfield_u64"
+      }
+    ]
+  },
+  {
+    "id": "t07",
+    "kind": "mismatch",
+    "question": "Inside a fixed-size block of 128 sorted document ids I need the position of the first id that is greater than or equal to a target, fast and without branches. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "src/postings/block_search.rs",
+        "symbol": "search_block"
+      }
+    ]
+  },
+  {
+    "id": "t08",
+    "kind": "mismatch",
+    "question": "I need to combine several separate on-disk search indexes into one new index in a different directory. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "src/indexer/segment_updater.rs",
+        "symbol": "merge_indices"
+      }
+    ]
+  },
+  {
+    "id": "t09",
+    "kind": "mismatch",
+    "question": "After changing which segments make up the index, I need to persist the index metadata file atomically so a crash never leaves it half-written. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "src/indexer/segment_updater.rs",
+        "symbol": "save_metas"
+      }
+    ]
+  },
+  {
+    "id": "t10",
+    "kind": "mismatch",
+    "question": "The internal key for nested JSON fields uses a special separator byte between path segments; for error messages I want to replace it in place with ordinary dots. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "src/core/json_utils.rs",
+        "symbol": "json_path_sep_to_dot"
+      }
+    ]
+  },
+  {
+    "id": "t11",
+    "kind": "easy",
+    "question": "I need to compress a stored document block with LZ4 into a reusable output buffer. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "src/store/compression_lz4_block.rs",
+        "symbol": "compress"
+      }
+    ]
+  },
+  {
+    "id": "t12",
+    "kind": "mismatch",
+    "question": "Field lengths are stored as one byte each; I need to decode that one-byte code back into the approximate number of tokens in the field. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "src/fieldnorm/code.rs",
+        "symbol": "id_to_fieldnorm"
+      },
+      {
+        "path": "src/fieldnorm/reader.rs",
+        "symbol": "id_to_fieldnorm"
+      }
+    ]
+  },
+  {
+    "id": "t13",
+    "kind": "negative",
+    "question": "I need to parse a configuration value like '30s', '5m' or '2h' into a std::time::Duration. Is there already something in this repo for that?",
+    "answers": []
+  },
+  {
+    "id": "t14",
+    "kind": "negative",
+    "question": "I need to send an HTTP request to a remote node and retry it with exponential backoff on failure. Is there already something in this repo for that?",
+    "answers": []
+  }
+]

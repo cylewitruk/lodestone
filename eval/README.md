@@ -32,3 +32,14 @@ git clone https://github.com/stacks-network/stacks-core eval/corpus && git -C ev
 | rule + compact catalogue in prompt | 46/54 | 3/4 | $0.042 |
 | rule + reuse skill (per-crate slices) | 42/54 | 3/4 | $0.156 |
 | rule + `ck` forced (serial) | n/a | 1/4 | $0.064 |
+
+## Second repository (overfitting check)
+
+`questions-tantivy.json` holds 14 questions (1 easy, 11 mismatch, 2 negative) written against the
+`tantivy` 0.27.0 crate source, used in Phase 3 to check that ranking changes generalize beyond
+stacks-core. Any copy of the crate source works as the corpus, e.g. the one Cargo already
+downloaded:
+
+```bash
+lode bench eval --corpus ~/.cargo/registry/src/index.crates.io-*/tantivy-0.27.0 --questions eval/questions-tantivy.json
+```

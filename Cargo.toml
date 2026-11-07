@@ -1,0 +1,74 @@
+[package]
+name = "lodestone"
+version = "0.1.0"
+edition = "2024"
+description = "Local semantic code search daemon for coding agents"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "lode"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+arc-swap = "1.9.3"
+axum = "0.8.9"
+blake3 = "1.8.7"
+candle-core = { version = "0.11.1", optional = true }
+candle-nn = { version = "0.11.1", optional = true }
+candle-transformers = { version = "0.11.1", optional = true }
+clap = { version = "4.6.7", features = ["derive"] }
+dirs = "7.0.0"
+fastembed = { version = "7.6.1", optional = true }
+hf-hub = { version = "0.5.0", optional = true, default-features = false, features = ["ureq", "native-tls"] }
+ignore = "0.4.34"
+notify = "8.2.1"
+notify-debouncer-full = "0.7.0"
+rayon = "1.12.0"
+rmcp = { version = "3.9.0", features = ["transport-streamable-http-server"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+schemars = "1.2.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tantivy = "0.27.0"
+thiserror = "2.0.21"
+tokenizers = { version = "0.23.2", optional = true }
+tokio = { version = "1.54.1", features = ["full"] }
+toml = "1.2.1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tree-sitter = "0.27.2"
+tree-sitter-go = { version = "0.25.0", optional = true }
+tree-sitter-javascript = { version = "0.25.0", optional = true }
+tree-sitter-loader = "0.27.2"
+tree-sitter-md = { version = "0.5.4", optional = true }
+tree-sitter-python = { version = "0.25.0", optional = true }
+tree-sitter-rust = { version = "0.24.2", optional = true }
+tree-sitter-tags = "0.27.2"
+tree-sitter-typescript = { version = "0.23.2", optional = true }
+ureq = { version = "3.5.1", features = ["json"] }
+usearch = "2.26.6"
+
+
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.11.1", optional = true, features = ["metal"] }
+candle-nn = { version = "0.11.1", optional = true, features = ["metal"] }
+candle-transformers = { version = "0.11.1", optional = true, features = ["metal"] }
+# Same prerelease fastembed resolves to; only adds the CoreML execution provider.
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["coreml"] }
+
+[features]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-go", "lang-markdown", "candle", "fastembed"]
+lang-rust = ["dep:tree-sitter-rust"]
+lang-python = ["dep:tree-sitter-python"]
+lang-typescript = ["dep:tree-sitter-typescript", "dep:tree-sitter-javascript"]
+lang-go = ["dep:tree-sitter-go"]
+lang-markdown = ["dep:tree-sitter-md"]
+candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:hf-hub"]
+fastembed = ["dep:fastembed", "dep:ort"]
+
+[profile.release]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
