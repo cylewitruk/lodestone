@@ -1,0 +1,477 @@
+[
+  {
+    "id": "q01",
+    "kind": "easy",
+    "question": "In a test I need to recursively copy a whole directory tree (all files and nested subdirectories) to a new location. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-node/src/tests/neon_integrations.rs",
+        "symbol": "copy_dir_all",
+        "line": 8744
+      },
+      {
+        "path": "stackslib/src/chainstate/stacks/tests/mod.rs",
+        "symbol": "copy_dir",
+        "line": 68
+      }
+    ],
+    "obvious_greps_tried": [
+      "copy_dir",
+      "fn \\w*copy\\w*recursive",
+      "create_dir_all"
+    ],
+    "note": "Two independent recursive dir-copy test helpers (duplicates); 'copy_dir' grep finds both."
+  },
+  {
+    "id": "q02",
+    "kind": "easy",
+    "question": "I need to call a flaky remote node endpoint and keep retrying it with exponentially growing delays until it succeeds or a total time budget runs out. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-signer/src/client/mod.rs",
+        "symbol": "retry_with_exponential_backoff",
+        "line": 103
+      }
+    ],
+    "obvious_greps_tried": [
+      "backoff",
+      "fn \\w*retry",
+      "exponential"
+    ],
+    "note": "Wraps the backoff crate with notify/logging; name contains the obvious words."
+  },
+  {
+    "id": "q03",
+    "kind": "easy",
+    "question": "My integration test needs a random local TCP port number to bind a node to, so tests running in parallel don't collide. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-node/src/tests/mod.rs",
+        "symbol": "gen_random_port",
+        "line": 72
+      },
+      {
+        "path": "stacks-node/src/event_dispatcher/tests.rs",
+        "symbol": "get_random_port",
+        "line": 360
+      },
+      {
+        "path": "stacks-signer/src/client/mod.rs",
+        "symbol": "mock_server_random",
+        "line": 212
+      }
+    ],
+    "obvious_greps_tried": [
+      "random_port",
+      "fn \\w*port\\w*\\(",
+      "TcpListener::bind"
+    ],
+    "note": "gen_random_port tracks used ports; get_random_port (private) and mock_server_random bind port 0."
+  },
+  {
+    "id": "q04",
+    "kind": "easy",
+    "question": "I need to convert a u64 into the signed 64-bit integer SQLite stores, returning an error instead of silently wrapping when it doesn't fit. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/util_lib/db.rs",
+        "symbol": "u64_to_sql",
+        "line": 276
+      },
+      {
+        "path": "stackslib/src/util_lib/db.rs",
+        "symbol": "opt_u64_to_sql",
+        "line": 283
+      },
+      {
+        "path": "stacks-marf/src/trie_sql.rs",
+        "symbol": "u64_to_sql",
+        "line": 40
+      }
+    ],
+    "obvious_greps_tried": [
+      "u64_to_sql",
+      "to_sql",
+      "i64::try_from"
+    ],
+    "note": "Public helper in stackslib plus a private copy in stacks-marf; opt_ variant handles Option."
+  },
+  {
+    "id": "q05",
+    "kind": "mismatch",
+    "question": "I need the current Unix timestamp as whole seconds in a u64. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-common/src/util/mod.rs",
+        "symbol": "get_epoch_time_secs",
+        "line": 69
+      }
+    ],
+    "obvious_greps_tried": [
+      "unix_timestamp|unix_time",
+      "fn now\\b|fn \\w*_now\\(",
+      "fn \\w*timestamp\\w*\\("
+    ],
+    "note": "'epoch' here means Unix epoch, but in this repo 'epoch' usually means Stacks epochs; ~350 call sites."
+  },
+  {
+    "id": "q06",
+    "kind": "mismatch",
+    "question": "I'm decoding from a std::io::Read stream and need to remember the bytes already consumed so I can rewind to an earlier offset and decode them again (e.g. try a second parser). Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-common/src/util/retry.rs",
+        "symbol": "RetryReader",
+        "line": 25
+      }
+    ],
+    "obvious_greps_tried": [
+      "rewind",
+      "replay|peek",
+      "impl\\s*<[^>]*>\\s*Seek for"
+    ],
+    "note": "Struct: Read wrapper that buffers consumed bytes with set_position(); name says 'retry', not rewind/replay."
+  },
+  {
+    "id": "q07",
+    "kind": "mismatch",
+    "question": "I want to render a message from interpolated arguments (like the std interpolation macros do) but cap the output at a byte budget, stopping rendering early and ending with '...', so huge values can't blow up error messages. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-common/src/util/bounded_string.rs",
+        "symbol": "bounded_format",
+        "line": 115
+      },
+      {
+        "path": "stacks-common/src/util/bounded_string.rs",
+        "symbol": "BoundedString",
+        "line": 75
+      }
+    ],
+    "obvious_greps_tried": [
+      "truncat",
+      "fn \\w*(cap|clamp|limit)\\w*",
+      "ellipsis|\"\\.\\.\\.\""
+    ],
+    "note": "Macro + backing type (BoundedString::from_args); ~160 uses across 25 files."
+  },
+  {
+    "id": "q08",
+    "kind": "mismatch",
+    "question": "I want to declare a new text wrapper type whose TryFrom constructor rejects values that are too long or don't match a given regex, and that comes with Deref/Display/as_str boilerplate. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-common/src/util/macros.rs",
+        "symbol": "guarded_string",
+        "line": 222
+      }
+    ],
+    "obvious_greps_tried": [
+      "newtype",
+      "is_match",
+      "macro_rules!\\s*\\w*(regex|valid)\\w*"
+    ],
+    "note": "Macro used to define ClarityName, ContractName and UrlString."
+  },
+  {
+    "id": "q09",
+    "kind": "mismatch",
+    "question": "In a unit test I want one call that asserts a value consensus-serializes to an expected byte vector, deserializes back to an equal value, and that the same bytes with the last byte chopped off fail with an unexpected-EOF error. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-common/src/codec/mod.rs",
+        "symbol": "check_codec_and_corruption",
+        "line": 289
+      }
+    ],
+    "obvious_greps_tried": [
+      "round_?trip",
+      "fn \\w*(assert|check)_\\w*serializ\\w*",
+      "fn \\w*truncat\\w*"
+    ],
+    "note": "Test-support helper (codec::testing), 76 uses in 9 files."
+  },
+  {
+    "id": "q10",
+    "kind": "mismatch",
+    "question": "In a test I want the list of all Clarity language versions from a given version onward (e.g. version 3 and every later one) to parameterize cases over. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "clarity-types/src/version.rs",
+        "symbol": "since",
+        "line": 77
+      }
+    ],
+    "obvious_greps_tried": [
+      "at_least",
+      "fn \\w*versions_(from|after)\\w*",
+      "and_later|onward"
+    ],
+    "note": "Test-support assoc fn ClarityVersion::since (sibling up_to); ~30 uses."
+  },
+  {
+    "id": "q11",
+    "kind": "mismatch",
+    "question": "Given a Clarity value and a declared type signature, I need to check whether the value conforms to that type under a particular epoch's rules. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "clarity-types/src/types/signatures.rs",
+        "symbol": "admits",
+        "line": 495
+      },
+      {
+        "path": "clarity-types/src/types/signatures.rs",
+        "symbol": "admits_type",
+        "line": 500
+      }
+    ],
+    "obvious_greps_tried": [
+      "fn \\w*conform\\w*",
+      "fn \\w*(check_type|type_check_value)\\w*",
+      "fn \\w*(matches_type|is_compatible)\\w*"
+    ],
+    "note": "TypeSignature::admits (value) / admits_type (after type_of); type-theory verb, not 'check'."
+  },
+  {
+    "id": "q12",
+    "kind": "mismatch",
+    "question": "After a contract has been type-checked, I need to produce its JSON ABI: public and read-only function signatures, maps, data vars, and tokens. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "clarity/src/vm/analysis/contract_interface_builder/mod.rs",
+        "symbol": "build_contract_interface",
+        "line": 29
+      }
+    ],
+    "obvious_greps_tried": [
+      "\\babi\\b",
+      "fn \\w*abi\\w*",
+      "fn \\w*to_json\\w*"
+    ],
+    "note": "Repo calls the ABI the 'contract interface'; ~19 uses."
+  },
+  {
+    "id": "q13",
+    "kind": "mismatch",
+    "question": "Given a block's execution-cost limit and some consumed cost, I need the percentage of the limit used, judged by whichever of the five resource counters is closest to its cap. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "clarity/src/vm/costs/execution_cost.rs",
+        "symbol": "proportion_largest_dimension",
+        "line": 54
+      }
+    ],
+    "obvious_greps_tried": [
+      "fn \\w*percent\\w*",
+      "fn \\w*(utiliz|fullness)\\w*",
+      "fn \\w*pct\\w*"
+    ],
+    "note": "ExecutionCost method; 'percent' only appears in its doc comment."
+  },
+  {
+    "id": "q14",
+    "kind": "mismatch",
+    "question": "I have a slice of values that each print nicely with {} and want to log the whole slice as '[a, b, c]' inside a log/format line without first joining it into a String. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/util_lib/strings.rs",
+        "symbol": "VecDisplay",
+        "line": 43
+      }
+    ],
+    "obvious_greps_tried": [
+      "join\\(\", \"\\)",
+      "fn \\w*(fmt_list|format_list|join)\\w*",
+      "comma"
+    ],
+    "note": "Struct newtype implementing Display for &[T]."
+  },
+  {
+    "id": "q15",
+    "kind": "mismatch",
+    "question": "Given the name of a built-in system contract like 'pox-4' or 'costs' and whether we're on mainnet, I need its fully qualified contract identifier (deployer address plus name). Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/util_lib/boot.rs",
+        "symbol": "boot_code_id",
+        "line": 13
+      },
+      {
+        "path": "clarity/src/libclarity.rs",
+        "symbol": "boot_code_id",
+        "line": 54
+      }
+    ],
+    "obvious_greps_tried": [
+      "fn \\w*contract_id\\w*",
+      "pox_contract|system_contract",
+      "QualifiedContractIdentifier::new"
+    ],
+    "note": "Duplicated in stackslib and clarity::boot_util; ~260 uses."
+  },
+  {
+    "id": "q16",
+    "kind": "mismatch",
+    "question": "In a test I have a secp256k1 private key and need the matching testnet single-signature 'ST...' account it controls. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/core/test_util.rs",
+        "symbol": "to_addr",
+        "line": 299
+      },
+      {
+        "path": "stackslib/src/chainstate/coordinator/tests.rs",
+        "symbol": "p2pkh_from",
+        "line": 202
+      },
+      {
+        "path": "stackslib/src/chainstate/stacks/boot/mod.rs",
+        "symbol": "key_to_stacks_addr",
+        "line": 2022
+      }
+    ],
+    "obvious_greps_tried": [
+      "fn \\w*from_priv\\w*",
+      "address_from|addr_from",
+      "fn \\w*(privkey|private_key)_to\\w*"
+    ],
+    "note": "Three equivalent test helpers (DRY failure in the wild); ~1000 combined uses."
+  },
+  {
+    "id": "q17",
+    "kind": "mismatch",
+    "question": "I need the digest a Stacks wallet signs for off-chain typed data: a fixed prefix, then the hash of a (name, version, chain-id) domain tuple, then the hash of the Clarity payload value. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/util_lib/signed_structured_data.rs",
+        "symbol": "structured_data_message_hash",
+        "line": 37
+      }
+    ],
+    "obvious_greps_tried": [
+      "typed_data",
+      "fn \\w*domain\\w*",
+      "fn \\w*sign\\w*message\\w*"
+    ],
+    "note": "SIP-018 hash; repo calls it 'structured data'. Sibling sign_structured_data signs with it."
+  },
+  {
+    "id": "q18",
+    "kind": "mismatch",
+    "question": "In an integration test I have the new-block JSON payloads the node's event observer received, and I need every decoded tx in them that satisfies a predicate (e.g. only contract calls). Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-node/src/tests/mod.rs",
+        "symbol": "select_transactions_where",
+        "line": 128
+      },
+      {
+        "path": "stacks-node/src/tests/neon_integrations.rs",
+        "symbol": "parse_transactions",
+        "line": 660
+      }
+    ],
+    "obvious_greps_tried": [
+      "fn \\w*filter_t\\w*",
+      "fn \\w*find_tx\\w*",
+      "fn \\w*(decode|parse)_block\\w*"
+    ],
+    "note": "Test-support; parse_transactions (test_observer) decodes one block without the predicate."
+  },
+  {
+    "id": "q19",
+    "kind": "mismatch",
+    "question": "For logging and metrics I need a short static label describing what kind of payload a tx carries (contract call, token transfer, coinbase, tenure change, ...). Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-codec/src/transaction.rs",
+        "symbol": "name",
+        "line": 2729
+      }
+    ],
+    "obvious_greps_tried": [
+      "fn \\w*(payload_type|payload_kind)\\w*",
+      "fn (kind|type_name|label)\\(",
+      "fn \\w*type_str\\w*"
+    ],
+    "note": "TransactionPayload::name(); generic method name is hard to find by concept."
+  },
+  {
+    "id": "q20",
+    "kind": "mismatch",
+    "question": "Given two Clarity type signatures (e.g. element types of two list items or the two branches of an if), I need the most specific type both fit into, or an error if they're incompatible. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "clarity-types/src/types/signatures.rs",
+        "symbol": "least_supertype",
+        "line": 1061
+      },
+      {
+        "path": "clarity-types/src/types/signatures.rs",
+        "symbol": "least_supertype_for_analysis",
+        "line": 1079
+      }
+    ],
+    "obvious_greps_tried": [
+      "fn unify",
+      "common_type",
+      "fn \\w*(merge|join)_types?\\w*"
+    ],
+    "note": "TypeSignature::least_supertype (+ analysis variant); 'unifies' only in docs."
+  },
+  {
+    "id": "q21",
+    "kind": "negative",
+    "question": "When a user mistypes an identifier I want to suggest the most likely intended name by ranking candidates by edit (Levenshtein) distance. Is there already something in this repo for that?",
+    "answers": [],
+    "obvious_greps_tried": [
+      "levenshtein",
+      "edit_distance",
+      "strsim",
+      "did you mean",
+      "damerau|jaro",
+      "fn \\w*(distance|similar|closest|suggest)\\w*\\("
+    ],
+    "note": "Clarity diagnostics have static suggestion() text only; no string-distance code."
+  },
+  {
+    "id": "q22",
+    "kind": "negative",
+    "question": "I need to format a byte count for log output as a human-readable size like '1.5 MiB' or '320 KB'. Is there already something in this repo for that?",
+    "answers": [],
+    "obvious_greps_tried": [
+      "humansize|bytesize|human_bytes|humanize",
+      "fn \\w*(format_bytes|bytes_to_human|human\\w*size|pretty_bytes)\\w*",
+      "\\b(KiB|MiB|GiB)\\b",
+      "1024\\.0"
+    ],
+    "note": "Only the MB! constant macro exists (multiplies, does not format)."
+  },
+  {
+    "id": "q23",
+    "kind": "negative",
+    "question": "I need to render a microSTX amount (u128) as a decimal STX string with six fractional digits, e.g. 1500000 -> '1.500000'. Is there already something in this repo for that?",
+    "answers": [],
+    "obvious_greps_tried": [
+      "[/%] *\\(?(core::)?MICROSTACKS_PER_STACKS",
+      "fn \\w*(to_stx|format_stx|stx_amount|format_amount|amount_to)\\w*",
+      ":06\\}|\\{:\\.6\\}",
+      "/ 1_000_000\\b"
+    ],
+    "note": "Absent; a private BTC/sats string converter exists in stacks-node but not for STX."
+  },
+  {
+    "id": "q24",
+    "kind": "negative",
+    "question": "I need to parse a config value like '30s', '5m' or '2h' into a std::time::Duration. Is there already something in this repo for that?",
+    "answers": [],
+    "obvious_greps_tried": [
+      "humantime",
+      "parse_duration",
+      "fn \\w*duration\\w*from_str\\w*",
+      "strip_suffix\\(\"(ms|s|m|h)\"\\)",
+      "fn \\w*duration\\w*\\("
+    ],
+    "note": "Config uses integer *_secs/*_ms fields; only a private fmt_duration formatter exists in stacks-marf."
+  }
+]

@@ -1,0 +1,200 @@
+[
+ {
+  "id": "t01",
+  "kind": "task",
+  "question": "In the stacks-node integration tests, write a helper `fn snapshot_working_dir(working_dir: &Path) -> PathBuf` that copies the node's whole working directory (all nested files) into a fresh temporary directory and returns the new path.",
+  "accept": "copy_dir_all|\\bcopy_dir\\b",
+  "answers": [
+   {
+    "symbol": "copy_dir_all|\\bcopy_dir\\b"
+   }
+  ]
+ },
+ {
+  "id": "t02",
+  "kind": "task",
+  "question": "In stacks-signer, write a function `fn fetch_peer_info_with_retry(client: &StacksClient) -> Result<PeerInfo, ClientError>` that calls the node's peer-info endpoint and retries transient failures with exponentially growing delays, giving up after a total time budget.",
+  "accept": "retry_with_exponential_backoff",
+  "answers": [
+   {
+    "symbol": "retry_with_exponential_backoff"
+   }
+  ]
+ },
+ {
+  "id": "t03",
+  "kind": "task",
+  "question": "In the stacks-node integration tests, write a helper `fn fresh_local_binds() -> (SocketAddr, SocketAddr)` returning two localhost socket addresses (one for RPC, one for P2P) on fresh random ports, safe to use when tests run in parallel.",
+  "accept": "gen_random_port|get_random_port",
+  "answers": [
+   {
+    "symbol": "gen_random_port|get_random_port"
+   }
+  ]
+ },
+ {
+  "id": "t04",
+  "kind": "task",
+  "question": "In stackslib, write `fn insert_checkpoint(tx: &rusqlite::Transaction, height: u64, total_burn: u64) -> Result<(), db_error>` that inserts one row into a table `checkpoints(height INTEGER NOT NULL, total_burn INTEGER NOT NULL)`.",
+  "accept": "u64_to_sql",
+  "answers": [
+   {
+    "symbol": "u64_to_sql"
+   }
+  ]
+ },
+ {
+  "id": "t05",
+  "kind": "task",
+  "question": "In stacks-signer, write a small struct `Deadline` with `fn after(secs: u64) -> Self`, which records an absolute expiry time as Unix seconds, and `fn is_expired(&self) -> bool`.",
+  "accept": "get_epoch_time_(secs|ms|nanos)",
+  "answers": [
+   {
+    "symbol": "get_epoch_time_(secs|ms|nanos)"
+   }
+  ]
+ },
+ {
+  "id": "t06",
+  "kind": "task",
+  "question": "In stackslib, write a generic function `fn decode_either<A, B, R>(fd: &mut R) -> Result<Either<A, B>, codec_error> where A: StacksMessageCodec, B: StacksMessageCodec, R: Read` that tries to decode an `A` from the stream and, if that fails, decodes the very same bytes as a `B` instead. Define the `Either` enum too.",
+  "accept": "RetryReader",
+  "answers": [
+   {
+    "symbol": "RetryReader"
+   }
+  ]
+ },
+ {
+  "id": "t07",
+  "kind": "task",
+  "question": "In stackslib's p2p code, write `fn oversized_payload_error(peer: &NeighborKey, payload: &impl std::fmt::Debug) -> net_error` that builds an `net_error::InvalidMessage`-style error whose message includes the debug rendering of the peer-supplied payload, but never more than 256 bytes of it (truncate with '...'), so a hostile peer cannot bloat our logs.",
+  "accept": "bounded_format|BoundedString",
+  "answers": [
+   {
+    "symbol": "bounded_format|BoundedString"
+   }
+  ]
+ },
+ {
+  "id": "t08",
+  "kind": "task",
+  "question": "In stacks-common, define a new validated string type `TopicName`: at most 64 characters, must match `^[a-z][a-z0-9-]*$`, constructed via `TryFrom<String>`, with `Deref<Target = str>`, `Display` and `as_str()`.",
+  "accept": "guarded_string",
+  "answers": [
+   {
+    "symbol": "guarded_string"
+   }
+  ]
+ },
+ {
+  "id": "t09",
+  "kind": "task",
+  "question": "In stackslib, write a unit test `test_neighbor_address_codec` for `NeighborAddress`'s consensus (de)serialization: it must check the value serializes to an expected byte vector, deserializes back to an equal value, and that truncated input is rejected.",
+  "accept": "check_codec_and_corruption",
+  "answers": [
+   {
+    "symbol": "check_codec_and_corruption"
+   }
+  ]
+ },
+ {
+  "id": "t10",
+  "kind": "task",
+  "question": "In the clarity crate's tests, write `fn for_each_version_from_clarity3(f: impl Fn(ClarityVersion))` that runs the closure once for Clarity 3 and for every later Clarity version, so it keeps working when new versions are added.",
+  "accept": "\\bsince\\(",
+  "answers": [
+   {
+    "symbol": "\\bsince\\("
+   }
+  ]
+ },
+ {
+  "id": "t11",
+  "kind": "task",
+  "question": "In stackslib, write `fn validate_call_args(epoch: &StacksEpochId, args: &[Value], expected: &[TypeSignature]) -> Result<(), String>` that fails on an arity mismatch or if any argument does not conform to its declared Clarity type under that epoch's rules.",
+  "accept": "\\badmits(_type)?\\(",
+  "answers": [
+   {
+    "symbol": "\\badmits(_type)?\\("
+   }
+  ]
+ },
+ {
+  "id": "t12",
+  "kind": "task",
+  "question": "In stackslib, write `fn contract_abi_json(analysis: &ContractAnalysis) -> Result<String, String>` that returns the JSON ABI of an already type-checked contract (its public and read-only functions, maps, data vars and tokens).",
+  "accept": "build_contract_interface",
+  "answers": [
+   {
+    "symbol": "build_contract_interface"
+   }
+  ]
+ },
+ {
+  "id": "t13",
+  "kind": "task",
+  "question": "In stacks-node's miner code, write `fn block_nearly_full(consumed: &ExecutionCost, limit: &ExecutionCost, threshold_percent: u64) -> bool` that is true when the most constrained cost dimension has reached the threshold percentage of the block limit.",
+  "accept": "proportion_largest_dimension",
+  "answers": [
+   {
+    "symbol": "proportion_largest_dimension"
+   }
+  ]
+ },
+ {
+  "id": "t15",
+  "kind": "task",
+  "question": "In stackslib, write `fn is_pox4_call(payload: &TransactionPayload, mainnet: bool) -> bool` that returns true when the payload is a contract call targeting the pox-4 system contract on the given network.",
+  "accept": "boot_code_id|boot_code_addr",
+  "answers": [
+   {
+    "symbol": "boot_code_id|boot_code_addr"
+   }
+  ]
+ },
+ {
+  "id": "t17",
+  "kind": "task",
+  "question": "In stacks-signer, write `fn verify_typed_data_sig(pubkey: &Secp256k1PublicKey, sig: &MessageSignature, domain: Value, payload: Value) -> bool` that verifies a wallet signature over SIP-018 off-chain typed data (prefix, domain tuple hash, payload hash).",
+  "accept": "structured_data_message_hash|structured_data_hash|verify_structured_data",
+  "answers": [
+   {
+    "symbol": "structured_data_message_hash|structured_data_hash|verify_structured_data"
+   }
+  ]
+ },
+ {
+  "id": "t18",
+  "kind": "task",
+  "question": "In the stacks-node integration tests, write `fn count_contract_calls_to(contract: &QualifiedContractIdentifier) -> usize` that counts the contract-call transactions targeting that contract across all blocks the test event observer has received so far.",
+  "accept": "select_transactions_where|parse_transactions",
+  "answers": [
+   {
+    "symbol": "select_transactions_where|parse_transactions"
+   }
+  ]
+ },
+ {
+  "id": "t19",
+  "kind": "task",
+  "question": "In stacks-node, write `fn tally_payload_kinds(txs: &[StacksTransaction]) -> HashMap<&'static str, u64>` that counts transactions per payload kind (token transfer, contract call, coinbase, tenure change, ...) keyed by a short static label, for a metrics log line.",
+  "accept": "\\.name\\(\\)",
+  "answers": [
+   {
+    "symbol": "\\.name\\(\\)"
+   }
+  ]
+ },
+ {
+  "id": "t20",
+  "kind": "task",
+  "question": "In the clarity crate, write `fn common_entry_type(epoch: &StacksEpochId, entries: &[TypeSignature]) -> Result<TypeSignature, String>` that returns the most specific single type that every entry type fits into, or an error if they are incompatible.",
+  "accept": "least_supertype",
+  "answers": [
+   {
+    "symbol": "least_supertype"
+   }
+  ]
+ }
+]
