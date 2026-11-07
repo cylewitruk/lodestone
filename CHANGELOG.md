@@ -216,3 +216,50 @@ Other cross-encoders tried: `BAAI/bge-reranker-base` (MIT) lowered rank@5 to 0.4
 - p50 ≤ 400 ms with rerank on (measured ~950 ms; the cross-encoder runs at ≈ 3 TFLOPS effective
   in candle's Metal kernels, sub-batching does not help). Accepted by the user's override.
 - rank@5 ≥ 0.85 remains unmet (0.75).
+
+## Phase 4 — End-to-end agent eval
+
+`eval/harness/run_trials.py` gained a `rule_lode` arm: the shared reuse rule plus
+`lode-must.md` (mandatory `search` call), `--mcp-config` pointing at the daemon, only the two
+lodestone tools allowed besides Read/Grep/Glob. `eval/harness/setup_scratch.sh` builds the
+scratch layout. 18 tasks × 3 reps on Sonnet, 4 jobs in parallel, daemon serving stacks-core
+`95c6a45eed` with the Phase 3 defaults. Two `rule_lode` arms (reranker on, the default, and off)
+plus a fresh `rule` arm for a same-day baseline (the pilot numbers are from a different day).
+
+| Arm | Reuse | Hard cases (tasks with ≥ 1 reuse; runs) | Median cost/run | Median tokens | Tool calls/run (search + Grep + Read + Glob) | Median turns | Median wall |
+| ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
+| pilot: stock | 23/54 | 0/4 | $0.031 | — | — | — | — |
+| pilot: reuse rule | 38/54 | 0/4 | $0.039 | — | — | — | — |
+| pilot: rule + compact catalogue in prompt | 46/54 | 3/4 | $0.042 | — | — | — | — |
+| pilot: rule + reuse skill | 42/54 | 3/4 | $0.156 | — | — | — | — |
+| pilot: rule + `ck` forced | n/a | 1/4 | $0.064 | — | — | — | — |
+| today: reuse rule (no lodestone) | 40/54 | 2/4; 2/12 | $0.041 | 36.4k | 4.61 (0 + 3.43 + 1.13 + 0.06) | 5.5 | 17 s |
+| **rule_lode, reranker on (default)** | **44/54** | **2/4; 5/12** | **$0.038** | 40.5k | 5.15 (1.13 + 2.72 + 1.30) | 6 | 16 s |
+| rule_lode, reranker off | 42/54 | 2/4; 4/12 | $0.033 | 34.2k | 4.85 (1.07 + 2.41 + 1.37) | 5 | 15 s |
+
+Total spend: $2.24 (rerank on), $1.99 (rerank off), $2.39 (baseline rule).
+
+| Criterion | Target | Measured | Result |
+| ---- | ---- | ---- | ---- |
+| Hard cases | ≥ 3/4 | 2/4 (t07 bounded_format 3/3, t18 select_transactions_where 2/3) | **fail** |
+| Cost | ≤ 1.3 × rule_cat_prompt ($0.055) | $0.038 median (0.90×); $0.033 with rerank off (0.79×) | pass |
+
+### Findings
+
+- Reuse rises from 40/54 (same-day rule baseline) to 44/54 with lodestone, at lower median
+  cost; t07 goes from 1/3 to 3/3, t10 from 2/3 to 3/3, t18 from 1/3 to 2/3.
+- **t08 (guarded_string) is a retrieval hit, not a miss**: `search` returned `guarded_string!`
+  as the top result in 3/3 runs; the agent read it and declined it because stacks-common has
+  no `regex` dependency. The grader counts that as no reuse.
+- **t06 (RetryReader) and t09 (check_codec_and_corruption) fail on query framing**: agents
+  searched for the task's own nouns ("Either enum, decode one of two types", "NeighborAddress
+  consensus serialization") rather than the capability they would need (rewinding a reader, a
+  codec round-trip test helper). No retrieval change reaches those; the compact catalogue in
+  the prompt does, because the agent does not have to know what to ask.
+- **Reranker vs agent tool calls (the user's 1 s criterion)**: with the reranker, agents made
+  slightly *more* tool calls (5.15 vs 4.85 per run), used more tokens (40.5k vs 34.2k median)
+  and cost more ($0.038 vs $0.033), for +2/54 reuse and +1/12 hard-case runs — within run-to-run
+  noise at n = 54. Searches replace Grep (−0.7 to −1.0 Grep per run vs the rule baseline) but
+  do not reduce total calls. On this evidence the reranker does not pay for itself in agent
+  work; it remains the default only because that was the user's call, and turning it off is a
+  one-line config change (`[rerank] enabled = false`).
