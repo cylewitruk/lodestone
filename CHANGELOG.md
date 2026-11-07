@@ -141,3 +141,37 @@ separates them with this model.
   via fastembed did not finish 78 queries in 25 min on CPU; gte-reranker-modernbert 0.75). The four
   questions no configuration retrieves (q13, q14, q16, q17) describe domain behaviour in words
   that share nothing with the code or its docs.
+
+## Phase 2 — Daemon, watcher, MCP
+
+`lode serve`: registry (the only place paths are canonicalized), `ArcSwap` snapshots with
+copy-on-write vector index, one async writer lock per worktree, notify watcher (500 ms
+debounce, `.git/HEAD`/refs → full rescan, `.gitignore`/`.lodestoneignore`/`CACHEDIR.TAG`
+filtering, 60 s poll fallback, `gitdir:` worktrees), REST (§6.2), MCP streamable HTTP with
+exactly two tools (§6.1), and CLI fallback to HTTP when a daemon answers.
+
+Real-model measurements (CodeRankEmbed on Metal, daemon on a second worktree of stacks-core);
+the same scenarios also run as `tests/daemon.rs` with a deterministic embedder.
+
+| Criterion | Target | Measured | Result |
+| ---- | ---- | ---- | ---- |
+| 8 clients × 200 searches with watcher reindex underneath | 0 errors, 0 stale-read panics | 1,600 requests, 0 errors, 34 file edits reindexed during the run | pass |
+| … latency, reranker off | p50 < 250 ms, p99 < 1 s | p50 40.1 ms, p99 43.2 ms | pass |
+| … latency, reranker on (default) | p50 < 250 ms, p99 < 1 s | 8 × 20: p50 7.6 s, p99 7.9 s (cross-encoder serialized on the GPU), 0 errors | **fail** (see Decisions) |
+| Edit a file → item searchable | < 2 s | 0.69–0.72 s (reranker off); 1.96 s (reranker on, polling at ~1 s/search) | pass |
+| Branch switch → fully fresh | < 30 s, ≥ 95% cache hits | to a commit 15 back (58 files): 5.4 s, 95.4% hits; back: 3.8 s, 100% | pass |
+| Kill daemon mid-index, restart | consistent index | killed during the first batch; restart reported stale with the reason, reused 5,388 cached vectors, final manifest ids = items ids (27,418), vectors 27,418 | pass |
+| Claude Code via `.mcp.json` | two tools, exact descriptions | `claude -p` init: lodestone `connected`, tools `mcp__lodestone__search` and `mcp__lodestone__status`; descriptions echoed verbatim | pass |
+
+### Decisions
+
+- **Reranker throughput under concurrency.** The cross-encoder holds a mutex and saturates the
+  GPU, so concurrent searches queue. Kept on by default per the user's call (agent sessions
+  issue searches serially); multi-client deployments can set `[rerank] enabled = false` for
+  ~40 ms p50.
+- Searches during indexing are answered from the previous snapshot and flagged
+  `stale: true` with `indexing in progress` (no blocking, no half-built state).
+- The watcher only consults root-level ignore files; a later full rescan (branch switch,
+  daemon start) reconciles anything nested ignore rules would exclude.
+- `register` returns immediately and indexes on the worktree's worker; `index` over REST waits
+  for completion (what `lode index` needs).

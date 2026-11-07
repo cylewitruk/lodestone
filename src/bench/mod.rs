@@ -64,6 +64,8 @@ pub struct BenchOptions {
     pub hard: Vec<String>,
     pub skip_index: bool,
     pub force: bool,
+    /// Search with `include_tests` (test items down-weighted instead of filtered).
+    pub include_tests: bool,
 }
 
 fn percentile(v: &[f64], p: f64) -> f64 {
@@ -109,6 +111,7 @@ pub fn run(engine: &Engine, opts: &BenchOptions) -> anyhow::Result<BenchReport> 
         query: q.question.clone(),
         repo: repo.clone(),
         top_k: 50,
+        include_tests: opts.include_tests,
         ..SearchRequest::default()
     };
     // Warm-up pass loads the model and pages in the index.

@@ -92,6 +92,9 @@ enum Cmd {
         force: bool,
         #[arg(long)]
         rerank: bool,
+        /// Include test items (down-weighted by `search.test_weight`).
+        #[arg(long)]
+        include_tests: bool,
         #[arg(long)]
         json: bool,
     },
@@ -215,6 +218,7 @@ fn main() -> anyhow::Result<()> {
             skip_index,
             force,
             rerank,
+            include_tests,
             json,
         } => {
             if let Some(m) = model {
@@ -233,6 +237,7 @@ fn main() -> anyhow::Result<()> {
                 hard,
                 skip_index,
                 force,
+                include_tests,
             };
             anyhow::ensure!(
                 opts.corpus.is_dir(),
