@@ -6,8 +6,9 @@ this codebase does X?" over MCP and HTTP in well under a second.
 
 - Definitions come from tree-sitter tags queries (Rust, Python, TypeScript/JavaScript, Go and
   Markdown built in; any other grammar via tree-sitter's own config).
-- Hybrid retrieval: code-tuned embeddings (Metal via candle, or ONNX via fastembed) + BM25,
-  fused with reciprocal rank fusion, one line per item.
+- Hybrid retrieval: code-tuned embeddings (CodeRankEmbed; Metal via candle, or ONNX via
+  fastembed) + BM25 for identifier-like queries, fused with reciprocal rank fusion, then a
+  cross-encoder reranker; one line per item.
 - Content-addressed embedding cache shared by every worktree: a second worktree of the same
   repository costs chunking and hashing only.
 - Two MCP tools (`search`, `status`); a REST API for scripts.
@@ -101,12 +102,12 @@ GET  /v1/repos
 
 ```toml
 port = 4600
-model = "jina-code-v2"      # alias into [models]; see `lode models`
+model = "coderank"          # alias into [models]; see `lode models`
 backend = "candle-metal"    # candle-metal | candle-cpu | fastembed | remote
 batch_size = 64
 cache_max_gb = 4
-chunk_tokens = 300
-vector_precision = "f16"    # f32 | f16
+chunk_tokens = 200
+vector_precision = "f32"    # f32 | f16
 
 [languages]
 tree_sitter_config = "~/.config/tree-sitter/config.json"
@@ -114,8 +115,10 @@ extensions = { "cljc" = "clojure" }
 index_untagged_as_text = ["md", "txt", "adoc", "rst"]
 
 [rerank]
-enabled = false
-model = "bge-reranker-base"
+enabled = true              # cross-encoder over the top 50: better ranking, ~1 s per search
+hf_repo = "Alibaba-NLP/gte-reranker-modernbert-base"
+candidates = 50
+max_tokens = 192
 ```
 
 Adding a language never needs code: clone a grammar into one of tree-sitter's

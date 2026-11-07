@@ -16,6 +16,7 @@ fn main() -> anyhow::Result<()> {
     let base = args[1].clone();
     let questions: Vec<Value> = serde_json::from_slice(&std::fs::read(&args[2])?)?;
     let worktree = PathBuf::from(&args[3]);
+    let worktree_s = worktree.to_string_lossy().to_string();
     let clients: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(8);
     let per: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(200);
     let queries: Arc<Vec<String>> = Arc::new(
@@ -73,12 +74,13 @@ fn main() -> anyhow::Result<()> {
                 lat.clone(),
                 stale_seen.clone(),
             );
+            let repo = worktree_s.clone();
             std::thread::spawn(move || {
                 for i in 0..per {
                     let q = &queries[(c * per + i) % queries.len()];
                     let t = Instant::now();
                     match ureq::post(format!("{base}/v1/search"))
-                        .send_json(json!({ "query": q, "top_k": 8 }))
+                        .send_json(json!({ "query": q, "top_k": 8, "repo": repo }))
                     {
                         Ok(mut r) => {
                             let v: Value = r.body_mut().read_json().unwrap_or(Value::Null);

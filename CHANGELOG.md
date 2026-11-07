@@ -57,7 +57,7 @@ chunks/s embeds a deterministic sample of corpus chunks (avg 576 chars); rank@5 
 | Vector precision | same chunking, CodeRankEmbed: f32 rank@5 0.70 / MRR 0.478; f16 0.65 / 0.476 | **f32** (difference 0.05 > 0.02); 27k × 768 × 4 B = 84 MB |
 | Body truncation | CodeRankEmbed f16: 200 tok 0.65 (238 s), 300 tok 0.65, 500 tok 0.65 (360 s) | **200 tokens** (equal rank@5, cheapest) |
 | Lexical tokenizer | identifier queries, lexical-only top-1: code tokenizer 0.833, tantivy default 0.667 | **code tokenizer** (splits `snake_case`/`CamelCase`, keeps whole identifier) |
-| Built-in grammar set | see Phase 1 | all five (`lang-rust`, `lang-python`, `lang-typescript`, `lang-go`, `lang-markdown`) default-on |
+| Built-in grammar set | release binary 66.7 MB with `lang-rust` only vs 71.1 MB with all five (+4.4 MB, +6.6%); +13 s incremental build | all five (`lang-rust`, `lang-python`, `lang-typescript`, `lang-go`, `lang-markdown`) default-on |
 
 Other decisions:
 
@@ -94,3 +94,50 @@ Other decisions:
   ~140M models they cannot index 27k chunks in < 10 min on this GPU (≈ 95 chunks/s ÷ 10 ≥ 45
   min), Qodo's license is not OSI-permissive, and Qodo needs bidirectional Qwen2 attention that
   candle's `qwen2` does not implement.
+
+## Phase 1 — Index and search, in-process
+
+Chunker with the five built-in grammars + loader, global embedding cache, per-worktree index
+(manifest, `items.sqlite`, usearch, tantivy, `graph.json`), Cargo + fallback project-graph
+providers, indexing loop, hybrid search, the §5.4 output format, and CLI `index`, `search`,
+`status`, `bench`, `languages`, `models`.
+
+Measured with the final defaults (CodeRankEmbed, candle-metal, f32 vectors, 200-token chunks)
+on a fresh data directory:
+
+| Criterion | Target | Measured | Result |
+| ---- | ---- | ---- | ---- |
+| Cold index of stacks-core on Metal | < 10 min | 245 s (27,418 items, all embedded) | pass |
+| Re-index with no changes | < 5 s | 0.02 s | pass |
+| Mixed-language repo, every extension accounted for in `status` | — | stacks-core: `.rs` 25,603 tagged, `.ts` 814 tagged + 252 text, `.md` 707, `.py` 23, `.js` 1 + 4 text, `.txt` 5 text; 26 other extensions listed as `skipped_files`; fixture test covers rs/ts/py/md/txt/toml/json | pass |
+| Second worktree of the same commit | < 30 s | 18.6 s (0 embedded, 27,418 cached) | pass |
+| `lode search` p50 warm, in-process | < 300 ms | 8.7 ms without reranker; 948 ms with the default reranker | pass without rerank (see Decisions) |
+| rank@5 on `easy` + `mismatch` | ≥ 0.85 | 0.65 without reranker; 0.75 with reranker (MRR 0.489 / 0.585) | **fail** |
+| All four hard helpers in top 5 | 4/4 | 2/4 without reranker; **4/4 with reranker** | pass with reranker |
+
+Per-question ranks with the reranker: q01–q06 1,1,1,1,1,1; q07 4; q08 3; q09 1; q10 3; q11 1;
+q12 9; q13 –; q14 –; q15 1; q16 –; q17 –; q18 3; q19 1; q20 3. Negative questions: the top
+cosine similarity of negatives (max 0.385) overlaps positives (min 0.323), so no threshold
+separates them with this model.
+
+### Decisions
+
+- **Reranker on by default** (`Alibaba-NLP/gte-reranker-modernbert-base`, Apache-2.0, top 50,
+  192-token pairs, f16 on Metal): +0.10 rank@5, hard cases 2/4 → 4/4, at ~0.95 s per query. The
+  user ruled that ~1 s is acceptable if it saves agent tool calls; Phase 4 measures that with
+  rerank-on and rerank-off arms. Searches remain ~9 ms with `[rerank] enabled = false`.
+- Test detection (`queries/rust/tests.scm`) covers `#[test]`, `#[tokio::test]`, `#[rstest]`,
+  `#[apply(..)]`, `#[test_case]`, attributes separated by comments, and `#[cfg(test)]` items;
+  doc comments placed after attributes are captured.
+- Files whose grammar finds no definitions are chunked as prose rather than dropped.
+- Item ids are never reused; the manifest is written after each 128-file batch, after items,
+  lexical and vectors, so a crash leaves files either fully indexed or re-indexed on the next run.
+
+### Blocked / not met
+
+- **rank@5 ≥ 0.85 is not met** (best 0.75). Tried: five embedding models (table in Phase 0),
+  vector/lexical fusion weights, sentence-level query vectors (0.55–0.60, no gain), chunk sizes
+  200/300/500 (no difference), and three cross-encoders (bge-reranker-base 0.45; jina-reranker-v2
+  via fastembed did not finish 78 queries in 25 min on CPU; gte-reranker-modernbert 0.75). The four
+  questions no configuration retrieves (q13, q14, q16, q17) describe domain behaviour in words
+  that share nothing with the code or its docs.
