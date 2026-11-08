@@ -18,6 +18,8 @@ pub use languages::{Language, LanguageInfo, LanguageRegistry};
 pub const TEXT_KIND: &str = "text";
 /// Language assigned to prose chunks from files without a grammar.
 pub const TEXT_LANGUAGE: &str = "text";
+/// Bumped when items gain fields, so existing indexes re-chunk on the next full index.
+const ITEM_FORMAT: u32 = 2;
 
 /// One searchable definition (or prose chunk) extracted from a file.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,6 +32,11 @@ pub struct Item {
     /// 1-based, inclusive.
     pub line_start: u32,
     pub line_end: u32,
+    /// 1-based position of the name: its line, and its column counted in characters.
+    #[serde(default)]
+    pub name_line: u32,
+    #[serde(default)]
+    pub name_column: u32,
     pub signature: String,
     pub doc: String,
     pub is_test: bool,
@@ -74,6 +81,8 @@ pub struct Chunker {
 struct Def {
     kind: String,
     name: String,
+    /// Byte offset of the name.
+    name_start: usize,
     range: Range<usize>,
     doc: String,
     parent: Option<usize>,
@@ -103,7 +112,7 @@ impl Chunker {
     /// Changes whenever chunk output for unchanged files could change.
     pub fn fingerprint(&self) -> String {
         let key = format!(
-            "{}|{}|{}|{}",
+            "{ITEM_FORMAT}|{}|{}|{}|{}",
             self.registry.fingerprint(),
             self.max_chars,
             self.module_chunks,
@@ -152,6 +161,7 @@ impl Chunker {
                     Some(Def {
                         kind: lang.tags.syntax_type_name(t.syntax_type_id).to_string(),
                         name,
+                        name_start: t.name_range.start,
                         range: t.range.clone(),
                         doc: t.docs.unwrap_or_default().trim().to_string(),
                         parent: None,
@@ -223,6 +233,7 @@ impl Chunker {
                 } else {
                     body.push_str(&own);
                 }
+                let (name_line, name_column) = lines.position(source, d.name_start);
                 Item {
                     rel_path: rel_path.to_string(),
                     language: lang.name.clone(),
@@ -231,6 +242,8 @@ impl Chunker {
                     qualified_name: qualified[i].clone(),
                     line_start: lines.line_of(d.range.start),
                     line_end: lines.line_of(d.range.end.saturating_sub(1).max(d.range.start)),
+                    name_line,
+                    name_column,
                     signature: signatures[i].clone(),
                     doc: d.doc.clone(),
                     is_test: tests
@@ -259,14 +272,9 @@ impl Chunker {
                 buf.clear();
                 return;
             }
-            let name: String = trimmed
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .chars()
-                .take(80)
-                .collect();
+            let first = buf.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+            let indent = first.chars().take_while(|c| c.is_whitespace()).count() as u32;
+            let name: String = first.trim().chars().take(80).collect();
             items.push(Item {
                 rel_path: rel_path.to_string(),
                 language: language.to_string(),
@@ -275,6 +283,8 @@ impl Chunker {
                 qualified_name: name.clone(),
                 line_start: start,
                 line_end: end.max(start),
+                name_line: start,
+                name_column: indent + 1,
                 signature: name,
                 doc: String::new(),
                 is_test: false,
@@ -358,6 +368,8 @@ fn module_item(
         qualified_name: rel_path.to_string(),
         line_start: 1,
         line_end: lines.line_of(text.len().saturating_sub(1)),
+        name_line: 1,
+        name_column: 1,
         signature: format!("module {rel_path}"),
         doc: String::new(),
         is_test: false,
@@ -513,6 +525,15 @@ impl LineIndex {
             Err(i) => i as u32,
         }
     }
+
+    /// 1-based (line, column) of byte offset `pos`, the column counted in characters.
+    fn position(&self, source: &[u8], pos: usize) -> (u32, u32) {
+        let line = self.line_of(pos);
+        let start = self.starts[line as usize - 1];
+        let before = &source[start..pos.min(source.len())];
+        let column = String::from_utf8_lossy(before).chars().count() as u32 + 1;
+        (line, column)
+    }
 }
 
 #[cfg(test)]
@@ -611,6 +632,24 @@ async fn async_test() {}
         assert_eq!(bar.kind, "method");
         assert_eq!(bar.doc, "Do bar.");
         assert!(items.iter().find(|i| i.name == "test_x").unwrap().is_test);
+    }
+
+    #[test]
+    fn name_positions_are_one_based_characters() {
+        let src = "/// Doc.\n#[derive(Debug)]\npub struct Reader {}\n\nimpl Reader {\n    pub fn new() -> Self { Reader {} }\n}\n/* é */ fn after_unicode() {}\n";
+        let items = chunker().chunk("a.rs", src.as_bytes());
+        let pos = |n: &str| {
+            let i = items.iter().find(|i| i.name == n).unwrap();
+            (i.line_start, i.name_line, i.name_column)
+        };
+        assert_eq!(pos("Reader"), (3, 3, 12));
+        assert_eq!(pos("new"), (6, 6, 12));
+        assert_eq!(pos("after_unicode"), (8, 8, 12));
+        let py = chunker().chunk("a.py", b"class A:\n    def run(self):\n        pass\n");
+        let run = py.iter().find(|i| i.name == "run").unwrap();
+        assert_eq!((run.name_line, run.name_column), (2, 9));
+        let text = chunker().chunk("notes.txt", b"\n\n  Indented first line.\nMore.\n");
+        assert_eq!((text[0].name_line, text[0].name_column), (3, 3));
     }
 
     #[test]

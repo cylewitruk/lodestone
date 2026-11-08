@@ -44,6 +44,11 @@ pub struct SearchResult {
     /// Last line of the definition (inclusive).
     #[serde(default)]
     pub line_end: u32,
+    /// 1-based line and character column of the name (0 when the index predates them).
+    #[serde(default)]
+    pub name_line: u32,
+    #[serde(default)]
+    pub name_column: u32,
     pub kind: String,
     pub name: String,
     pub qualified_name: String,
@@ -248,6 +253,8 @@ mod tests {
             path: "a.rs".into(),
             line: 3,
             line_end: 9,
+            name_line: 3,
+            name_column: 8,
             similarity: Some(0.5),
             body: Some("x".into()),
             ..Default::default()

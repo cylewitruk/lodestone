@@ -201,15 +201,17 @@ fn index_and_search_mixed_repo() {
     };
     let copy = find("copy a directory tree recursively", "copy_dir_all");
     assert_eq!((copy.line, copy.line_end), (5, 5));
+    assert_eq!((copy.name_line, copy.name_column), (5, 8));
     assert!(
-        copy.text.starts_with("core/src/lib.rs:5-5  "),
+        copy.text.starts_with("core/src/lib.rs:5:8  lines 5-5  "),
         "{}",
         copy.text
     );
     let report = find("generate the weekly report", "generate_report");
     assert_eq!((report.line, report.line_end), (1, 3));
+    assert_eq!((report.name_line, report.name_column), (1, 5));
     assert!(
-        report.text.starts_with("tools/gen.py:1-3  "),
+        report.text.starts_with("tools/gen.py:1:5  lines 1-3  "),
         "{}",
         report.text
     );

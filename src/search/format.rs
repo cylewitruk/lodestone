@@ -1,7 +1,8 @@
 //! The output format (one line per item). This format is the product; keep it stable:
-//! `rel_path:start-end  signature — first doc line`, signature ≤ 120 chars, doc ≤ 100. The
-//! range is the definition's inclusive 1-based lines (preceding doc comments excluded), so a
-//! caller can read exactly the item.
+//! `rel_path:line:col  lines start-end  signature  — first doc line`, signature ≤ 120 chars,
+//! doc ≤ 100. `line:col` is the name's position in compiler style (for editors and language
+//! servers); `start-end` is the definition's inclusive line range, preceding doc comments
+//! excluded. All numbers are 1-based; columns count characters.
 
 use std::path::Path;
 
@@ -60,8 +61,19 @@ fn find_word(hay: &str, word: &str) -> Option<usize> {
     None
 }
 
+/// `path:line:col  lines start-end`; items indexed before name positions existed show the
+/// start line without a column.
+pub fn location(item: &Item) -> String {
+    let at = if item.name_line > 0 {
+        format!("{}:{}:{}", item.rel_path, item.name_line, item.name_column)
+    } else {
+        format!("{}:{}", item.rel_path, item.line_start)
+    };
+    format!("{at}  lines {}-{}", item.line_start, item.line_end)
+}
+
 pub fn line(item: &Item) -> String {
-    let location = format!("{}:{}-{}", item.rel_path, item.line_start, item.line_end);
+    let location = location(item);
     let sig = clip(&display_signature(item), SIG_MAX);
     match item.doc_first_line() {
         "" => format!("{location}  {sig}"),
@@ -94,6 +106,8 @@ mod tests {
             qualified_name: qualified.into(),
             line_start: 19,
             line_end: 30,
+            name_line: 19,
+            name_column: 8,
             signature: sig.into(),
             doc: doc.into(),
             is_test: false,
@@ -112,7 +126,7 @@ mod tests {
         );
         assert_eq!(
             line(&i),
-            "stacks-common/src/util/retry.rs:19-30  struct RetryReader<'a, R: Read>  — Wrap a Read so that we store a copy of what was read"
+            "stacks-common/src/util/retry.rs:19:8  lines 19-30  struct RetryReader<'a, R: Read>  — Wrap a Read so that we store a copy of what was read"
         );
         let m = item(
             "since",
@@ -122,7 +136,7 @@ mod tests {
         );
         assert_eq!(
             line(&m),
-            "stacks-common/src/util/retry.rs:19-30  pub fn ClarityVersion::since(v: ClarityVersion)"
+            "stacks-common/src/util/retry.rs:19:8  lines 19-30  pub fn ClarityVersion::since(v: ClarityVersion)"
         );
         let long = item(
             "f",
@@ -132,7 +146,13 @@ mod tests {
         );
         let l = line(&long);
         assert!(l.contains('…'));
-        let sig_part = l.split("  ").nth(1).unwrap();
+        let sig_part = l.split("  ").nth(2).unwrap();
         assert_eq!(sig_part.chars().count(), 120);
+        let legacy = Item {
+            name_line: 0,
+            name_column: 0,
+            ..i
+        };
+        assert!(line(&legacy).starts_with("stacks-common/src/util/retry.rs:19  lines 19-30  "));
     }
 }

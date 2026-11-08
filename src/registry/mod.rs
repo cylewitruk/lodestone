@@ -411,6 +411,8 @@ impl Engine {
                     path: it.rel_path.clone(),
                     line: it.line_start,
                     line_end: it.line_end,
+                    name_line: it.name_line,
+                    name_column: it.name_column,
                     kind: it.kind.clone(),
                     name: it.name.clone(),
                     qualified_name: it.qualified_name.clone(),

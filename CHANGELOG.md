@@ -352,3 +352,24 @@ where it is not:
 | impl | 2,445 | 18 | 391 | 6,439 |
 | class | 1,634 | 6 | 45 | 555 |
 | constant | 1,345 | 1 | 24 | 1,026 |
+
+## Output — name position
+
+Each result now starts with the name's position in compiler style, followed by the item's line
+range: `path:line:col  lines start-end  signature  — doc`. JSON results gain `name_line` and
+`name_column`. All numbers stay 1-based, matching grep, sed, git, compiler diagnostics, editors
+and the Read tool; language servers are the 0-based exception, and the `search` tool description
+now says the numbers are 1-based. Columns count characters (LSP counts UTF-16 units; they agree
+unless non-ASCII text precedes the name). A hyphen after the column was avoided because
+GNU-style tools read `line:col-n` as a column range.
+
+The position comes from the tags query's name capture, so it is language-independent. Items
+gained two columns: `items.sqlite` is migrated in place, and an item-format version in the
+chunker fingerprint re-chunks existing indexes on the next full index, with embeddings from the
+cache (tantivy: 351 files, 0 embedded, 6.3 s). Until then, results show the start line without a
+column.
+
+Checked against rust-analyzer on this repository: three positions from `lode search`, minus 1,
+resolved on the first call with no file read (references to `VectorIndex::duplicate`, callers of
+`WorktreeIndex::repair`, references to `format::line`); for `repair` the position equals
+rust-analyzer's own selection range.

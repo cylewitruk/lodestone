@@ -22,7 +22,12 @@ pub struct ItemStore {
     conn: Connection,
 }
 
-const COLUMNS: &str = "id, rel_path, language, kind, name, qualified_name, line_start, line_end, signature, doc, unit, is_test, chunk_key, tagged, text";
+const COLUMNS: &str = "id, rel_path, language, kind, name, qualified_name, line_start, line_end, signature, doc, unit, is_test, chunk_key, tagged, text, name_line, name_column";
+/// Columns added after the first schema, with their definitions (added in place on open).
+const ADDED_COLUMNS: [(&str, &str); 2] = [
+    ("name_line", "INTEGER NOT NULL DEFAULT 0"),
+    ("name_column", "INTEGER NOT NULL DEFAULT 0"),
+];
 
 impl ItemStore {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
@@ -37,6 +42,15 @@ impl ItemStore {
                is_test INTEGER NOT NULL, chunk_key BLOB NOT NULL, tagged INTEGER NOT NULL, text TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS items_path ON items(rel_path);",
         )?;
+        let existing: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('items')")?
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        for (name, def) in ADDED_COLUMNS {
+            if !existing.iter().any(|c| c == name) {
+                conn.execute_batch(&format!("ALTER TABLE items ADD COLUMN {name} {def}"))?;
+            }
+        }
         Ok(Self { conn })
     }
 
@@ -60,6 +74,8 @@ impl ItemStore {
                         is_test: r.get(11)?,
                         tagged: r.get(13)?,
                         text: r.get(14)?,
+                        name_line: r.get(15)?,
+                        name_column: r.get(16)?,
                     },
                     unit: r.get(10)?,
                     chunk_key: key.try_into().unwrap_or([0; 32]),
@@ -99,7 +115,7 @@ impl ItemStore {
                 del.execute([p])?;
             }
             let mut ins = tx.prepare_cached(&format!(
-                "INSERT INTO items ({COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"
+                "INSERT INTO items ({COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)"
             ))?;
             for row in rows {
                 let i = &row.item;
@@ -118,7 +134,9 @@ impl ItemStore {
                     i.is_test,
                     &row.chunk_key[..],
                     i.tagged,
-                    i.text
+                    i.text,
+                    i.name_line,
+                    i.name_column
                 ])?;
             }
         }
@@ -129,5 +147,34 @@ impl ItemStore {
     pub fn clear(&mut self) -> anyhow::Result<()> {
         self.conn.execute("DELETE FROM items", [])?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::tempdir;
+
+    #[test]
+    fn opening_an_old_schema_adds_columns() {
+        let path = tempdir().join("items.sqlite");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE items (
+                   id INTEGER PRIMARY KEY, rel_path TEXT NOT NULL, language TEXT NOT NULL, kind TEXT NOT NULL,
+                   name TEXT NOT NULL, qualified_name TEXT NOT NULL, line_start INTEGER NOT NULL,
+                   line_end INTEGER NOT NULL, signature TEXT NOT NULL, doc TEXT NOT NULL, unit TEXT,
+                   is_test INTEGER NOT NULL, chunk_key BLOB NOT NULL, tagged INTEGER NOT NULL, text TEXT NOT NULL);
+                 INSERT INTO items VALUES (1, 'a.rs', 'rust', 'function', 'f', 'f', 3, 4, 'fn f()', '',
+                   NULL, 0, zeroblob(32), 1, 'fn f() {}');",
+            )
+            .unwrap();
+        let store = ItemStore::open(&path).unwrap();
+        let rows = store.load_all().unwrap();
+        assert_eq!((rows[0].item.name_line, rows[0].item.name_column), (0, 0));
+        // Re-opening a migrated store is a no-op.
+        drop(store);
+        assert_eq!(ItemStore::open(&path).unwrap().load_all().unwrap().len(), 1);
     }
 }
