@@ -235,7 +235,7 @@ fn daemon_rest_mcp_and_freshness() {
         text.lines()
             .next()
             .unwrap()
-            .starts_with("core/src/m3.rs:2  pub fn helper_3(x: u64) -> u64  — Module 3 helper"),
+            .starts_with("core/src/m3.rs:2-2  pub fn helper_3(x: u64) -> u64  — Module 3 helper"),
         "{text}"
     );
     let out = mcp.request("tools/call", json!({ "name": "status", "arguments": {} }));

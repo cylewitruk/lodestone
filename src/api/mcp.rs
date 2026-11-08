@@ -17,7 +17,7 @@ use serde_json::{Map, Value, json};
 use super::types::{DEFAULT_TOP_K, SearchRequest};
 use crate::registry::Engine;
 
-pub const SEARCH_DESCRIPTION: &str = "Find existing code by what it does. Describe the behaviour in plain words (not a guessed name); returns matching functions, types and macros as 'path:line kind name(signature) — doc'. Use before writing any helper.";
+pub const SEARCH_DESCRIPTION: &str = "Find existing code by what it does. Describe the behaviour in plain words (not a guessed name); returns matching functions, types and macros as 'path:start-end kind name(signature) — doc', where start-end is the item's line range. Use before writing any helper.";
 pub const STATUS_DESCRIPTION: &str =
     "Index freshness for a repo: files indexed, pending changes, model, last update.";
 

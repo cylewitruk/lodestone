@@ -410,6 +410,7 @@ impl Engine {
                 SearchResult {
                     path: it.rel_path.clone(),
                     line: it.line_start,
+                    line_end: it.line_end,
                     kind: it.kind.clone(),
                     name: it.name.clone(),
                     qualified_name: it.qualified_name.clone(),

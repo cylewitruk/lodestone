@@ -190,6 +190,29 @@ fn index_and_search_mixed_repo() {
         "{:?}",
         resp.results
     );
+
+    // Results carry the definition's full line range, in JSON and in the text line.
+    let find = |q: &str, name: &str| {
+        search(&e, &root, q)
+            .results
+            .into_iter()
+            .find(|r| r.name == name)
+            .unwrap()
+    };
+    let copy = find("copy a directory tree recursively", "copy_dir_all");
+    assert_eq!((copy.line, copy.line_end), (5, 5));
+    assert!(
+        copy.text.starts_with("core/src/lib.rs:5-5  "),
+        "{}",
+        copy.text
+    );
+    let report = find("generate the weekly report", "generate_report");
+    assert_eq!((report.line, report.line_end), (1, 3));
+    assert!(
+        report.text.starts_with("tools/gen.py:1-3  "),
+        "{}",
+        report.text
+    );
 }
 
 /// Invariant 1: queries never index. A search against a missing index returns a stale flag and

@@ -1,5 +1,7 @@
 //! The output format (one line per item). This format is the product; keep it stable:
-//! `rel_path:line  signature — first doc line`, signature ≤ 120 chars, doc ≤ 100.
+//! `rel_path:start-end  signature — first doc line`, signature ≤ 120 chars, doc ≤ 100. The
+//! range is the definition's inclusive 1-based lines (preceding doc comments excluded), so a
+//! caller can read exactly the item.
 
 use std::path::Path;
 
@@ -59,18 +61,11 @@ fn find_word(hay: &str, word: &str) -> Option<usize> {
 }
 
 pub fn line(item: &Item) -> String {
+    let location = format!("{}:{}-{}", item.rel_path, item.line_start, item.line_end);
     let sig = clip(&display_signature(item), SIG_MAX);
-    let doc = item.doc_first_line();
-    if doc.is_empty() {
-        format!("{}:{}  {}", item.rel_path, item.line_start, sig)
-    } else {
-        format!(
-            "{}:{}  {}  — {}",
-            item.rel_path,
-            item.line_start,
-            sig,
-            clip(doc, DOC_MAX)
-        )
+    match item.doc_first_line() {
+        "" => format!("{location}  {sig}"),
+        doc => format!("{location}  {sig}  — {}", clip(doc, DOC_MAX)),
     }
 }
 
@@ -117,7 +112,7 @@ mod tests {
         );
         assert_eq!(
             line(&i),
-            "stacks-common/src/util/retry.rs:19  struct RetryReader<'a, R: Read>  — Wrap a Read so that we store a copy of what was read"
+            "stacks-common/src/util/retry.rs:19-30  struct RetryReader<'a, R: Read>  — Wrap a Read so that we store a copy of what was read"
         );
         let m = item(
             "since",
@@ -127,7 +122,7 @@ mod tests {
         );
         assert_eq!(
             line(&m),
-            "stacks-common/src/util/retry.rs:19  pub fn ClarityVersion::since(v: ClarityVersion)"
+            "stacks-common/src/util/retry.rs:19-30  pub fn ClarityVersion::since(v: ClarityVersion)"
         );
         let long = item(
             "f",

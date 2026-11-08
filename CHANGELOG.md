@@ -333,3 +333,22 @@ Recomputed from the doc-vector experiment's runs (same index per corpus):
 What an agent sees shifts the reading of the reranker: on tantivy it brings three answers into
 view (t04 21→7, t05 29→1, t07 48→7), while on stacks-core most of its MRR gain reorders answers
 already in the top 8 (net +1: q06 43→1, q12 3→9).
+
+## Output — line ranges
+
+Each result line now starts with `path:start-end`, the definition's inclusive line range
+(preceding doc comments excluded), so an agent's second pass can read exactly the item instead
+of guessing a window. JSON results gain `line_end` next to `line`. This deviates from PLAN.md
+§5.4 and the verbatim §6.1 tool description at the user's request: the `search` description now
+says `'path:start-end kind name(signature) — doc', where start-end is the item's line range`.
+
+Range sizes on stacks-core (non-test items) show where reading the whole range is cheap and
+where it is not:
+
+| Kind | Items | Median lines | p95 lines | Max lines |
+| ---- | ---- | ---- | ---- | ---- |
+| method | 8,123 | 7 | 64 | 619 |
+| function | 5,902 | 12 | 91 | 2,075 |
+| impl | 2,445 | 18 | 391 | 6,439 |
+| class | 1,634 | 6 | 45 | 555 |
+| constant | 1,345 | 1 | 24 | 1,026 |

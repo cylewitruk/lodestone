@@ -79,10 +79,12 @@ Claude Code then sees exactly two tools:
   (layer filter from the build graph), `language`, `top_k`, `include_tests`.
 - `status`: index freshness for a repo.
 
-Results are plain text, one line per item:
+Results are plain text, one line per item: `path:start-end`, the signature and the first doc
+line. `start-end` is the definition's inclusive line range (doc comments above it excluded), so
+an agent can read exactly that item:
 
 ```text
-stacks-common/src/util/retry.rs:25  pub struct RetryReader<'a, R: Read>  — Wrap a Read so that we store a copy of what was read.
+stacks-common/src/util/retry.rs:25-29  pub struct RetryReader<'a, R: Read>  — Wrap a Read so that we store a copy of what was read.
 ```
 
 ## REST

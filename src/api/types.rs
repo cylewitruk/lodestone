@@ -39,7 +39,11 @@ pub struct SearchRequest {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct SearchResult {
     pub path: String,
+    /// First line of the definition (1-based).
     pub line: u32,
+    /// Last line of the definition (inclusive).
+    #[serde(default)]
+    pub line_end: u32,
     pub kind: String,
     pub name: String,
     pub qualified_name: String,
@@ -243,6 +247,7 @@ mod tests {
         roundtrip(SearchResult {
             path: "a.rs".into(),
             line: 3,
+            line_end: 9,
             similarity: Some(0.5),
             body: Some("x".into()),
             ..Default::default()
