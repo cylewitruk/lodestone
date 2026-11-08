@@ -108,6 +108,7 @@ batch_size = 64
 cache_max_gb = 4
 chunk_tokens = 200
 vector_precision = "f32"    # f32 | f16
+doc_vectors = false         # also embed each item's doc comment; used only with the reranker
 
 [languages]
 tree_sitter_config = "~/.config/tree-sitter/config.json"

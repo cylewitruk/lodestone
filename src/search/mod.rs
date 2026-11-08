@@ -1,4 +1,4 @@
-//! Hybrid search over one snapshot: kNN + BM25 → reciprocal rank fusion → result-only filters →
+//! Hybrid search over one snapshot: kNN (code and doc vectors) + BM25 → reciprocal rank fusion → result-only filters →
 //! one row per item → optional rerank → top-k. Never touches index state.
 
 pub mod format;
@@ -93,6 +93,7 @@ pub fn search(snap: &Snapshot, lexical: &Lexical, p: &SearchParams) -> anyhow::R
     let mut notes = Vec::new();
     let k = p.config.candidates.max(p.top_k);
     let vector_hits: Vec<(u64, f32)> = match p.query_vector {
+        Some(q) if p.config.vector_weight <= 0.0 && snap.vectors.dim() == q.len() => Vec::new(),
         Some(q) if snap.vectors.dim() == q.len() => snap
             .vectors
             .search(q, k)?
@@ -104,6 +105,15 @@ pub fn search(snap: &Snapshot, lexical: &Lexical, p: &SearchParams) -> anyhow::R
             Vec::new()
         }
         None => Vec::new(),
+    };
+    let doc_hits: Vec<(u64, f32)> = match p.query_vector {
+        Some(q) if p.config.doc_weight > 0.0 && snap.doc_vectors.dim() == q.len() => snap
+            .doc_vectors
+            .search(q, k)?
+            .into_iter()
+            .filter(|(id, _)| snap.items.contains_key(id))
+            .collect(),
+        _ => Vec::new(),
     };
     let mut sentence_hits: Vec<Vec<(u64, f32)>> = Vec::new();
     for v in p
@@ -119,23 +129,36 @@ pub fn search(snap: &Snapshot, lexical: &Lexical, p: &SearchParams) -> anyhow::R
                 .collect(),
         );
     }
-    let lexical_hits: Vec<(u64, f32)> = lexical
-        .search(&snap.searcher, p.query, k)?
-        .into_iter()
-        .filter(|(id, _)| snap.items.contains_key(id))
-        .collect();
     let idents = identifier_tokens(p.query);
     let lex_weight = if idents.is_empty() {
         p.config.lexical_weight
     } else {
         p.config.identifier_lexical_weight
     };
+    // A list weighted 0 contributes no candidates at all.
+    let lexical_hits: Vec<(u64, f32)> = if lex_weight > 0.0 {
+        lexical
+            .search(&snap.searcher, p.query, k)?
+            .into_iter()
+            .filter(|(id, _)| snap.items.contains_key(id))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let mut fused: HashMap<u64, (f32, Option<f32>)> = HashMap::new();
-    for (rank, (id, sim)) in vector_hits.iter().enumerate() {
-        let e = fused.entry(*id).or_insert((0.0, None));
-        e.0 += p.config.vector_weight / (p.config.rrf_k + rank as f32 + 1.0);
-        e.1 = Some(e.1.map_or(*sim, |s: f32| s.max(*sim)));
+    for (hits, weight) in [
+        (&vector_hits, p.config.vector_weight),
+        (&doc_hits, p.config.doc_weight),
+    ] {
+        if weight <= 0.0 {
+            continue;
+        }
+        for (rank, (id, sim)) in hits.iter().enumerate() {
+            let e = fused.entry(*id).or_insert((0.0, None));
+            e.0 += weight / (p.config.rrf_k + rank as f32 + 1.0);
+            e.1 = Some(e.1.map_or(*sim, |s: f32| s.max(*sim)));
+        }
     }
     for hits in &sentence_hits {
         for (rank, (id, _)) in hits.iter().enumerate() {

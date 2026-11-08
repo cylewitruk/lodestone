@@ -40,6 +40,12 @@ pub struct Item {
 }
 
 impl Item {
+    /// Text of the item's doc vector: header plus doc comment; `None` when undocumented.
+    pub fn doc_text(&self) -> Option<String> {
+        let doc = self.doc.trim();
+        (!doc.is_empty()).then(|| format!("{} {}\n{doc}", self.kind, self.qualified_name))
+    }
+
     pub fn doc_first_line(&self) -> &str {
         self.doc
             .lines()
@@ -605,6 +611,20 @@ async fn async_test() {}
         assert_eq!(bar.kind, "method");
         assert_eq!(bar.doc, "Do bar.");
         assert!(items.iter().find(|i| i.name == "test_x").unwrap().is_test);
+    }
+
+    #[test]
+    fn doc_text_is_header_and_doc() {
+        let items = chunker().chunk(
+            "a.rs",
+            b"/// Copy a tree.\npub fn copy_tree() {}\nfn bare() {}\n",
+        );
+        let find = |n: &str| items.iter().find(|i| i.name == n).unwrap();
+        assert_eq!(
+            find("copy_tree").doc_text().as_deref(),
+            Some("function copy_tree\nCopy a tree.")
+        );
+        assert_eq!(find("bare").doc_text(), None);
     }
 
     #[test]

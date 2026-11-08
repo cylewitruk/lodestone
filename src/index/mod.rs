@@ -18,7 +18,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use tantivy::{IndexWriter, Searcher};
 
-use crate::cache::{EmbeddingCache, cache_key};
+use crate::cache::{CacheKey, EmbeddingCache, cache_key};
 use crate::chunk::Chunker;
 use crate::config::{Config, Precision};
 use crate::embed::{Embedder, InputKind};
@@ -34,6 +34,8 @@ const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const FILES_PER_BATCH: usize = 128;
 /// Texts per embedding call (progress granularity).
 const EMBED_GROUP: usize = 512;
+const VECTORS_FILE: &str = "vectors.usearch";
+const DOC_VECTORS_FILE: &str = "doc-vectors.usearch";
 
 /// Worktree id: `blake3(canonical_root)`.
 pub fn worktree_id(canonical_root: &Path) -> String {
@@ -52,6 +54,8 @@ pub struct IndexContext {
 pub struct Snapshot {
     pub items: Arc<HashMap<u64, Arc<ItemRow>>>,
     pub vectors: Arc<VectorIndex>,
+    /// Doc-comment vectors keyed by item id; empty unless `doc_vectors` is on.
+    pub doc_vectors: Arc<VectorIndex>,
     pub searcher: Searcher,
     pub graph: Arc<ProjectGraph>,
     pub model_id: String,
@@ -105,6 +109,7 @@ pub struct WorktreeIndex {
     model_id: String,
     dim: usize,
     precision: Precision,
+    doc_vectors: bool,
     lexical: Lexical,
     snapshot: ArcSwap<Snapshot>,
     writer: tokio::sync::Mutex<Option<WriterState>>,
@@ -190,15 +195,17 @@ impl WorktreeIndex {
             .as_ref()
             .map(|m| m.model_id.clone())
             .unwrap_or_default();
-        let vectors = if index_model.is_empty() || index_model == model_id {
-            VectorIndex::load(&dir.join("vectors.usearch"), dim, precision)?
-        } else {
-            None
+        let same_model = index_model.is_empty() || index_model == model_id;
+        let load = |file: &str, enabled: bool| -> anyhow::Result<VectorIndex> {
+            let loaded = if enabled && same_model {
+                VectorIndex::load(&dir.join(file), dim, precision)?
+            } else {
+                None
+            };
+            loaded.map_or_else(|| VectorIndex::new(dim, precision), Ok)
         };
-        let vectors = match vectors {
-            Some(v) => v,
-            None => VectorIndex::new(dim, precision)?,
-        };
+        let vectors = load(VECTORS_FILE, true)?;
+        let doc_vectors = load(DOC_VECTORS_FILE, config.doc_vectors)?;
         match &manifest {
             None => stale.push("not indexed yet; run `lode index` or `lode register`".to_string()),
             Some(m) if m.model_id != model_id => stale.push(format!(
@@ -207,7 +214,15 @@ impl WorktreeIndex {
             )),
             _ => {}
         }
-        let missing = rows.iter().filter(|r| !vectors.contains(r.id)).count();
+        let missing = rows
+            .iter()
+            .filter(|r| {
+                !vectors.contains(r.id)
+                    || config.doc_vectors
+                        && !r.item.doc.trim().is_empty()
+                        && !doc_vectors.contains(r.id)
+            })
+            .count();
         if missing > 0 && index_model == model_id {
             stale.push(format!(
                 "{missing} items have no vector yet (repaired on next index)"
@@ -229,6 +244,7 @@ impl WorktreeIndex {
         let snap = Snapshot {
             items: Arc::new(rows.into_iter().map(|r| (r.id, Arc::new(r))).collect()),
             vectors: Arc::new(vectors),
+            doc_vectors: Arc::new(doc_vectors),
             searcher,
             graph: Arc::new(graph),
             model_id: if index_model.is_empty() {
@@ -248,6 +264,7 @@ impl WorktreeIndex {
             model_id: model_id.to_string(),
             dim,
             precision,
+            doc_vectors: config.doc_vectors,
             lexical,
             snapshot: ArcSwap::from_pointee(snap),
             writer: tokio::sync::Mutex::new(None),
@@ -299,6 +316,7 @@ impl WorktreeIndex {
                 &cur,
                 cur.items.clone(),
                 cur.vectors.clone(),
+                cur.doc_vectors.clone(),
                 cur.searcher.clone(),
                 cur.graph.clone(),
                 cur.files_indexed,
@@ -314,6 +332,7 @@ impl WorktreeIndex {
         cur: &Snapshot,
         items: Arc<HashMap<u64, Arc<ItemRow>>>,
         vectors: Arc<VectorIndex>,
+        doc_vectors: Arc<VectorIndex>,
         searcher: Searcher,
         graph: Arc<ProjectGraph>,
         files_indexed: usize,
@@ -323,6 +342,7 @@ impl WorktreeIndex {
         self.snapshot.store(Arc::new(Snapshot {
             items,
             vectors,
+            doc_vectors,
             searcher,
             graph,
             model_id: self.model_id.clone(),
@@ -389,26 +409,22 @@ impl WorktreeIndex {
     fn repair(&self, st: &mut WriterState, ctx: &IndexContext) -> anyhow::Result<()> {
         let snap = self.snapshot();
         let mut vectors = snap.vectors.duplicate()?;
-        let missing: Vec<&Arc<ItemRow>> = snap
+        let mut doc_vectors = snap.doc_vectors.duplicate()?;
+        let mut drop_paths: HashSet<String> = HashSet::new();
+        let code_missing: Vec<(&ItemRow, CacheKey)> = snap
             .items
             .values()
             .filter(|r| !vectors.contains(r.id))
+            .map(|r| (r.as_ref(), r.chunk_key))
             .collect();
-        let mut drop_paths: HashSet<String> = HashSet::new();
-        if !missing.is_empty() {
-            let keys: Vec<_> = missing.iter().map(|r| r.chunk_key).collect();
-            let cached = ctx.cache.get_many(&keys)?;
-            let mut add = Vec::new();
-            for r in &missing {
-                match cached.get(&r.chunk_key) {
-                    Some(v) if v.len() == self.dim => add.push((r.id, v.as_slice())),
-                    _ => {
-                        drop_paths.insert(r.item.rel_path.clone());
-                    }
-                }
-            }
-            vectors.add_many(&add)?;
-        }
+        self.restore_from_cache(ctx, &mut vectors, &code_missing, &mut drop_paths)?;
+        let doc_missing: Vec<(&ItemRow, CacheKey)> = snap
+            .items
+            .values()
+            .filter(|r| !doc_vectors.contains(r.id))
+            .filter_map(|r| self.doc_entry(r).map(|(k, _)| (r.as_ref(), k)))
+            .collect();
+        self.restore_from_cache(ctx, &mut doc_vectors, &doc_missing, &mut drop_paths)?;
         let searcher = self.lexical.searcher();
         if searcher.num_docs() as usize != snap.items.len() {
             st.writer.delete_all_documents()?;
@@ -423,7 +439,8 @@ impl WorktreeIndex {
             !drop_paths.contains(path) && e.chunk_ids.iter().all(|id| present.contains(id))
         });
         st.manifest.save(&self.dir.join("manifest.json"))?;
-        vectors.save(&self.dir.join("vectors.usearch"))?;
+        vectors.save(&self.dir.join(VECTORS_FILE))?;
+        doc_vectors.save(&self.dir.join(DOC_VECTORS_FILE))?;
         let stale = snap
             .stale
             .iter()
@@ -434,6 +451,7 @@ impl WorktreeIndex {
             &snap,
             snap.items.clone(),
             Arc::new(vectors),
+            Arc::new(doc_vectors),
             self.lexical.searcher(),
             snap.graph.clone(),
             st.manifest.files.len(),
@@ -472,6 +490,7 @@ impl WorktreeIndex {
             self.publish_from(
                 &snap,
                 Arc::new(HashMap::new()),
+                Arc::new(VectorIndex::new(self.dim, self.precision)?),
                 Arc::new(VectorIndex::new(self.dim, self.precision)?),
                 self.lexical.searcher(),
                 snap.graph.clone(),
@@ -574,7 +593,7 @@ impl WorktreeIndex {
         });
 
         if !removed.is_empty() {
-            self.commit_batch(st, &removed, Vec::new(), &[], &graph)?;
+            self.commit_batch(st, &removed, Vec::new(), &[], &[], &graph)?;
             for p in &removed {
                 st.manifest.files.remove(p);
             }
@@ -632,9 +651,24 @@ impl WorktreeIndex {
                     st.next_id += 1;
                 }
             }
-            let vectors = self.vectors_for(ctx, &rows, &mut report)?;
+            let code: Vec<(CacheKey, &str)> = rows
+                .iter()
+                .map(|r| (r.chunk_key, r.item.text.as_str()))
+                .collect();
+            let vectors = self.embed_cached(ctx, &code, &mut report)?;
+            let docs: Vec<(u64, CacheKey, String)> = rows
+                .iter()
+                .filter_map(|r| self.doc_entry(r).map(|(k, t)| (r.id, k, t)))
+                .collect();
+            let doc_entries: Vec<(CacheKey, &str)> =
+                docs.iter().map(|(_, k, t)| (*k, t.as_str())).collect();
+            let doc_vectors: Vec<(u64, Vec<f32>)> = docs
+                .iter()
+                .map(|d| d.0)
+                .zip(self.embed_cached(ctx, &doc_entries, &mut report)?)
+                .collect();
             let paths: Vec<String> = chunked.iter().map(|c| c.0.clone()).collect();
-            self.commit_batch(st, &paths, rows.clone(), &vectors, &graph)?;
+            self.commit_batch(st, &paths, rows.clone(), &vectors, &doc_vectors, &graph)?;
             for (rel, size, mtime, hash, _) in chunked {
                 let ids = rows
                     .iter()
@@ -669,7 +703,8 @@ impl WorktreeIndex {
         st.manifest.save(&self.dir.join("manifest.json"))?;
         let snap = self.snapshot();
         if report.files_changed > 0 || report.files_removed > 0 || !snap.stale.is_empty() {
-            snap.vectors.save(&self.dir.join("vectors.usearch"))?;
+            snap.vectors.save(&self.dir.join(VECTORS_FILE))?;
+            snap.doc_vectors.save(&self.dir.join(DOC_VECTORS_FILE))?;
         }
         let stale = snap
             .stale
@@ -681,6 +716,7 @@ impl WorktreeIndex {
             &snap,
             snap.items.clone(),
             snap.vectors.clone(),
+            snap.doc_vectors.clone(),
             snap.searcher.clone(),
             graph,
             st.manifest.files.len(),
@@ -691,48 +727,83 @@ impl WorktreeIndex {
         Ok(report)
     }
 
-    /// Cache lookups, then embedding for misses (written back to the cache).
-    fn vectors_for(
+    /// The doc vector's cache key and text for `row`, when doc vectors are on and it has a doc.
+    fn doc_entry(&self, row: &ItemRow) -> Option<(CacheKey, String)> {
+        if !self.doc_vectors {
+            return None;
+        }
+        let text = row.item.doc_text()?;
+        Some((cache_key(&self.model_id, &text), text))
+    }
+
+    /// Adds cached vectors for `missing` to `index`; paths whose vector is not cached are
+    /// collected in `drop_paths` so the next pass re-indexes them.
+    fn restore_from_cache(
         &self,
         ctx: &IndexContext,
-        rows: &[ItemRow],
+        index: &mut VectorIndex,
+        missing: &[(&ItemRow, CacheKey)],
+        drop_paths: &mut HashSet<String>,
+    ) -> anyhow::Result<()> {
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let keys: Vec<CacheKey> = missing.iter().map(|(_, k)| *k).collect();
+        let cached = ctx.cache.get_many(&keys)?;
+        let mut add = Vec::new();
+        for (r, k) in missing {
+            match cached.get(k) {
+                Some(v) if v.len() == self.dim => add.push((r.id, v.as_slice())),
+                _ => {
+                    drop_paths.insert(r.item.rel_path.clone());
+                }
+            }
+        }
+        index.add_many(&add)
+    }
+
+    /// Vectors for `(cache key, text)` entries: cache lookups, then embedding for misses
+    /// (written back to the cache).
+    fn embed_cached(
+        &self,
+        ctx: &IndexContext,
+        entries: &[(CacheKey, &str)],
         report: &mut IndexReport,
     ) -> anyhow::Result<Vec<Vec<f32>>> {
-        let keys: Vec<_> = rows.iter().map(|r| r.chunk_key).collect();
+        let keys: Vec<CacheKey> = entries.iter().map(|(k, _)| *k).collect();
         let mut cached = ctx.cache.get_many(&keys)?;
         let mut miss_idx: Vec<usize> = Vec::new();
         let mut seen = HashSet::new();
-        for (i, r) in rows.iter().enumerate() {
-            if !cached.contains_key(&r.chunk_key) && seen.insert(r.chunk_key) {
+        for (i, (k, _)) in entries.iter().enumerate() {
+            if !cached.contains_key(k) && seen.insert(*k) {
                 miss_idx.push(i);
             }
         }
-        let hits = rows.len()
-            - rows
-                .iter()
-                .filter(|r| !cached.contains_key(&r.chunk_key))
-                .count();
+        let hits = entries
+            .iter()
+            .filter(|(k, _)| cached.contains_key(k))
+            .count();
         report.chunks_cached += hits;
         self.set_progress(|p| p.chunks_cached += hits);
         for group in miss_idx.chunks(EMBED_GROUP) {
-            let texts: Vec<&str> = group.iter().map(|&i| rows[i].item.text.as_str()).collect();
+            let texts: Vec<&str> = group.iter().map(|&i| entries[i].1).collect();
             let vecs = ctx.embedder.embed(&texts, InputKind::Document)?;
-            let entries: Vec<_> = group
+            let put: Vec<_> = group
                 .iter()
                 .zip(&vecs)
-                .map(|(&i, v)| (rows[i].chunk_key, v.as_slice()))
+                .map(|(&i, v)| (entries[i].0, v.as_slice()))
                 .collect();
-            ctx.cache.put_many(&self.model_id, &entries)?;
+            ctx.cache.put_many(&self.model_id, &put)?;
             for (&i, v) in group.iter().zip(vecs) {
-                cached.insert(rows[i].chunk_key, v);
+                cached.insert(entries[i].0, v);
             }
             report.chunks_embedded += group.len();
             self.set_progress(|p| p.chunks_embedded += group.len());
         }
-        rows.iter()
-            .map(|r| {
+        keys.iter()
+            .map(|k| {
                 cached
-                    .get(&r.chunk_key)
+                    .get(k)
                     .cloned()
                     .context("vector missing after embedding")
             })
@@ -747,6 +818,7 @@ impl WorktreeIndex {
         paths: &[String],
         rows: Vec<ItemRow>,
         vectors: &[Vec<f32>],
+        doc_vectors: &[(u64, Vec<f32>)],
         graph: &Arc<ProjectGraph>,
     ) -> anyhow::Result<()> {
         let snap = self.snapshot();
@@ -766,6 +838,13 @@ impl WorktreeIndex {
             .map(|(r, v)| (r.id, v.as_slice()))
             .collect();
         vec_index.add_many(&entries)?;
+        let mut doc_index = snap.doc_vectors.duplicate()?;
+        doc_index.remove_many(&old_ids);
+        let doc_entries: Vec<(u64, &[f32])> = doc_vectors
+            .iter()
+            .map(|(id, v)| (*id, v.as_slice()))
+            .collect();
+        doc_index.add_many(&doc_entries)?;
         let mut items = (*snap.items).clone();
         for id in &old_ids {
             items.remove(id);
@@ -778,6 +857,7 @@ impl WorktreeIndex {
             &snap,
             Arc::new(items),
             Arc::new(vec_index),
+            Arc::new(doc_index),
             self.lexical.searcher(),
             graph.clone(),
             st.manifest.files.len(),

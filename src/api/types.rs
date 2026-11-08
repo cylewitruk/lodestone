@@ -104,6 +104,8 @@ pub struct StatusReport {
     pub files_indexed: usize,
     pub items: usize,
     pub vectors: usize,
+    #[serde(default)]
+    pub doc_vectors: usize,
     pub pending_changes: usize,
     pub last_update: u64,
     pub stale: bool,
@@ -127,6 +129,7 @@ impl StatusReport {
             format!("files_indexed: {}", self.files_indexed),
             format!("items: {}", self.items),
             format!("vectors: {}", self.vectors),
+            format!("doc_vectors: {}", self.doc_vectors),
             format!("pending_changes: {}", self.pending_changes),
             format!("last_update: {}", fmt_time(self.last_update)),
             format!("stale: {}", self.stale),

@@ -150,6 +150,10 @@ pub struct SearchConfig {
     pub vector_weight: f32,
     /// Weight of each per-sentence vector list for multi-sentence queries (0 disables).
     pub sentence_weight: f32,
+    /// Weight of the doc-comment vector list (needs `doc_vectors`; 0 disables). Applied only
+    /// while the reranker is on: the doc list widens its candidate pool, but fused without
+    /// it, documented items crowd out better code matches.
+    pub doc_weight: f32,
     /// Weight of the lexical list in fusion; boosted for identifier-like queries.
     pub lexical_weight: f32,
     pub identifier_lexical_weight: f32,
@@ -166,6 +170,7 @@ impl Default for SearchConfig {
             rrf_k: 60.0,
             vector_weight: 1.0,
             sentence_weight: 0.0,
+            doc_weight: 1.0,
             lexical_weight: 0.0,
             identifier_lexical_weight: 0.0,
             exact_identifier_first: false,
@@ -206,6 +211,8 @@ pub struct Config {
     pub summary_chunks: bool,
     /// Emit a file-level `module` item per tagged file (index-time).
     pub module_chunks: bool,
+    /// Embed each documented item's header + doc comment as a second vector (index-time).
+    pub doc_vectors: bool,
     /// Lexical tokenizer (index-time; switching rebuilds the lexical index from items).
     pub lexical_tokenizer: crate::index::TokenizerKind,
     pub languages: LanguagesConfig,
@@ -232,6 +239,7 @@ impl Default for Config {
             chunk_tokens: 200,
             vector_precision: Precision::F32,
             module_chunks: false,
+            doc_vectors: false,
             summary_chunks: false,
             lexical_tokenizer: crate::index::TokenizerKind::Code,
             languages: LanguagesConfig::default(),

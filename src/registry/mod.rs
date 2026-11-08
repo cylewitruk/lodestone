@@ -360,6 +360,11 @@ impl Engine {
             include_tests: req.include_tests,
         };
         let top_k = req.top_k.clamp(1, 50);
+        let reranker = self.reranker();
+        let mut search_config = self.config.search.clone();
+        if reranker.is_none() {
+            search_config.doc_weight = 0.0;
+        }
         let mut outcome = search::search(
             &snap,
             w.lexical(),
@@ -369,10 +374,10 @@ impl Engine {
                 sentence_vectors: &sentence_vecs,
                 filters: &filters,
                 top_k,
-                config: &self.config.search,
+                config: &search_config,
             },
         )?;
-        if let Some(rr) = self.reranker() {
+        if let Some(rr) = reranker {
             let n = self.config.rerank.candidates.min(outcome.hits.len());
             if n > 1 {
                 let docs: Vec<String> = outcome.hits[..n]
@@ -463,6 +468,7 @@ impl Engine {
             files_indexed: snap.files_indexed,
             items: snap.items.len(),
             vectors: snap.vectors.len(),
+            doc_vectors: snap.doc_vectors.len(),
             pending_changes: pending,
             last_update: snap.updated_at,
             stale: !stale_reasons.is_empty(),

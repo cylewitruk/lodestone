@@ -7,10 +7,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use lodestone::api::types::SearchRequest;
-use lodestone::config::Config;
+use lodestone::config::{Config, SearchConfig};
 use lodestone::embed::{Embedder, HashEmbedder, InputKind};
 use lodestone::index::{IndexOptions, worktree_id};
 use lodestone::registry::Engine;
+use lodestone::search::{Filters, SearchParams};
 use lodestone::testutil::tempdir;
 
 fn write(root: &Path, rel: &str, text: &str) {
@@ -458,4 +459,122 @@ fn chunking_settings_change_rechunks() {
     assert!(w.snapshot().items.values().any(|i| i.item.kind == "module"));
     let again = e.index_blocking(&w, IndexOptions::default()).unwrap();
     assert_eq!(again.files_changed, 0);
+}
+
+fn hash_embedder() -> HashEmbedder {
+    HashEmbedder {
+        dim: 64,
+        id: "test/hash".into(),
+        delay_ms: 0,
+    }
+}
+
+fn doc_engine(data: &Path, doc_vectors: bool) -> Engine {
+    let mut config = Config {
+        data_dir: Some(data.to_path_buf()),
+        doc_vectors,
+        ..Config::default()
+    };
+    config.rerank.enabled = false;
+    Engine::with_embedder(config, Arc::new(hash_embedder())).unwrap()
+}
+
+/// Names ranked by the doc-vector list alone (code-vector weight 0).
+fn doc_only_names(w: &lodestone::index::WorktreeIndex, query: &str) -> Vec<String> {
+    let q = hash_embedder()
+        .embed(&[query], InputKind::Query)
+        .unwrap()
+        .remove(0);
+    let config = SearchConfig {
+        vector_weight: 0.0,
+        doc_weight: 1.0,
+        ..SearchConfig::default()
+    };
+    let snap = w.snapshot();
+    let out = lodestone::search::search(
+        &snap,
+        w.lexical(),
+        &SearchParams {
+            query,
+            query_vector: Some(&q),
+            sentence_vectors: &[],
+            filters: &Filters::default(),
+            top_k: 8,
+            config: &config,
+        },
+    )
+    .unwrap();
+    out.hits.iter().map(|h| h.row.item.name.clone()).collect()
+}
+
+/// Doc vectors exist exactly for documented items: turning the setting on fills them on the
+/// next index, edits replace them, search fuses the doc list, and the engine ignores it while
+/// the reranker is off.
+#[test]
+fn doc_vectors_follow_documented_items() {
+    let root = fixture();
+    let data = tempdir();
+    let e = doc_engine(&data, false);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert!(w.snapshot().doc_vectors.is_empty());
+    drop((e, w));
+
+    let e = doc_engine(&data, true);
+    let w = e.register(&root).unwrap();
+    let r = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert!(r.chunks_embedded > 0, "{r:?}");
+    let check = |w: &lodestone::index::WorktreeIndex| {
+        let snap = w.snapshot();
+        let documented: Vec<u64> = snap
+            .items
+            .values()
+            .filter(|r| r.item.doc_text().is_some())
+            .map(|r| r.id)
+            .collect();
+        assert!(!documented.is_empty());
+        assert_eq!(snap.doc_vectors.len(), documented.len());
+        assert!(documented.iter().all(|id| snap.doc_vectors.contains(*id)));
+    };
+    check(&w);
+    let again = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert_eq!((again.files_changed, again.chunks_embedded), (0, 0));
+
+    let names = doc_only_names(&w, "copy a directory tree recursively");
+    assert_eq!(names[0], "copy_dir_all");
+    assert!(!names.iter().any(|n| n == "main"));
+    // Without a reranker the engine searches code vectors only, so undocumented items match.
+    assert!(
+        search(&e, &root, "fn main")
+            .results
+            .iter()
+            .any(|r| r.name == "main")
+    );
+
+    write(
+        &root,
+        "core/src/lib.rs",
+        "pub fn undocumented_helper() {}\n",
+    );
+    e.index_blocking(
+        &w,
+        IndexOptions {
+            force: false,
+            paths: Some(vec!["core/src/lib.rs".into()]),
+        },
+    )
+    .unwrap();
+    check(&w);
+    assert!(
+        !doc_only_names(&w, "copy a directory tree recursively")
+            .iter()
+            .any(|n| n == "copy_dir_all")
+    );
+    drop((e, w));
+
+    // Reopening loads the persisted doc index.
+    let e = doc_engine(&data, true);
+    let w = e.register(&root).unwrap();
+    check(&w);
+    assert!(!w.snapshot().stale.iter().any(|s| s.contains("no vector")));
 }

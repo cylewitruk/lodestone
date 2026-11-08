@@ -263,3 +263,49 @@ Total spend: $2.24 (rerank on), $1.99 (rerank off), $2.39 (baseline rule).
   do not reduce total calls. On this evidence the reranker does not pay for itself in agent
   work; it remains the default only because that was the user's call, and turning it off is a
   one-line config change (`[rerank] enabled = false`).
+
+## Experiment — Doc-comment vectors
+
+`doc_vectors = true` embeds each documented item's `<kind> <qualified name>\n<doc>` as a
+second vector in `doc-vectors.usearch`, keyed by item id and cached like code vectors. Search
+fuses the doc list into RRF at `[search] doc_weight`, but only while the reranker is on.
+Turning the setting on for an existing index fills the doc vectors on the next index (code
+vectors come from the cache). Zero-weighted fusion lists now add no candidates, which also
+skips the unused BM25 query on every search.
+
+Measured on one index per corpus, so the baseline is the same index with `doc_weight = 0`:
+
+| Corpus | Reranker | Fusion | rank@5 | MRR | Identifier top-1 |
+| ---- | ---- | ---- | ---- | ---- | ---- |
+| stacks-core | off | none (baseline) | 0.700 | 0.538 | 0.833 |
+| stacks-core | off | sum, w 1.0 | 0.450 | 0.374 | 0.567 |
+| stacks-core | off | sum, w 0.5 | 0.450 | 0.402 | 0.567 |
+| stacks-core | off | best rank, w 1.0 | 0.650 | 0.520 | 0.667 |
+| stacks-core | on | none (baseline) | 0.750 | 0.618 | 0.967 |
+| **stacks-core** | **on** | **sum, w 1.0** | **0.800** | **0.643** | **1.000** |
+| stacks-core | on | best rank, w 1.0 | 0.750 | 0.618 | 1.000 |
+| tantivy | off | none (baseline) | 0.583 | 0.452 | 1.000 |
+| tantivy | off | sum, w 1.0 | 0.583 | 0.572 | 0.917 |
+| tantivy | off | best rank, w 1.0 | 0.583 | 0.467 | 1.000 |
+| tantivy | on | none (baseline) | 0.667 | 0.601 | 1.000 |
+| tantivy | on | sum, w 1.0 | 0.667 | 0.596 | 1.000 |
+| tantivy | on | best rank, w 1.0 | 0.667 | 0.590 | 1.000 |
+
+| Cost | stacks-core | tantivy |
+| ---- | ---- | ---- |
+| Documented items embedded | 8,929 of 27,418 (+33%) | 2,243 of 8,724 (+26%) |
+| Enabling on a cached index | 62.5 s | 16.5 s |
+| `doc-vectors.usearch` | 29 MB (vs 88 MB code) | 7 MB (vs 29 MB) |
+| Search p50, reranker on | +33 ms (1,023 vs 989 ms) | +9 ms |
+
+### Decisions
+
+- **Summed fusion, applied only with the reranker.** Without the reranker, summing lets any
+  documented item ranked mid-list in both lists beat an undocumented item that code ranks
+  first (q05, q15, q19 fall from rank 1 to the 20s). With the reranker, the doc list instead
+  widens its 50-candidate pool, and the reranker sorts it out. Best-rank fusion (each item
+  scored by its better list) never hurt, but never helped either.
+- **Off by default.** The gain is one question per corpus: stacks-core q17 goes from unranked
+  to rank 2, and it is one of the four questions no earlier configuration retrieved. On
+  tantivy, t06 goes from unranked to 16 while t12 drops out of the top 50, a net zero. That
+  does not clear the Phase 3 bar for a default change, given +26–33% embeddings at index time.
