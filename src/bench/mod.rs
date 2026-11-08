@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use anyhow::ensure;
 use serde::{Deserialize, Serialize};
 
 use crate::api::types::{DEFAULT_TOP_K, SearchRequest};
@@ -123,9 +124,17 @@ pub fn run(engine: &Engine, opts: &BenchOptions) -> anyhow::Result<BenchReport> 
         include_tests: opts.include_tests,
         ..SearchRequest::default()
     };
-    // Warm-up pass loads the model and pages in the index.
+    // Warm-up pass loads the model and pages in the index. A degraded search (stale index,
+    // reranker or embedder unavailable) would still produce plausible numbers, so it fails here.
     for q in &questions {
-        engine.search(&req(q))?;
+        let resp = engine.search(&req(q))?;
+        ensure!(
+            resp.notes.is_empty() && !resp.stale,
+            "degraded search for {}: notes {:?}, stale {:?}",
+            q.id,
+            resp.notes,
+            resp.stale_reasons
+        );
     }
     let mut latencies = Vec::new();
     for q in &questions {
