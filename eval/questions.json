@@ -473,5 +473,581 @@
       "fn \\w*duration\\w*\\("
     ],
     "note": "Config uses integer *_secs/*_ms fields; only a private fmt_duration formatter exists in stacks-marf."
+  },
+  {
+    "id": "sa01",
+    "kind": "easy",
+    "question": "In a unit test that drives a network loop, I want to run the test body on its own thread and fail the test if it hasn't completed within a given number of seconds, so a hang doesn't block CI forever. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/util_lib/mod.rs",
+        "symbol": "with_timeout"
+      }
+    ]
+  },
+  {
+    "id": "sa02",
+    "kind": "mismatch",
+    "question": "I'm sizing a probabilistic set-membership structure: given the false-positive probability I can tolerate and how many elements I expect to insert, I need how many bit slots to allocate and how many independent digest functions to apply. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/util_lib/bloom.rs",
+        "symbol": "bloom_hash_count"
+      }
+    ]
+  },
+  {
+    "id": "sa03",
+    "kind": "easy",
+    "question": "When building an error reply in the node's HTTP layer I need the standard reason phrase for a numeric status code, e.g. 404 -> 'Not Found', 503 -> 'Service Unavailable'. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/net/http/error.rs",
+        "symbol": "http_reason"
+      }
+    ]
+  },
+  {
+    "id": "sa04",
+    "kind": "mismatch",
+    "question": "An RPC route receives the raw target from the HTTP start line, like '/v2/accounts/SP%20X?proof=0'. I need the route part percent-decoded and returned separately from the ?-parameters. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/net/httpcore.rs",
+        "symbol": "decode_request_path"
+      }
+    ]
+  },
+  {
+    "id": "sa05",
+    "kind": "mismatch",
+    "question": "From an event-observer style client I want to make one blocking call to a REST endpoint at a host and port with a timeout and get the decoded reply back, trying every address the hostname resolves to because 'localhost' may come back as ::1 first while the server only listens on IPv4. No retries. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/net/httpcore.rs",
+        "symbol": "send_http_request"
+      }
+    ]
+  },
+  {
+    "id": "sa06",
+    "kind": "mismatch",
+    "question": "For peer diversity I need to classify a remote peer's IP address into the autonomous-system number of the network operator that owns it, using the prefix table loaded into the peer database. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/net/db.rs",
+        "symbol": "asn_lookup"
+      },
+      {
+        "path": "stackslib/src/net/db.rs",
+        "symbol": "asn4_lookup"
+      }
+    ]
+  },
+  {
+    "id": "sa07",
+    "kind": "mismatch",
+    "question": "I want to export a 256-bit unsigned integer as a Prometheus gauge, expressed as a share of the type's maximum value scaled to 0-100, as a float with a configurable number of decimal digits. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/monitoring/mod.rs",
+        "symbol": "convert_uint256_to_f64_percentage"
+      }
+    ]
+  },
+  {
+    "id": "sa08",
+    "kind": "mismatch",
+    "question": "I'm adding a new RPC endpoint and want each call to it to bump the total-calls counter and record its latency in a per-route histogram when the metrics feature is compiled in, by wrapping my endpoint closure. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/monitoring/mod.rs",
+        "symbol": "instrument_http_request_handler"
+      }
+    ]
+  },
+  {
+    "id": "sa09",
+    "kind": "mismatch",
+    "question": "While syncing pending transactions from a peer, the response body is just transactions concatenated back to back with no count prefix, optionally followed by a 32-byte cursor for the next page. I need to parse out both the transactions and the cursor. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/core/mempool.rs",
+        "symbol": "decode_tx_stream"
+      },
+      {
+        "path": "stackslib/src/net/api/postmempoolquery.rs",
+        "symbol": "decode_mempool_txs_page"
+      }
+    ]
+  },
+  {
+    "id": "sa10",
+    "kind": "mismatch",
+    "question": "I want to gate a misbehaviour code path behind an environment variable set to '1', but only when running under the bitcoind integration-test harness so it can never trigger in production. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/core/mod.rs",
+        "symbol": "check_fault_injection"
+      }
+    ]
+  },
+  {
+    "id": "sa11",
+    "kind": "mismatch",
+    "question": "A test needs a specific pending transaction to exist without going through admission checks: write serialized transaction bytes with a given origin, nonce and fee straight into the pending-pool SQLite table. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/core/test_util.rs",
+        "symbol": "insert_tx_in_mempool"
+      }
+    ]
+  },
+  {
+    "id": "sa12",
+    "kind": "mismatch",
+    "question": "Given a 32-byte random seed, I need to pick a pair of distinct indices from 0..n reproducibly, so every node with the same seed selects the same pair. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/chainstate/burn/mod.rs",
+        "symbol": "choose_two"
+      }
+    ]
+  },
+  {
+    "id": "sa13",
+    "kind": "mismatch",
+    "question": "During block validation I want to reject a block if the same txid appears at more than one position in it, logging both positions. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/chainstate/stacks/block.rs",
+        "symbol": "validate_transactions_unique"
+      }
+    ]
+  },
+  {
+    "id": "sa14",
+    "kind": "easy",
+    "question": "I'm building Taproot outputs and need the BIP-340 tagged hash: SHA-256 over the tag's SHA-256 written twice followed by the message bytes. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/chainstate/stacks/sbtc.rs",
+        "symbol": "tagged_hash"
+      }
+    ]
+  },
+  {
+    "id": "sa15",
+    "kind": "mismatch",
+    "question": "In a test I combine a base directory with a file location that might start with '/'; I want it appended under the base anyway instead of the std join replacing everything with the absolute location, and I want a String back. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/chainstate/stacks/tests/mod.rs",
+        "symbol": "path_join"
+      }
+    ]
+  },
+  {
+    "id": "sa16",
+    "kind": "mismatch",
+    "question": "I'm walking a sequence of Copy values and want each item paired with the one before it, with nothing as the predecessor of the first item, as a lazy iterator adapter. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/chainstate/nakamoto/mod.rs",
+        "symbol": "with_prev"
+      }
+    ]
+  },
+  {
+    "id": "sa17",
+    "kind": "easy",
+    "question": "For a database migration test I need a randomly named .sqlite file path under the OS temp directory (just the path; I'll open the connection myself). Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/chainstate/stacks/db/mod.rs",
+        "symbol": "tmp_db_path"
+      },
+      {
+        "path": "stackslib/src/burnchains/tests/db.rs",
+        "symbol": "tmp_db_path"
+      },
+      {
+        "path": "stacks-signer/src/signerdb.rs",
+        "symbol": "tmp_db_path"
+      }
+    ]
+  },
+  {
+    "id": "sa18",
+    "kind": "mismatch",
+    "question": "Inside an open Clarity block, I want to run one closure while metering its execution against a different limit accountant, then swap the original back and get both the closure's result and the accountant it used. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/chainstate/stacks/db/mod.rs",
+        "symbol": "with_temporary_cost_tracker"
+      }
+    ]
+  },
+  {
+    "id": "sa19",
+    "kind": "mismatch",
+    "question": "To produce a fee estimate I need low/middle/high (5th, 50th, 95th percentile) per-unit prices from an already-ordered list of recent transactions, where each one counts in proportion to how much block space it consumed. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/cost_estimates/fee_medians.rs",
+        "symbol": "fee_rate_estimate_from_sorted_weighted_fees"
+      }
+    ]
+  },
+  {
+    "id": "sa20",
+    "kind": "mismatch",
+    "question": "When one of my background workers (which return Result<T, E>) finishes, I want its outcome collected as a single Result: the value, the worker's own error logged as a warning under the worker's name, or a dedicated error if it panicked. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/burnchains/burnchain.rs",
+        "symbol": "handle_thread_join"
+      }
+    ]
+  },
+  {
+    "id": "sa21",
+    "kind": "mismatch",
+    "question": "For miner logging I want to turn the current block-commit spend breakdown (each candidate's slice of the 256-bit range) into a map from each miner's sender address to its chance of winning as a float. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/config/chain_data.rs",
+        "symbol": "burn_dist_to_prob_dist"
+      }
+    ]
+  },
+  {
+    "id": "sa22",
+    "kind": "mismatch",
+    "question": "My struct keeps a connection handle in an Option field. I want a shorthand that takes it out, passes it to a closure that hands back (handle, result), puts the handle back, and panics with a message if the handle was already missing. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stackslib/src/clarity_vm/clarity.rs",
+        "symbol": "using"
+      }
+    ]
+  },
+  {
+    "id": "sa23",
+    "kind": "negative",
+    "question": "I want the node's RPC server to gzip-compress large JSON response bodies when the client's Accept-Encoding header allows it. Is there already something in this repo for that?",
+    "answers": []
+  },
+  {
+    "id": "sa24",
+    "kind": "negative",
+    "question": "I need to parse a BIP-21 'bitcoin:' payment URI into its address, amount and label/message query parameters. Is there already something in this repo for that?",
+    "answers": []
+  },
+  {
+    "id": "sa25",
+    "kind": "negative",
+    "question": "In a CLI tool I want to turn a 24-word BIP-39 recovery phrase into a Stacks private key by deriving it along an HD wallet path. Is there already something in this repo for that?",
+    "answers": []
+  },
+  {
+    "id": "sb01",
+    "kind": "mismatch",
+    "question": "I'm decoding a message straight off a socket and don't trust the peer. I want to wrap the std::io::Read so it hands out at most N bytes total, behaving as end-of-stream after that, and lets me ask afterwards how many bytes were actually pulled through. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-common/src/util/retry.rs",
+        "symbol": "BoundReader"
+      }
+    ]
+  },
+  {
+    "id": "sb02",
+    "kind": "mismatch",
+    "question": "When a rusqlite connection hits a locked database I want a callback that sleeps a randomized, growing delay before trying again, and that starts logging loudly with a backtrace once it has waited long enough that it's probably a deadlock. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-common/src/util/db.rs",
+        "symbol": "tx_busy_handler"
+      }
+    ]
+  },
+  {
+    "id": "sb03",
+    "kind": "easy",
+    "question": "Before running a migration I need to check whether a table with a given name already exists in a SQLite database connection. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-common/src/util/db.rs",
+        "symbol": "table_exists"
+      }
+    ]
+  },
+  {
+    "id": "sb04",
+    "kind": "mismatch",
+    "question": "I want to walk any iterator two items at a time, yielding (a, b), (c, d), ... as tuples, and then recover the single leftover element if the count was odd. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-common/src/util/pair.rs",
+        "symbol": "Pair"
+      },
+      {
+        "path": "stacks-common/src/util/pair.rs",
+        "symbol": "Pairable"
+      }
+    ]
+  },
+  {
+    "id": "sb05",
+    "kind": "mismatch",
+    "question": "While deserializing a wire message I need to read a u32-count-prefixed sequence of items, but reject it outright if the declared count is above a limit I pass in, so a malicious peer can't make us allocate a huge vector. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-common/src/codec/mod.rs",
+        "symbol": "read_next_at_most"
+      }
+    ]
+  },
+  {
+    "id": "sb06",
+    "kind": "mismatch",
+    "question": "I want to declare a unit-variant enum where every variant is tied to a fixed string label, and automatically get string-to-variant parsing, the label back as a &'static str, a Display impl, and constant arrays of all variants and all labels. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-common/src/util/macros.rs",
+        "symbol": "define_named_enum"
+      }
+    ]
+  },
+  {
+    "id": "sb07",
+    "kind": "mismatch",
+    "question": "I need an in-memory cache whose budget is the summed size of what it holds (each insert says how heavy the entry is), that throws out the oldest-inserted entries to make room, doesn't reorder on reads, refuses entries bigger than the whole budget, and keeps hit/miss counters. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "clarity/src/vm/database/caching/weight_limited_fifo.rs",
+        "symbol": "WeightLimitedFifo"
+      }
+    ]
+  },
+  {
+    "id": "sb08",
+    "kind": "mismatch",
+    "question": "In a Clarity VM test I've recorded the nested tree of function invocations made while a contract ran. I want them as one flat list in depth-first order, each parent before its children, so I can index into it. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "clarity/src/vm/hooks/testing/mod.rs",
+        "symbol": "flatten_calls"
+      }
+    ]
+  },
+  {
+    "id": "sb09",
+    "kind": "mismatch",
+    "question": "In a Clarity unit test I evaluate a snippet and want a quick boolean check that the result is a failed response wrapping one specific numeric code, e.g. (err u101). Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "clarity/src/vm/test_util/mod.rs",
+        "symbol": "is_err_code"
+      },
+      {
+        "path": "clarity/src/vm/test_util/mod.rs",
+        "symbol": "is_err_code_i128"
+      }
+    ]
+  },
+  {
+    "id": "sb10",
+    "kind": "mismatch",
+    "question": "Values stored by older nodes can carry extra tuple fields that newer epochs reject. Given a Clarity value, the type it is supposed to have, and the current epoch, I need to recursively strip the surplus fields through lists, optionals and responses, and learn whether anything had to change. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "clarity-types/src/types/serialization.rs",
+        "symbol": "sanitize_value"
+      }
+    ]
+  },
+  {
+    "id": "sb11",
+    "kind": "easy",
+    "question": "In an integration test I want to wait for a condition: call a closure every half second until it returns true, stop immediately if it returns an error, and give up with an error after a timeout in seconds. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-node/src/tests/nakamoto_integrations.rs",
+        "symbol": "wait_for"
+      }
+    ]
+  },
+  {
+    "id": "sb12",
+    "kind": "mismatch",
+    "question": "My integration test needs a real regtest Bitcoin daemon: spawn the process with some extra command-line options, block until its log says it has finished starting up, and shut it down cleanly (or kill it) when the test is dropped. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-node/src/burnchains/bitcoin/core_controller.rs",
+        "symbol": "BitcoinCoreController"
+      },
+      {
+        "path": "stacks-node/src/burnchains/bitcoin/core_controller.rs",
+        "symbol": "start_bitcoind"
+      }
+    ]
+  },
+  {
+    "id": "sb13",
+    "kind": "mismatch",
+    "question": "I need a small client that POSTs a method name, params and request id as a JSON envelope to a node's HTTP endpoint, with optional username/password auth and a request timeout, then deserializes the result field into my type or surfaces the server's error object. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-node/src/burnchains/rpc/rpc_transport/mod.rs",
+        "symbol": "RpcTransport"
+      },
+      {
+        "path": "stacks-node/src/burnchains/rpc/rpc_transport/mod.rs",
+        "symbol": "send"
+      }
+    ]
+  },
+  {
+    "id": "sb14",
+    "kind": "mismatch",
+    "question": "A background thread in the node has to pause for several seconds, but if the node is told to stop it should return early instead of finishing the whole wait. I'm imagining checking a shared atomic flag about once a second. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-node/src/syncctl.rs",
+        "symbol": "interruptable_sleep"
+      }
+    ]
+  },
+  {
+    "id": "sb15",
+    "kind": "mismatch",
+    "question": "When the signer starts up I want to print its settings to the log in a readable multi-line form (node host, listen endpoint, network, chain id in hex, database path, metrics endpoint), showing the public key but never the secret key. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-signer/src/config.rs",
+        "symbol": "config_to_log_string"
+      }
+    ]
+  },
+  {
+    "id": "sb16",
+    "kind": "mismatch",
+    "question": "I'm handling a StackerDB event and have the name of one of the signer message boot contracts, something like 'signers-1-12'. I need to pull out the two numbers in it (which reward-set half it is and which message slot it carries), returning nothing if the name doesn't have that shape. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "libsigner/src/events.rs",
+        "symbol": "get_signers_db_signer_set_message_id"
+      }
+    ]
+  },
+  {
+    "id": "sb17",
+    "kind": "mismatch",
+    "question": "For profiling I need how much processor time the calling thread alone has used so far, in nanoseconds, not wall-clock time and not the whole process, working on Linux, macOS and Windows. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-profiler/src/platform.rs",
+        "symbol": "thread_cpu_nanos"
+      }
+    ]
+  },
+  {
+    "id": "sb18",
+    "kind": "mismatch",
+    "question": "When printing stats I'd like big integers to be easier to read, e.g. 1234567 rendered as \"1,234,567\" with commas every three digits. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "stacks-profiler/src/print.rs",
+        "symbol": "format_counter_value"
+      }
+    ]
+  },
+  {
+    "id": "sb19",
+    "kind": "mismatch",
+    "question": "I have Unix seconds as an i64 and want a UTC date-time string like 2024-05-01T12:00:00Z for a JSON manifest, preferably without adding chrono or time as a dependency. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "contrib/marf-squash/src/manifest.rs",
+        "symbol": "format_timestamp"
+      }
+    ]
+  },
+  {
+    "id": "sb20",
+    "kind": "easy",
+    "question": "My CLI command takes a path argument and should read that file's text contents, or read from stdin instead when the user passes '-'. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "contrib/clarity-cli/src/lib.rs",
+        "symbol": "read_file_or_stdin"
+      },
+      {
+        "path": "contrib/clarity-cli/src/lib.rs",
+        "symbol": "read_optional_file_or_stdin"
+      }
+    ]
+  },
+  {
+    "id": "sb21",
+    "kind": "mismatch",
+    "question": "At the end of a fast-check stateful property test run I'd like to print how many times each model command actually executed, sorted by name and drawn as an indented tree grouped by the part of the name before the first underscore. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "contrib/core-contract-tests/tests/sip-031/commands/utils.ts",
+        "symbol": "reportCommandRuns"
+      },
+      {
+        "path": "contrib/core-contract-tests/tests/pox-5/commands/utils.ts",
+        "symbol": "reportCommandRuns"
+      },
+      {
+        "path": "contrib/boot-contracts-stateful-prop-tests/tests/pox-4/pox_CommandModel.ts",
+        "symbol": "reportCommandRuns"
+      },
+      {
+        "path": "contrib/core-contract-tests/tests/sip-031/commands/utils.ts",
+        "symbol": "logAsTree"
+      },
+      {
+        "path": "contrib/core-contract-tests/tests/pox-5/commands/utils.ts",
+        "symbol": "logAsTree"
+      },
+      {
+        "path": "contrib/boot-contracts-stateful-prop-tests/tests/pox-4/pox_CommandModel.ts",
+        "symbol": "logAsTree"
+      }
+    ]
+  },
+  {
+    "id": "sb22",
+    "kind": "easy",
+    "question": "In my TypeScript simnet unit tests for the pox-4 boot contract, I need to convert a burn block height into its reward cycle number using the contract's first burnchain height and cycle length. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "contrib/boot-contracts-unit-tests/tests/helpers.ts",
+        "symbol": "burnHeightToRewardCycle"
+      }
+    ]
+  },
+  {
+    "id": "sb23",
+    "kind": "negative",
+    "question": "I'm writing blobs to disk and want to append a CRC32 checksum of the byte buffer so I can detect corruption when reading them back. Is there already something in this repo for that?",
+    "answers": []
+  },
+  {
+    "id": "sb24",
+    "kind": "negative",
+    "question": "The signer hammers the node's RPC endpoints; I want a token-bucket limiter that allows at most N requests per second with some burst capacity and blocks or rejects callers when the bucket is empty. Is there already something in this repo for that?",
+    "answers": []
+  },
+  {
+    "id": "sb25",
+    "kind": "negative",
+    "question": "For generating TypeScript bindings I need to turn a kebab-case Clarity function name like 'get-stacker-info' into camelCase ('getStackerInfo'). Is there already something in this repo for that?",
+    "answers": []
   }
 ]

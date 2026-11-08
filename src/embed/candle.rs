@@ -11,6 +11,7 @@ use hf_hub::api::sync::ApiBuilder;
 use hf_hub::{Repo, RepoType};
 use tokenizers::{Tokenizer, TruncationParams};
 
+use super::decoder::Decoder;
 use super::jina::{JinaBert, JinaConfig};
 use super::modernbert::{self, ModernBertEncoder};
 use super::{Embedder, InputKind, model_id, prefixed};
@@ -21,6 +22,7 @@ enum Model {
     Jina(JinaBert),
     Nomic(nomic_bert::NomicBertModel),
     Modern(ModernBertEncoder),
+    Decoder(Decoder),
 }
 
 pub struct CandleEmbedder {
@@ -59,9 +61,11 @@ impl CandleEmbedder {
             Some(r) => Repo::with_revision(config.hf_repo.clone(), RepoType::Model, r.clone()),
             None => Repo::new(config.hf_repo.clone(), RepoType::Model),
         });
-        let tokenizer_path = repo
-            .get("tokenizer.json")
-            .context("downloading tokenizer.json")?;
+        let tokenizer_path = match &config.tokenizer_repo {
+            Some(t) => api.model(t.clone()).get("tokenizer.json"),
+            None => repo.get("tokenizer.json"),
+        }
+        .context("downloading tokenizer.json")?;
         let config_path = repo.get("config.json").context("downloading config.json")?;
         let weights = repo
             .get("model.safetensors")
@@ -94,6 +98,7 @@ impl CandleEmbedder {
                 let cfg: modernbert::Config = serde_json::from_str(&cfg_text)?;
                 Model::Modern(ModernBertEncoder::load(vb, &cfg, config.max_tokens + 8)?)
             }
+            Arch::Decoder => Model::Decoder(Decoder::load(vb, &serde_json::from_str(&cfg_text)?)?),
         };
         Ok(Self {
             model: Mutex::new(model),
@@ -119,22 +124,26 @@ impl CandleEmbedder {
         let shape = (ids.len(), len);
         let input = Tensor::from_vec(flat_ids, shape, &self.device)?;
         let mask = Tensor::from_vec(flat_mask, shape, &self.device)?;
-        let hidden = {
-            let model = self
-                .model
-                .lock()
-                .map_err(|_| anyhow::anyhow!("model lock poisoned"))?;
-            match &*model {
-                Model::Bert(m) => m.forward(&input, &input.zeros_like()?, Some(&mask))?,
-                Model::Jina(m) => m.forward(&input, &mask)?,
-                // Metal has no u32/f16 `where_cond`; u8 masks are supported.
-                Model::Nomic(m) => m.forward(&input, None, Some(&mask.to_dtype(DType::U8)?))?,
-                Model::Modern(m) => m.forward(&input, &mask)?,
+        let model = self
+            .model
+            .lock()
+            .map_err(|_| anyhow::anyhow!("model lock poisoned"))?;
+        let hidden = match &*model {
+            Model::Bert(m) => m.forward(&input, &input.zeros_like()?, Some(&mask))?,
+            Model::Jina(m) => m.forward(&input, &mask)?,
+            // Metal has no u32/f16 `where_cond`; u8 masks are supported.
+            Model::Nomic(m) => m.forward(&input, None, Some(&mask.to_dtype(DType::U8)?))?,
+            Model::Modern(m) => m.forward(&input, &mask)?,
+            Model::Decoder(m) => {
+                let lens: Vec<usize> = ids.iter().map(|r| r.len()).collect();
+                m.last_hidden(&input, &lens)?.unsqueeze(1)?
             }
         };
+        drop(model);
         let hidden = hidden.to_dtype(DType::F32)?;
         let pooled = match self.config.pooling {
-            Pooling::Cls => hidden.narrow(1, 0, 1)?.squeeze(1)?,
+            // Decoders already returned the last real token (one position per row).
+            Pooling::Cls | Pooling::LastToken => hidden.narrow(1, 0, 1)?.squeeze(1)?,
             Pooling::Mean => {
                 let m = mask.to_dtype(DType::F32)?.unsqueeze(D::Minus1)?;
                 let sum = hidden.broadcast_mul(&m)?.sum(1)?;

@@ -6,8 +6,8 @@ this codebase does X?" over MCP and HTTP in well under a second.
 
 - Definitions come from tree-sitter tags queries (Rust, Python, TypeScript/JavaScript, Go and
   Markdown built in; any other grammar via tree-sitter's own config).
-- Retrieval: code-tuned embeddings (CodeRankEmbed; Metal via candle, or ONNX via fastembed)
-  reranked by a cross-encoder, one line per item. A BM25 index is built alongside and can be
+- Retrieval: embeddings (Qwen3-Embedding-0.6B on Apple GPUs, CodeRankEmbed on CPU) reranked
+  by a cross-encoder, one line per item. A BM25 index is built alongside and can be
   fused in with reciprocal rank fusion (`[search] lexical_weight`, `identifier_lexical_weight`).
 - Content-addressed embedding cache shared by every worktree: a second worktree of the same
   repository costs chunking and hashing only.
@@ -21,8 +21,9 @@ Requires a stable Rust toolchain (edition 2024) and a C compiler.
 cargo install --path .
 ```
 
-On macOS the default build uses candle with Metal; elsewhere the default backend is fastembed
-(ONNX Runtime, CPU). Language grammars are features (`lang-rust`, `lang-python`,
+On macOS the default build runs models on the GPU through candle and Metal; elsewhere it runs
+them on the CPU through candle. fastembed (ONNX Runtime) is an optional backend for models it
+ships. Language grammars are features (`lang-rust`, `lang-python`,
 `lang-typescript`, `lang-go`, `lang-markdown`; all on by default).
 
 Models download on first use into `~/.lodestone/models`. `lode models` lists the configured
@@ -109,7 +110,8 @@ GET  /v1/repos
 
 ```toml
 port = 4600
-model = "coderank"          # alias into [models]; see `lode models`
+model = "qwen3-0.6b"        # alias into [models]; see `lode models`. Default: qwen3-0.6b on
+                            # Apple GPUs, coderank on CPU
 backend = "candle-metal"    # candle-metal | candle-cpu | fastembed | remote
 batch_size = 64
 cache_max_gb = 4
@@ -123,11 +125,17 @@ extensions = { "cljc" = "clojure" }
 index_untagged_as_text = ["md", "txt", "adoc", "rst"]
 
 [rerank]
-enabled = true              # cross-encoder over the top 50: better ranking, ~1 s per search
+enabled = true              # cross-encoder over the top candidates: ~0.4 s per search
 hf_repo = "Alibaba-NLP/gte-reranker-modernbert-base"
-candidates = 50
+candidates = 20             # use 50 with coderank or another weaker embedding model
 max_tokens = 192
 ```
+
+Built-in models (`lode models`) include `qwen3-0.6b`, `harrier-0.6b`, `coderank`, `granite-r2`,
+`granite-small-r2`, `jina-code-v2`, `minilm-l6` and, under a non-commercial licence,
+`jina-code-0.5b`. Rerankers are chosen by Hugging Face repo in `[rerank] hf_repo`; the comparison
+in the CHANGELOG lists which were measured and how they did. Changing the embedding model means a
+full re-index (`lode index --force`); the embedding cache keeps each model's vectors apart.
 
 Adding a language never needs code: clone a grammar into one of tree-sitter's
 `parser-directories` and lodestone loads it with its `queries/tags.scm`. Supplementary queries

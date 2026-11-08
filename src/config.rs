@@ -49,6 +49,9 @@ pub enum Arch {
     JinaBert,
     NomicBert,
     ModernBert,
+    /// Decoder-only transformer (Qwen2/Qwen3, from the checkpoint's `model_type`) with
+    /// last-token pooling: Qwen3-Embedding, harrier-oss, jina-code-embeddings.
+    Decoder,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -56,6 +59,8 @@ pub enum Arch {
 pub enum Pooling {
     Mean,
     Cls,
+    /// Hidden state of the last real token (decoder embedders).
+    LastToken,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,6 +92,10 @@ pub struct ModelConfig {
     /// SPDX-style license id, for `lode models`.
     #[serde(default)]
     pub license: String,
+    /// Repo to take `tokenizer.json` from when the model's own repo lacks one (it must use
+    /// the same vocabulary).
+    #[serde(default)]
+    pub tokenizer_repo: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -117,7 +126,8 @@ pub struct RerankConfig {
     pub model: String,
     /// Hugging Face repo of the cross-encoder for the candle backends.
     pub hf_repo: String,
-    /// Candidates passed to the cross-encoder.
+    /// Candidates passed to the cross-encoder. 20 suits the default embedder, which puts 92% of
+    /// answers in its top 20; weaker embedders gain from 50 (see CHANGELOG, model comparison).
     pub candidates: usize,
     /// Token budget per (query, document) pair.
     pub max_tokens: usize,
@@ -132,7 +142,7 @@ impl Default for RerankConfig {
             enabled: true,
             model: "bge-reranker-base".into(),
             hf_repo: "Alibaba-NLP/gte-reranker-modernbert-base".into(),
-            candidates: 50,
+            candidates: 20,
             max_tokens: 192,
             backend: None,
         }
@@ -224,16 +234,27 @@ pub struct Config {
     pub data_dir: Option<PathBuf>,
 }
 
+/// Default embedding runtime and model for this build. On Apple GPUs the larger
+/// Qwen3-Embedding-0.6B indexes fast enough (~43 chunks/s); on CPU it manages ~7 chunks/s, so
+/// CPU builds default to CodeRankEmbed (~17 chunks/s). Builds without candle fall back to a
+/// model fastembed ships.
+pub fn default_engine() -> (Backend, &'static str) {
+    if cfg!(feature = "candle") && cfg!(target_os = "macos") {
+        (Backend::CandleMetal, "qwen3-0.6b")
+    } else if cfg!(feature = "candle") {
+        (Backend::CandleCpu, "coderank")
+    } else {
+        (Backend::Fastembed, "jina-code-v2")
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
+        let (backend, model) = default_engine();
         Self {
             port: 4600,
-            model: "coderank".into(),
-            backend: if cfg!(target_os = "macos") {
-                Backend::CandleMetal
-            } else {
-                Backend::Fastembed
-            },
+            model: model.into(),
+            backend,
             batch_size: 64,
             cache_max_gb: 4.0,
             chunk_tokens: 200,
@@ -251,6 +272,10 @@ impl Default for Config {
         }
     }
 }
+
+/// Task description for instruction-tuned embedders and rerankers (Qwen3 family).
+pub const CODE_SEARCH_TASK: &str =
+    "Given a description of what some code should do, retrieve the existing code that does it";
 
 /// Models lodestone knows how to run without configuration.
 pub fn builtin_models() -> BTreeMap<String, ModelConfig> {
@@ -274,6 +299,7 @@ pub fn builtin_models() -> BTreeMap<String, ModelConfig> {
         fastembed: fe.map(Into::into),
         dtype: None,
         license: lic.into(),
+        tokenizer_repo: None,
     };
     BTreeMap::from([
         (
@@ -332,6 +358,98 @@ pub fn builtin_models() -> BTreeMap<String, ModelConfig> {
                     "",
                     Some("BGESmallENV15"),
                     "mit",
+                )
+            },
+        ),
+        (
+            "granite-r2".into(),
+            m(
+                "ibm-granite/granite-embedding-english-r2",
+                768,
+                512,
+                Arch::ModernBert,
+                Pooling::Cls,
+                "",
+                "",
+                None,
+                "apache-2.0",
+            ),
+        ),
+        (
+            "granite-small-r2".into(),
+            m(
+                "ibm-granite/granite-embedding-small-english-r2",
+                384,
+                512,
+                Arch::ModernBert,
+                Pooling::Cls,
+                "",
+                "",
+                None,
+                "apache-2.0",
+            ),
+        ),
+        (
+            "minilm-l6".into(),
+            ModelConfig {
+                dtype: Some(Precision::F32),
+                ..m(
+                    "sentence-transformers/all-MiniLM-L6-v2",
+                    384,
+                    256,
+                    Arch::Bert,
+                    Pooling::Mean,
+                    "",
+                    "",
+                    Some("AllMiniLML6V2"),
+                    "apache-2.0",
+                )
+            },
+        ),
+        (
+            "qwen3-0.6b".into(),
+            m(
+                "Qwen/Qwen3-Embedding-0.6B",
+                1024,
+                512,
+                Arch::Decoder,
+                Pooling::LastToken,
+                &format!("Instruct: {CODE_SEARCH_TASK}\nQuery:"),
+                "",
+                None,
+                "apache-2.0",
+            ),
+        ),
+        (
+            "harrier-0.6b".into(),
+            m(
+                "microsoft/harrier-oss-v1-0.6b",
+                1024,
+                512,
+                Arch::Decoder,
+                Pooling::LastToken,
+                &format!("Instruct: {CODE_SEARCH_TASK}\nQuery: "),
+                "",
+                None,
+                "mit",
+            ),
+        ),
+        (
+            "jina-code-0.5b".into(),
+            ModelConfig {
+                // The repo ships vocab.json/merges.txt only; Qwen2.5-Coder's tokenizer has the
+                // identical vocabulary and merges.
+                tokenizer_repo: Some("Qwen/Qwen2.5-Coder-0.5B".into()),
+                ..m(
+                    "jinaai/jina-code-embeddings-0.5b",
+                    896,
+                    512,
+                    Arch::Decoder,
+                    Pooling::LastToken,
+                    "Find the most relevant code snippet given the following query:\n",
+                    "Candidate code snippet:\n",
+                    None,
+                    "cc-by-nc-4.0",
                 )
             },
         ),
@@ -397,6 +515,19 @@ pub fn default_data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_model_runs_on_default_backend() {
+        let c = Config::default();
+        let m = c.model_config(&c.model).unwrap();
+        if c.backend == Backend::Fastembed {
+            assert!(m.fastembed.is_some(), "{} has no fastembed build", c.model);
+        }
+        assert!(
+            !m.license.contains("nc"),
+            "default model must be permissively licensed"
+        );
+    }
 
     #[test]
     fn parses_plan_example_config() {

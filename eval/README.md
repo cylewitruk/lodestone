@@ -15,7 +15,10 @@ git clone https://github.com/stacks-network/stacks-core eval/corpus && git -C ev
 
 | File | Purpose |
 | ---- | ---- |
-| `questions.json` | 24 retrieval questions: `easy` (4), `mismatch` (16), `negative` (4). `answers[].path`/`symbol` are the expected hits; `lode bench` scores rank@k against them |
+| `questions.json` | 74 retrieval questions against stacks-core: `easy` (12), `mismatch` (52), `negative` (10). `answers[].path`/`symbol` are the expected hits; `lode bench` scores rank@k against them. q01–q24 are the pilot's; sa/sb were added for the model comparison |
+| `questions-tantivy.json` | 44 questions against tantivy 0.27.0 (see below) |
+| `questions-librechat.json` | 40 questions against LibreChat, a TypeScript/JavaScript repository (see below) |
+| `compare.py` | pooled comparison of `lode bench --json` reports across the three corpora, with paired wins/losses and bootstrap intervals against a baseline |
 | `tasks.json` | 18 implementation tasks; `accept` is a regex the reply's Rust code must match to count as reuse |
 | `harness/run_trials.py` | headless `claude -p` runner, one run per (arm, task, rep); add a `rule_lode` arm pointing `--mcp-config` at the daemon |
 | `harness/score.py` | grader for both files |
@@ -35,11 +38,32 @@ git clone https://github.com/stacks-network/stacks-core eval/corpus && git -C ev
 
 ## Second repository (overfitting check)
 
-`questions-tantivy.json` holds 14 questions (1 easy, 11 mismatch, 2 negative) written against the
-`tantivy` 0.27.0 crate source, used in Phase 3 to check that ranking changes generalize beyond
-stacks-core. Any copy of the crate source works as the corpus, e.g. the one Cargo already
+`questions-tantivy.json` holds 44 questions (5 easy, 34 mismatch, 5 negative) written against the
+`tantivy` 0.27.0 crate source, used to check that ranking changes generalize beyond stacks-core.
+t13 was originally a negative; `parse_into_milliseconds` parses exactly the strings it describes,
+so it is now answerable. Any copy of the crate source works as the corpus, e.g. the one Cargo already
 downloaded:
 
 ```bash
 lode bench eval --corpus ~/.cargo/registry/src/index.crates.io-*/tantivy-0.27.0 --questions eval/questions-tantivy.json
 ```
+
+## Third repository (non-Rust)
+
+`questions-librechat.json` holds 40 questions (6 easy, 28 mismatch, 6 negative) against
+[LibreChat](https://github.com/danny-avila/LibreChat) at commit `0e719592`, a TypeScript and
+JavaScript monorepo (api/, client/, packages/). It checks that results hold outside Rust.
+
+```bash
+git clone https://github.com/danny-avila/LibreChat /tmp/librechat && git -C /tmp/librechat checkout 0e719592
+lode bench eval --corpus /tmp/librechat --questions eval/questions-librechat.json
+```
+
+## Writing questions
+
+Questions added for the model comparison were drafted by agents that read the code, under these
+rules: describe the need as a developer who has not seen the code, avoid the identifier and its
+doc-comment wording, list every definition that genuinely answers, and verify negatives with
+several greps for synonyms. Every answer was then checked to be an item the chunker actually
+extracts (path and name). Because the writers read doc comments, questions may lean slightly
+towards documented items.

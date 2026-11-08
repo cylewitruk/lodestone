@@ -1,0 +1,452 @@
+[
+  {
+    "id": "l01",
+    "kind": "easy",
+    "question": "Users upload files with arbitrary names. Before writing one to disk I want to drop any directory components, replace odd characters with underscores, avoid hidden dot-prefixed names and cap the overall length. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/server/utils/handleText.js",
+        "symbol": "sanitizeFilename"
+      }
+    ]
+  },
+  {
+    "id": "l02",
+    "kind": "mismatch",
+    "question": "Our server reads on/off switches from environment variables, and people write them as 'TRUE', ' true ' or real booleans in tests. I want one place that turns any of those into a proper boolean, with anything else counting as off. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/server/utils/handleText.js",
+        "symbol": "isEnabled"
+      }
+    ]
+  },
+  {
+    "id": "l03",
+    "kind": "mismatch",
+    "question": "Some settings in .env are written as arithmetic like `1000 * 60 * 15` for readability. I need to turn such a string into an actual number, only allowing digits and operators, and fall back to a default when it can't be evaluated. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/server/utils/math.js",
+        "symbol": "math"
+      }
+    ]
+  },
+  {
+    "id": "l04",
+    "kind": "easy",
+    "question": "I want to truncate a long error stack or piece of text to a maximum length but keep both the start and the end, with an ellipsis in the middle and a note that it was cut. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/app/clients/prompts/truncate.js",
+        "symbol": "smartTruncateText"
+      }
+    ]
+  },
+  {
+    "id": "l05",
+    "kind": "mismatch",
+    "question": "For two-step login I need to check the six-digit code a user types from their authenticator app against their stored secret, also accepting the code from the neighbouring 30-second window to tolerate clock drift. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/server/services/twoFactorService.js",
+        "symbol": "verifyTOTP"
+      }
+    ]
+  },
+  {
+    "id": "l06",
+    "kind": "mismatch",
+    "question": "People paste a complete endpoint such as `https://host/v1/chat/completions`, sometimes routed through a gateway like Cloudflare with a provider segment after the version. I need to cut that back to the root API address the SDK client expects. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/utils/extractBaseURL.js",
+        "symbol": "extractBaseURL"
+      }
+    ]
+  },
+  {
+    "id": "l07",
+    "kind": "mismatch",
+    "question": "Given an LLM identifier like 'gpt-4-0613' or some dated variant, I need to know how large its context window is, falling back to the closest known name contained in it when there's no exact entry, and honouring a per-endpoint override table. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/utils/tokens.js",
+        "symbol": "getModelMaxTokens"
+      },
+      {
+        "path": "api/utils/tokens.js",
+        "symbol": "getModelTokenValue"
+      }
+    ]
+  },
+  {
+    "id": "l08",
+    "kind": "easy",
+    "question": "How many tokens does a given piece of text take up? I'd like a helper that runs a tiktoken encoder over a string and returns the count. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/server/utils/countTokens.js",
+        "symbol": "countTokens"
+      },
+      {
+        "path": "api/server/services/Tokenizer.js",
+        "symbol": "getTokenCount"
+      }
+    ]
+  },
+  {
+    "id": "l09",
+    "kind": "mismatch",
+    "question": "I can't trust the extension or the client-declared MIME of an upload. I want to sniff the raw bytes to learn what format it really is and, for pictures, its pixel dimensions. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/server/utils/files.js",
+        "symbol": "determineFileType"
+      },
+      {
+        "path": "api/server/utils/files.js",
+        "symbol": "getBufferMetadata"
+      }
+    ]
+  },
+  {
+    "id": "l10",
+    "kind": "easy",
+    "question": "Before attaching an image to a vision model request I need to resize the image buffer: a small square bound for 'low' detail, or bounded short and long sides for 'high' detail, keeping the aspect ratio and never enlarging it. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/server/services/Files/images/resize.js",
+        "symbol": "resizeImageBuffer"
+      }
+    ]
+  },
+  {
+    "id": "l11",
+    "kind": "mismatch",
+    "question": "I want to store a one-way fingerprint of a password-reset secret or recovery code instead of the raw value: a hex-encoded SHA-256 of a string using Node's web crypto. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/server/utils/crypto.js",
+        "symbol": "hashToken"
+      },
+      {
+        "path": "api/server/utils/crypto.js",
+        "symbol": "hashBackupCode"
+      }
+    ]
+  },
+  {
+    "id": "l12",
+    "kind": "mismatch",
+    "question": "Admins configure which sites outbound calls may reach, and entries may look like 'WWW.Example.com', 'example.com' or 'https://example.com/path'. I want to reduce any of these to a bare lowercase host without the www prefix so they can be compared, or get null for garbage. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/server/services/domains.js",
+        "symbol": "normalizeDomain"
+      }
+    ]
+  },
+  {
+    "id": "l13",
+    "kind": "mismatch",
+    "question": "Error logs sometimes contain OpenAI-style secret keys, Bearer authorization headers or `key=` query parameters. I want a function that scrubs those out of a log string, optionally trimming it, before it is written. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/config/parsers.js",
+        "symbol": "redactMessage"
+      }
+    ]
+  },
+  {
+    "id": "l14",
+    "kind": "mismatch",
+    "question": "When publishing a public read-only copy of a chat, I want to swap internal identifiers for random prefixed placeholders, where the same original value always gets the same replacement within a run. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/models/Share.js",
+        "symbol": "memoizedAnonymizeId"
+      }
+    ]
+  },
+  {
+    "id": "l15",
+    "kind": "mismatch",
+    "question": "Chat entries are stored flat with parent pointers, so they form branches. Starting from the newest entry I need to walk back up to the root and return just that one thread in chronological order, optionally stopping at an entry that carries a summary. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/app/clients/BaseClient.js",
+        "symbol": "getMessagesForConversation"
+      }
+    ]
+  },
+  {
+    "id": "l16",
+    "kind": "mismatch",
+    "question": "Before sending a long assistant reply to a speech-synthesis API I need to cut it into pieces of at most a few thousand characters, preferring to break right after sentence punctuation or newlines instead of mid-word. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/server/services/Files/Audio/streamAudio.js",
+        "symbol": "splitTextIntoChunks"
+      }
+    ]
+  },
+  {
+    "id": "l17",
+    "kind": "mismatch",
+    "question": "I want an awaited operation to give up and reject if it hasn't settled within N milliseconds. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/server/services/Runs/handle.js",
+        "symbol": "withTimeout"
+      },
+      {
+        "path": "client/src/components/Chat/Input/StreamAudio.tsx",
+        "symbol": "timeoutPromise"
+      }
+    ]
+  },
+  {
+    "id": "l18",
+    "kind": "mismatch",
+    "question": "To bill a user's credit balance I need the per-token price factor for a given model, which differs for input versus output tokens, with a default when the model isn't listed and support for custom endpoint pricing. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/models/tx.js",
+        "symbol": "getMultiplier"
+      }
+    ]
+  },
+  {
+    "id": "l19",
+    "kind": "easy",
+    "question": "I need a merge sort implementation that takes an array and a comparator function and returns a new sorted array rather than sorting in place. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "api/lib/utils/mergeSort.js",
+        "symbol": "mergeSort"
+      }
+    ]
+  },
+  {
+    "id": "l20",
+    "kind": "mismatch",
+    "question": "The sidebar should bucket chats into sections like Today, Yesterday, Previous 7 days and Previous 30 days, then month names for the current year and plain years for older ones, based on when each was last touched, skipping duplicates. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "client/src/utils/convos.ts",
+        "symbol": "groupConversationsByDate"
+      },
+      {
+        "path": "client/src/utils/convos.ts",
+        "symbol": "getGroupName"
+      }
+    ]
+  },
+  {
+    "id": "l21",
+    "kind": "mismatch",
+    "question": "A language model's reply has prose around an embedded object literal. I need to pull out the first balanced curly-brace block from that text so I can parse it. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "client/src/utils/json.ts",
+        "symbol": "extractJson"
+      }
+    ]
+  },
+  {
+    "id": "l22",
+    "kind": "mismatch",
+    "question": "Saved prompt templates contain double-curly placeholders like `{{tone}}`. I need the list of distinct placeholder names in a template so I can render a fill-in form. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "client/src/utils/prompts.ts",
+        "symbol": "extractUniqueVariables"
+      },
+      {
+        "path": "client/src/utils/prompts.ts",
+        "symbol": "extractVariableInfo"
+      }
+    ]
+  },
+  {
+    "id": "l23",
+    "kind": "mismatch",
+    "question": "I want to drop a string into a textarea exactly where the caret is, replacing any selection, ideally so the browser's undo still works, and fire an input event so React notices the change. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "client/src/utils/textarea.ts",
+        "symbol": "insertTextAtCursor"
+      }
+    ]
+  },
+  {
+    "id": "l24",
+    "kind": "mismatch",
+    "question": "My popover should close whenever the user presses the mouse anywhere else on the page, except on a few specific elements identified by id. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "client/src/hooks/useOnClickOutside.ts",
+        "symbol": "useOnClickOutside"
+      }
+    ]
+  },
+  {
+    "id": "l25",
+    "kind": "mismatch",
+    "question": "In a search box I want a React value that only catches up with what the user typed once they've paused for a given number of milliseconds, so I don't fire a request on every keystroke. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "client/src/hooks/Input/useDebounce.ts",
+        "symbol": "useDebounce"
+      }
+    ]
+  },
+  {
+    "id": "l26",
+    "kind": "mismatch",
+    "question": "I want a piece of front-end state that survives a page reload by being saved as JSON in the browser, and ideally stays in sync when another tab changes it. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "client/src/hooks/useLocalStorage.tsx",
+        "symbol": "useLocalStorage"
+      },
+      {
+        "path": "client/src/store/utils.ts",
+        "symbol": "atomWithLocalStorage"
+      }
+    ]
+  },
+  {
+    "id": "l27",
+    "kind": "mismatch",
+    "question": "The API returns a flat array of messages that each know their parent id. For rendering I need them nested so every node holds its replies, its depth and its position among siblings. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "client/src/utils/buildTree.ts",
+        "symbol": "buildTree"
+      }
+    ]
+  },
+  {
+    "id": "l28",
+    "kind": "easy",
+    "question": "In a React component I need to check whether the logged-in user's role grants a particular permission, e.g. whether they may share prompts, before showing a button. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "client/src/hooks/Roles/useHasAccess.ts",
+        "symbol": "useHasAccess"
+      }
+    ]
+  },
+  {
+    "id": "l29",
+    "kind": "mismatch",
+    "question": "In our YAML config people write values like `${MY_API_KEY}`. I need to swap such a placeholder for the value exported in the server's shell, leaving ordinary strings alone, and do the same across a map of outgoing request metadata. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "packages/data-provider/src/parsers.ts",
+        "symbol": "extractEnvVariable"
+      },
+      {
+        "path": "packages/data-provider/src/parsers.ts",
+        "symbol": "resolveHeaders"
+      }
+    ]
+  },
+  {
+    "id": "l30",
+    "kind": "mismatch",
+    "question": "Function definitions for the LLM arrive as plain descriptor objects with type, properties, required, enum and items fields (the standard draft format). I need to turn such a descriptor into a runtime validator built with our validation library. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "packages/data-provider/src/zod.ts",
+        "symbol": "convertJsonSchemaToZod"
+      },
+      {
+        "path": "packages/data-provider/src/actions.ts",
+        "symbol": "openAPISchemaToZod"
+      }
+    ]
+  },
+  {
+    "id": "l31",
+    "kind": "mismatch",
+    "question": "A user pastes the description of an external REST API in either JSON or YAML. Before saving it I want to load it and check that it declares at least one server URL and some endpoints, returning a status and message. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "packages/data-provider/src/actions.ts",
+        "symbol": "validateAndParseOpenAPISpec"
+      }
+    ]
+  },
+  {
+    "id": "l32",
+    "kind": "mismatch",
+    "question": "Before sending a settings object I want a copy with every key whose value is null or undefined dropped, and optionally empty strings too. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "packages/data-provider/src/schemas.ts",
+        "symbol": "removeNullishValues"
+      }
+    ]
+  },
+  {
+    "id": "l33",
+    "kind": "mismatch",
+    "question": "An external MCP server answers an invocation with a list of parts: text, base64 images and embedded resources. I need to turn that into message blocks a given chat provider accepts, keeping the image parts separate from the text. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "packages/mcp/src/parsers.ts",
+        "symbol": "formatToolContent"
+      }
+    ]
+  },
+  {
+    "id": "l34",
+    "kind": "mismatch",
+    "question": "I need to coordinate a multi-step handshake where one request starts a process and waits, while a later callback request marks it done or failed. The shared progress record should live in a key-value store with an expiry so it works across server instances. Is there already something in this repo for that?",
+    "answers": [
+      {
+        "path": "packages/mcp/src/flow/manager.ts",
+        "symbol": "FlowStateManager"
+      }
+    ]
+  },
+  {
+    "id": "l35",
+    "kind": "negative",
+    "question": "Under each chat in the list I'd like to show how long ago it was updated, like '5 minutes ago' or '3 days ago', instead of an absolute date. Is there already something in this repo for that?",
+    "answers": []
+  },
+  {
+    "id": "l36",
+    "kind": "negative",
+    "question": "On the sign-up form I want to rate how strong the chosen password is (weak / fair / strong) to drive a little meter as the user types. Is there already something in this repo for that?",
+    "answers": []
+  },
+  {
+    "id": "l37",
+    "kind": "negative",
+    "question": "When someone mistypes a model name in the config I'd like to suggest the closest valid one by computing the edit distance between two strings. Is there already something in this repo for that?",
+    "answers": []
+  },
+  {
+    "id": "l38",
+    "kind": "negative",
+    "question": "For read-aloud and short previews I need to remove markdown formatting from a message (headings, emphasis, links, code fences) and get plain text back. Is there already something in this repo for that?",
+    "answers": []
+  },
+  {
+    "id": "l39",
+    "kind": "negative",
+    "question": "I want to turn a conversation title into a URL-friendly lowercase, hyphen-separated identifier with punctuation and accents removed. Is there already something in this repo for that?",
+    "answers": []
+  },
+  {
+    "id": "l40",
+    "kind": "negative",
+    "question": "Admin-authored banner text and plugin descriptions are rendered as raw HTML. I need to clean untrusted HTML by stripping script tags, event-handler attributes and javascript: URLs before rendering it. Is there already something in this repo for that?",
+    "answers": []
+  }
+]

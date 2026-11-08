@@ -53,6 +53,8 @@ pub struct BenchReport {
     pub rank_at_1: f64,
     pub rank_at_5: f64,
     pub rank_at_10: f64,
+    /// Answer anywhere in the 50 results: the candidate pool a reranker reorders.
+    pub rank_at_50: f64,
     pub mrr: f64,
     pub rank_at_5_by_kind: Vec<(String, f64)>,
     pub hard_hits_top5: Option<(usize, usize)>,
@@ -173,6 +175,7 @@ pub fn run(engine: &Engine, opts: &BenchOptions) -> anyhow::Result<BenchReport> 
     report.rank_at_1 = at(1, &positives);
     report.rank_at_5 = at(5, &positives);
     report.rank_at_10 = at(10, &positives);
+    report.rank_at_50 = at(50, &positives);
     report.mrr = positives
         .iter()
         .map(|q| q.rank.map_or(0.0, |r| 1.0 / r as f64))
@@ -278,8 +281,8 @@ impl BenchReport {
             self.answerable
         ));
         l.push(format!(
-            "rank@1 {:.3}  rank@5 {:.3}  rank@10 {:.3}  MRR {:.3}",
-            self.rank_at_1, self.rank_at_5, self.rank_at_10, self.mrr
+            "rank@1 {:.3}  rank@5 {:.3}  rank@10 {:.3}  MRR {:.3}  candidate recall@50 {:.3}",
+            self.rank_at_1, self.rank_at_5, self.rank_at_10, self.mrr, self.rank_at_50
         ));
         for (k, v) in &self.rank_at_5_by_kind {
             l.push(format!("rank@5[{k}] {v:.3}"));
@@ -367,6 +370,7 @@ mod tests {
         assert_eq!(report.answerable, 2);
         assert_eq!(report.agent_top_k, DEFAULT_TOP_K);
         assert_eq!(report.rank_at_agent_k, 0.5);
+        assert_eq!(report.rank_at_50, 0.5);
         assert_eq!(report.hard_hits_top5, Some((1, 1)));
         assert_eq!(report.hard_hits_agent_k, Some((1, 1)));
         assert!(

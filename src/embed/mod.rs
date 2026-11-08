@@ -2,6 +2,8 @@
 
 #[cfg(feature = "candle")]
 pub mod candle;
+#[cfg(feature = "candle")]
+pub mod decoder;
 #[cfg(feature = "fastembed")]
 pub mod fastembed;
 #[cfg(feature = "candle")]

@@ -373,3 +373,102 @@ Checked against rust-analyzer on this repository: three positions from `lode sea
 resolved on the first call with no file read (references to `VectorIndex::duplicate`, callers of
 `WorktreeIndex::repair`, references to `format::line`); for `repair` the position equals
 rust-analyzer's own selection range.
+
+## Model comparison
+
+Embedding models, rerankers, reranker pool size and doc vectors, measured on 137 answerable
+questions (plus 21 with no answer) across three repositories: stacks-core (64), tantivy (39) and
+LibreChat (34, TypeScript/JavaScript). "Top 8" is the share of questions whose answer is in the 8
+results an agent receives; comparisons are paired per question with 95% bootstrap intervals
+(`eval/compare.py`). Every model's scores were checked against its reference implementation
+(transformers; Jina's own code pinned at `9cfeff2d` and `d7d7e73b` for its two rerankers) and
+match to three decimals or within half-precision rounding. Apple M4 Max; latency is one search at
+a time.
+
+### Embedding models
+
+| Model | Licence | Top 8, no reranker | Top 8, reranker (pool 50) | Recall@50 | Chunks/s, Metal | Chunks/s, CPU |
+| ---- | ---- | ---- | ---- | ---- | ---- | ---- |
+| **Qwen3-Embedding-0.6B** | Apache-2.0 | **0.825** | **0.861** | **0.949** | 42.7 | 6.6 |
+| jina-code-embeddings-0.5b | CC-BY-NC-4.0 | 0.752 | 0.854 | 0.927 | 58.1 | 6.8 |
+| harrier-oss-v1-0.6b | MIT | 0.781 | 0.825 | 0.927 | 32.2 | — |
+| granite-embedding-english-r2 | Apache-2.0 | 0.723 | 0.818 | 0.891 | 57.8 | 10.9 |
+| jina-embeddings-v2-base-code | Apache-2.0 | 0.715 | 0.810 | 0.869 | 107.1 | 14.1 |
+| granite-embedding-small-english-r2 | Apache-2.0 | 0.679 | 0.796 | 0.839 | 134.9 | 27.9 |
+| CodeRankEmbed (previous default) | MIT | 0.701 | 0.781 | 0.861 | 106.2 | 16.8 |
+| all-MiniLM-L6-v2 | Apache-2.0 | 0.628 | 0.774 | 0.818 | 205.8 | 78.3 |
+
+Qwen3-Embedding-0.6B against CodeRankEmbed: +0.124 top 8 without a reranker (21 questions
+gained, 4 lost, interval +0.058 to +0.197) and +0.080 with it. Its first index of stacks-core takes
+657 s on Metal (264 s for CodeRankEmbed). The CPU column is candle on this machine's CPU, 500
+chunks each; at 6.6 chunks/s a 27k-chunk repository needs about 70 minutes to index on CPU.
+
+### Rerankers (all on CodeRankEmbed's 50 candidates)
+
+| Reranker | Licence | Top 8 | MRR | Search p50 | vs default |
+| ---- | ---- | ---- | ---- | ---- | ---- |
+| jina-reranker-v3 | CC-BY-NC-4.0 | 0.839 | 0.736 | 5.9 s | +0.058 [+0.015, +0.102] |
+| Qwen3-Reranker-0.6B | Apache-2.0 | 0.825 | 0.719 | 3.9 s | +0.044 [+0.000, +0.095] |
+| **gte-reranker-modernbert-base** (default) | Apache-2.0 | 0.781 | 0.653 | 1.0 s | — |
+| (no reranker) | — | 0.701 | 0.531 | 7 ms | −0.080 |
+| jina-reranker-v2-base-multilingual | CC-BY-NC-4.0 | 0.642 | 0.439 | 0.5 s | −0.139 |
+| bge-reranker-v2-m3 | Apache-2.0 | 0.613 | 0.422 | 2.0 s | −0.168 |
+| granite-embedding-reranker-english-r2 | Apache-2.0 | 0.606 | 0.429 | 1.1 s | −0.175 |
+| ms-marco-MiniLM-L6-v2 | Apache-2.0 | 0.496 | 0.360 | 0.3 s | −0.285 |
+
+Four of the seven rank code worse than no reranker at all; their reference implementations score
+the same, so this is how they behave on code, not a porting error.
+
+### Reranker pool size (default reranker)
+
+| Pool | Qwen3-Embedding-0.6B top 8 | p50 | CodeRankEmbed top 8 | p50 |
+| ---- | ---- | ---- | ---- | ---- |
+| 15 | 0.847 | 306 ms | 0.745 | 281 ms |
+| **20** | **0.869** | **429 ms** | 0.737 | 376 ms |
+| 25 | 0.861 | 511 ms | 0.745 | 479 ms |
+| 50 | 0.861 | 998 ms | 0.781 | 986 ms |
+| 75 | 0.847 | 1,459 ms | 0.788 | 1,450 ms |
+| 100 | 0.847 | 2,026 ms | 0.796 | 2,082 ms |
+
+With Qwen3 the pool can shrink to 20 at no cost (+0.007 [−0.029, +0.044] against 50); beyond 50
+it gets slightly worse, as the reranker meets more near-misses. CodeRankEmbed needs the larger
+pool because its answers sit deeper in the candidate list.
+
+### Doc vectors (reranker on, pool 50)
+
+| Model | Top 8 without | Top 8 with | Change |
+| ---- | ---- | ---- | ---- |
+| Qwen3-Embedding-0.6B | 0.861 | 0.832 | −0.029 [−0.058, −0.007] |
+| granite-embedding-english-r2 | 0.818 | 0.832 | +0.015 |
+| CodeRankEmbed | 0.781 | 0.825 | +0.044 [+0.000, +0.095] |
+
+### Decisions
+
+- **Default embedding model: Qwen3-Embedding-0.6B on Apple GPUs, CodeRankEmbed on CPU.** Qwen3
+  is the best model measured, significantly, with and without a reranker; its slower first index
+  (about 11 minutes for stacks-core) runs in the background and later edits embed only what
+  changed. On CPU it would take about 70 minutes for the same repository, so CPU builds keep
+  CodeRankEmbed (about 27 minutes).
+- **Default CPU backend: candle on the CPU, not fastembed.** The previous non-macOS default paired
+  CodeRankEmbed with fastembed, which has no build of it, so it failed to load; candle runs every
+  built-in model, and fastembed stays available for the models it ships.
+- **Reranker stays gte-reranker-modernbert-base, pool reduced from 50 to 20.** Same quality with
+  the new embedder, search p50 from about 1 s to about 0.4 s, and proportionally shorter waits when
+  several agents search at once. Qwen3-Reranker-0.6B and jina-reranker-v3 rank better but cost
+  four to six times the latency, and jina-reranker-v3 is non-commercial; both can be configured.
+- **Doc vectors stay off.** They help CodeRankEmbed but hurt the new default.
+- Upgrading: an index built with CodeRankEmbed is reported stale against the new default until
+  `lode index --force` re-embeds it.
+
+### Not covered
+
+- **BGE-M3** ships no safetensors weights, only a PyTorch pickle, which lodestone does not load.
+- **EmbeddingGemma 2, UltraBERT-Embed-150M and snowflake-arctic-embed-m-v2.0** need model code
+  candle does not have; not attempted.
+- **8B models and Nemotron-Embed 1B** (OpenMDW licence) are far beyond the indexing-speed budget.
+- **Hosted embedding APIs** (Voyage, OpenAI, Gemini) were not measured: they need keys and cost
+  per index.
+- **Linux CPU numbers** come from this Mac's CPU; a run on Linux runners was proposed, not done.
+- **Reranker × embedder pairs** beyond the default reranker were measured on CodeRankEmbed's
+  candidates only; Qwen3-Reranker on Qwen3's candidates is untested.
+- The question writers read the code's doc comments, which may favour documented items slightly.

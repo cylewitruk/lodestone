@@ -90,8 +90,18 @@ enum Cmd {
         skip_index: bool,
         #[arg(long)]
         force: bool,
-        #[arg(long)]
+        /// Enable the reranker (on by default unless the config disables it).
+        #[arg(long, conflicts_with = "no_rerank")]
         rerank: bool,
+        /// Disable the reranker for this run.
+        #[arg(long)]
+        no_rerank: bool,
+        /// Cross-encoder to rerank with (Hugging Face repo); implies `--rerank`.
+        #[arg(long, conflicts_with = "no_rerank")]
+        reranker: Option<String>,
+        /// Candidates passed to the reranker (overrides `rerank.candidates`).
+        #[arg(long)]
+        rerank_candidates: Option<usize>,
         /// Include test items (down-weighted by `search.test_weight`).
         #[arg(long)]
         include_tests: bool,
@@ -218,6 +228,9 @@ fn main() -> anyhow::Result<()> {
             skip_index,
             force,
             rerank,
+            no_rerank,
+            reranker,
+            rerank_candidates,
             include_tests,
             json,
         } => {
@@ -227,9 +240,13 @@ fn main() -> anyhow::Result<()> {
             if let Some(b) = backend {
                 config.backend = b;
             }
-            if rerank {
-                config.rerank.enabled = true;
+            if let Some(repo) = reranker {
+                config.rerank.hf_repo = repo;
             }
+            if let Some(n) = rerank_candidates {
+                config.rerank.candidates = n;
+            }
+            config.rerank.enabled = (config.rerank.enabled || rerank) && !no_rerank;
             let (default_corpus, default_questions) = bench::default_paths(&eval_dir);
             let opts = BenchOptions {
                 corpus: corpus.unwrap_or(default_corpus),
