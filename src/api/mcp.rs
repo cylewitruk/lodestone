@@ -14,7 +14,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::types::SearchRequest;
+use super::types::{DEFAULT_TOP_K, SearchRequest};
 use crate::registry::Engine;
 
 pub const SEARCH_DESCRIPTION: &str = "Find existing code by what it does. Describe the behaviour in plain words (not a guessed name); returns matching functions, types and macros as 'path:line kind name(signature) — doc'. Use before writing any helper.";
@@ -41,7 +41,7 @@ pub fn tools() -> Vec<Tool> {
                     "repo": { "type": "string", "description": "worktree root or registered name; default = the only registered repo, else error" },
                     "from_unit": { "type": "string", "description": "only items this package/crate/module may depend on, per the repo's build graph" },
                     "language": { "type": "string", "description": "restrict to one language" },
-                    "top_k": { "type": "integer", "default": 8, "maximum": 50 },
+                    "top_k": { "type": "integer", "default": DEFAULT_TOP_K, "maximum": 50 },
                     "include_tests": { "type": "boolean", "default": false }
                 },
                 "required": ["query"]
@@ -96,7 +96,7 @@ impl LodestoneMcp {
                     repo: a.repo,
                     from_unit: a.from_unit,
                     language: a.language,
-                    top_k: a.top_k.unwrap_or(8).clamp(1, 50),
+                    top_k: a.top_k.unwrap_or(DEFAULT_TOP_K).clamp(1, 50),
                     include_tests: a.include_tests.unwrap_or(false),
                     ..SearchRequest::default()
                 };

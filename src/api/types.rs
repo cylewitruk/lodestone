@@ -6,8 +6,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::index::{IndexReport, Progress};
 
+/// Results per search when the caller does not ask for a number (MCP, REST, CLI).
+pub const DEFAULT_TOP_K: usize = 8;
+
 fn default_top_k() -> usize {
-    8
+    DEFAULT_TOP_K
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -233,7 +236,7 @@ mod tests {
     fn serde_roundtrips() {
         roundtrip(SearchRequest {
             query: "q".into(),
-            top_k: 8,
+            top_k: DEFAULT_TOP_K,
             kinds: vec!["function".into()],
             ..Default::default()
         });

@@ -309,3 +309,27 @@ Measured on one index per corpus, so the baseline is the same index with `doc_we
   to rank 2, and it is one of the four questions no earlier configuration retrieved. On
   tantivy, t06 goes from unranked to 16 while t12 drops out of the top 50, a net zero. That
   does not clear the Phase 3 bar for a default change, given +26–33% embeddings at index time.
+
+## Bench — agent-view metric
+
+Agents receive the top 8 results per search by default (`DEFAULT_TOP_K`, shared by MCP, REST,
+the CLI and the bench), each as one line they can screen without opening the file. `lode bench`
+now reports, as its first summary line, the share of answerable questions whose answer is
+within that top 8. rank@1/5/10, MRR, per-kind rank@5, hard cases, the similarity gap and the
+identifier hit rate are unchanged; hard cases are also reported within the top 8. Hard-case ids
+that are not in the question file are ignored instead of counted as misses.
+
+Recomputed from the doc-vector experiment's runs (same index per corpus):
+
+| Corpus | Configuration | Top 8 | rank@5 | rank@10 | MRR |
+| ---- | ---- | ---- | ---- | ---- | ---- |
+| stacks-core | reranker off | 14/20 (0.700) | 0.700 | 0.700 | 0.538 |
+| stacks-core | reranker on (default) | 15/20 (0.750) | 0.750 | 0.800 | 0.618 |
+| stacks-core | reranker on + doc vectors | 17/20 (0.850) | 0.800 | 0.850 | 0.643 |
+| tantivy | reranker off | 7/12 (0.583) | 0.583 | 0.583 | 0.452 |
+| tantivy | reranker on (default) | 10/12 (0.833) | 0.667 | 0.833 | 0.601 |
+| tantivy | reranker on + doc vectors | 9/12 (0.750) | 0.667 | 0.833 | 0.596 |
+
+What an agent sees shifts the reading of the reranker: on tantivy it brings three answers into
+view (t04 21→7, t05 29→1, t07 48→7), while on stacks-core most of its MRR gain reorders answers
+already in the top 8 (net +1: q06 43→1, q12 3→9).

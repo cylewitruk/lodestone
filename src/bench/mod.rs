@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::types::SearchRequest;
+use crate::api::types::{DEFAULT_TOP_K, SearchRequest};
 use crate::index::{IndexOptions, IndexReport};
 use crate::registry::Engine;
 
@@ -44,12 +44,19 @@ pub struct BenchReport {
     pub cold_index: Option<IndexReport>,
     pub noop_index_secs: f64,
     pub questions: Vec<QuestionResult>,
+    /// Results an agent sees per search by default ([`DEFAULT_TOP_K`]).
+    pub agent_top_k: usize,
+    /// Share of answerable questions whose answer is within `agent_top_k`.
+    pub rank_at_agent_k: f64,
+    /// Questions with at least one expected answer (the denominator of every rank metric).
+    pub answerable: usize,
     pub rank_at_1: f64,
     pub rank_at_5: f64,
     pub rank_at_10: f64,
     pub mrr: f64,
     pub rank_at_5_by_kind: Vec<(String, f64)>,
     pub hard_hits_top5: Option<(usize, usize)>,
+    pub hard_hits_agent_k: Option<(usize, usize)>,
     pub negative_max_similarity: Option<f32>,
     pub positive_min_similarity: Option<f32>,
     pub latency_p50_ms: f64,
@@ -160,6 +167,9 @@ pub fn run(engine: &Engine, opts: &BenchOptions) -> anyhow::Result<BenchReport> 
     let at = |k: usize, qs: &[&QuestionResult]| {
         qs.iter().filter(|q| q.rank.is_some_and(|r| r <= k)).count() as f64 / qs.len().max(1) as f64
     };
+    report.answerable = positives.len();
+    report.agent_top_k = DEFAULT_TOP_K;
+    report.rank_at_agent_k = at(DEFAULT_TOP_K, &positives);
     report.rank_at_1 = at(1, &positives);
     report.rank_at_5 = at(5, &positives);
     report.rank_at_10 = at(10, &positives);
@@ -180,13 +190,20 @@ pub fn run(engine: &Engine, opts: &BenchOptions) -> anyhow::Result<BenchReport> 
             (k, v)
         })
         .collect();
-    if !opts.hard.is_empty() {
-        let hits = report
-            .questions
-            .iter()
-            .filter(|q| opts.hard.contains(&q.id) && q.rank.is_some_and(|r| r <= 5))
-            .count();
-        report.hard_hits_top5 = Some((hits, opts.hard.len()));
+    // Hard ids not in this question file are ignored rather than counted as misses.
+    let hard: Vec<&QuestionResult> = report
+        .questions
+        .iter()
+        .filter(|q| opts.hard.contains(&q.id))
+        .collect();
+    if !hard.is_empty() {
+        let hits = |k: usize| {
+            hard.iter()
+                .filter(|q| q.rank.is_some_and(|r| r <= k))
+                .count()
+        };
+        report.hard_hits_top5 = Some((hits(5), hard.len()));
+        report.hard_hits_agent_k = Some((hits(DEFAULT_TOP_K), hard.len()));
     }
     report.negative_max_similarity = report
         .questions
@@ -254,14 +271,24 @@ impl BenchReport {
             ));
         }
         l.push(format!(
+            "agent view: answer within the default top {}: {:.3} ({}/{})",
+            self.agent_top_k,
+            self.rank_at_agent_k,
+            (self.rank_at_agent_k * self.answerable as f64).round() as usize,
+            self.answerable
+        ));
+        l.push(format!(
             "rank@1 {:.3}  rank@5 {:.3}  rank@10 {:.3}  MRR {:.3}",
             self.rank_at_1, self.rank_at_5, self.rank_at_10, self.mrr
         ));
         for (k, v) in &self.rank_at_5_by_kind {
             l.push(format!("rank@5[{k}] {v:.3}"));
         }
-        if let Some((h, n)) = self.hard_hits_top5 {
-            l.push(format!("hard cases in top 5: {h}/{n}"));
+        if let (Some((h5, n)), Some((hk, _))) = (self.hard_hits_top5, self.hard_hits_agent_k) {
+            l.push(format!(
+                "hard cases in top 5: {h5}/{n}; in top {}: {hk}/{n}",
+                self.agent_top_k
+            ));
         }
         if let (Some(neg), Some(pos)) = (self.negative_max_similarity, self.positive_min_similarity)
         {
@@ -282,4 +309,70 @@ impl BenchReport {
 /// Resolves `<eval-dir>` defaults: `questions.json` and `corpus/` inside it.
 pub fn default_paths(eval_dir: &Path) -> (PathBuf, PathBuf) {
     (eval_dir.join("corpus"), eval_dir.join("questions.json"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::config::Config;
+    use crate::embed::HashEmbedder;
+    use crate::testutil::tempdir;
+
+    #[test]
+    fn agent_view_and_hard_cases() {
+        let corpus = tempdir().join("repo");
+        std::fs::create_dir_all(corpus.join("src")).unwrap();
+        std::fs::write(
+            corpus.join("src/lib.rs"),
+            "/// Copy a directory tree recursively.\npub fn copy_dir_all() {}\n\n/// Parse arguments.\npub fn parse_args() {}\n",
+        )
+        .unwrap();
+        let questions = corpus.join("questions.json");
+        std::fs::write(
+            &questions,
+            r#"[
+              {"id": "q1", "kind": "easy", "question": "copy a directory tree recursively",
+               "answers": [{"symbol": "copy_dir_all"}]},
+              {"id": "q2", "kind": "mismatch", "question": "something absent",
+               "answers": [{"symbol": "not_in_repo"}]},
+              {"id": "q3", "kind": "negative", "question": "nothing like this", "answers": []}
+            ]"#,
+        )
+        .unwrap();
+        let mut config = Config {
+            data_dir: Some(tempdir()),
+            ..Config::default()
+        };
+        config.rerank.enabled = false;
+        let emb = Arc::new(HashEmbedder {
+            dim: 64,
+            id: "test/hash".into(),
+            delay_ms: 0,
+        });
+        let engine = Engine::with_embedder(config, emb).unwrap();
+        let report = run(
+            &engine,
+            &BenchOptions {
+                corpus,
+                questions,
+                hard: vec!["q1".into(), "unknown".into()],
+                skip_index: false,
+                force: false,
+                include_tests: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(report.answerable, 2);
+        assert_eq!(report.agent_top_k, DEFAULT_TOP_K);
+        assert_eq!(report.rank_at_agent_k, 0.5);
+        assert_eq!(report.hard_hits_top5, Some((1, 1)));
+        assert_eq!(report.hard_hits_agent_k, Some((1, 1)));
+        assert!(
+            report
+                .to_text()
+                .contains("agent view: answer within the default top 8: 0.500 (1/2)")
+        );
+    }
 }

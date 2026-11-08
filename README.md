@@ -140,6 +140,10 @@ Retrieval quality, index time and query latency:
 lode bench eval --hard q06,q07,q08,q18
 ```
 
+The first summary line is the agent view: the share of questions whose answer is within the
+top 8 results an agent receives by default. rank@1/5/10 and MRR follow and measure ranking
+accuracy.
+
 Compare models or backends with `--model` and `--backend`; `--rerank` enables the
 cross-encoder. The question file schema is generic (`[{id, kind, question, answers:[{path,
 symbol}]}]`), so other repositories can be benchmarked with `--corpus` and `--questions`.
