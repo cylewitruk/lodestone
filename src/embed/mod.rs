@@ -4,13 +4,19 @@
 pub mod candle;
 #[cfg(feature = "candle")]
 pub mod decoder;
+#[cfg(feature = "candle")]
+pub mod embedding_gemma;
 #[cfg(feature = "fastembed")]
 pub mod fastembed;
 #[cfg(feature = "candle")]
 pub mod jina;
 #[cfg(feature = "candle")]
+pub mod layers;
+#[cfg(feature = "candle")]
 pub mod modernbert;
 pub mod remote;
+#[cfg(feature = "candle")]
+pub mod ultrabert;
 
 use std::sync::Arc;
 

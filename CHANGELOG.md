@@ -395,13 +395,21 @@ a time.
 | granite-embedding-english-r2 | Apache-2.0 | 0.723 | 0.818 | 0.891 | 57.8 | 10.9 |
 | jina-embeddings-v2-base-code | Apache-2.0 | 0.715 | 0.810 | 0.869 | 107.1 | 14.1 |
 | granite-embedding-small-english-r2 | Apache-2.0 | 0.679 | 0.796 | 0.839 | 134.9 | 27.9 |
+| UltraBERT-Embed-150M | Apache-2.0 | 0.730 | 0.788 | 0.832 | 93.3 | 13.3 |
 | CodeRankEmbed (previous default) | MIT | 0.701 | 0.781 | 0.861 | 106.2 | 16.8 |
 | all-MiniLM-L6-v2 | Apache-2.0 | 0.628 | 0.774 | 0.818 | 205.8 | 78.3 |
+| EmbeddingGemma 2 | Apache-2.0 + Gemma use policy | 0.672 | 0.708 | 0.788 | 43.9 (f32) | 10.5 |
 
 Qwen3-Embedding-0.6B against CodeRankEmbed: +0.124 top 8 without a reranker (21 questions
 gained, 4 lost, interval +0.058 to +0.197) and +0.080 with it. Its first index of stacks-core takes
 657 s on Metal (264 s for CodeRankEmbed). The CPU column is candle on this machine's CPU, 500
 chunks each; at 6.6 chunks/s a 27k-chunk repository needs about 70 minutes to index on CPU.
+
+EmbeddingGemma 2 and UltraBERT-Embed-150M (pinned at `b06b3672`) needed their own encoders
+(`src/embed/embedding_gemma.rs`, `src/embed/ultrabert.rs`); both match their transformers
+reference. EmbeddingGemma 2 runs in f32, as its model card warns of NaNs in f16. UltraBERT
+against CodeRankEmbed: +0.029 without a reranker and +0.044 [−0.029, +0.124] at pool 20, neither
+significant, and 21% slower on CPU.
 
 ### Rerankers (all on CodeRankEmbed's 50 candidates)
 
@@ -457,14 +465,16 @@ pool because its answers sit deeper in the candidate list.
   several agents search at once. Qwen3-Reranker-0.6B and jina-reranker-v3 rank better but cost
   four to six times the latency, and jina-reranker-v3 is non-commercial; both can be configured.
 - **Doc vectors stay off.** They help CodeRankEmbed but hurt the new default.
+- **CPU default stays CodeRankEmbed.** UltraBERT-Embed-150M is not significantly better and is
+  slower on CPU (13.3 against 16.8 chunks/s); EmbeddingGemma 2 is worse on both counts. Both
+  are built in as `ultrabert-150m` and `embeddinggemma-2`.
 - Upgrading: an index built with CodeRankEmbed is reported stale against the new default until
   `lode index --force` re-embeds it.
 
 ### Not covered
 
 - **BGE-M3** ships no safetensors weights, only a PyTorch pickle, which lodestone does not load.
-- **EmbeddingGemma 2, UltraBERT-Embed-150M and snowflake-arctic-embed-m-v2.0** need model code
-  candle does not have; not attempted.
+- **snowflake-arctic-embed-m-v2.0** needs model code candle does not have; not attempted.
 - **8B models and Nemotron-Embed 1B** (OpenMDW licence) are far beyond the indexing-speed budget.
 - **Hosted embedding APIs** (Voyage, OpenAI, Gemini) were not measured: they need keys and cost
   per index.

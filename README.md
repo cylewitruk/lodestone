@@ -132,10 +132,11 @@ max_tokens = 192
 ```
 
 Built-in models (`lode models`) include `qwen3-0.6b`, `harrier-0.6b`, `coderank`, `granite-r2`,
-`granite-small-r2`, `jina-code-v2`, `minilm-l6` and, under a non-commercial licence,
-`jina-code-0.5b`. Rerankers are chosen by Hugging Face repo in `[rerank] hf_repo`; the comparison
-in the CHANGELOG lists which were measured and how they did. Changing the embedding model means a
-full re-index (`lode index --force`); the embedding cache keeps each model's vectors apart.
+`granite-small-r2`, `jina-code-v2`, `ultrabert-150m`, `embeddinggemma-2`, `minilm-l6` and,
+under a non-commercial licence, `jina-code-0.5b`. Rerankers are chosen by Hugging Face repo in
+`[rerank] hf_repo`; the comparison in the CHANGELOG lists which were measured and how they did.
+Changing the embedding model means a full re-index (`lode index --force`); the embedding cache
+keeps each model's vectors apart.
 
 Adding a language never needs code: clone a grammar into one of tree-sitter's
 `parser-directories` and lodestone loads it with its `queries/tags.scm`. Supplementary queries

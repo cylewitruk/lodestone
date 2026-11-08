@@ -12,8 +12,10 @@ use hf_hub::{Repo, RepoType};
 use tokenizers::{Tokenizer, TruncationParams};
 
 use super::decoder::Decoder;
+use super::embedding_gemma::EmbeddingGemma2;
 use super::jina::{JinaBert, JinaConfig};
 use super::modernbert::{self, ModernBertEncoder};
+use super::ultrabert::UltraBert;
 use super::{Embedder, InputKind, model_id, prefixed};
 use crate::config::{Arch, Backend, ModelConfig, Pooling};
 
@@ -23,6 +25,8 @@ enum Model {
     Nomic(nomic_bert::NomicBertModel),
     Modern(ModernBertEncoder),
     Decoder(Decoder),
+    Gemma(EmbeddingGemma2),
+    Ultra(UltraBert),
 }
 
 pub struct CandleEmbedder {
@@ -99,6 +103,16 @@ impl CandleEmbedder {
                 Model::Modern(ModernBertEncoder::load(vb, &cfg, config.max_tokens + 8)?)
             }
             Arch::Decoder => Model::Decoder(Decoder::load(vb, &serde_json::from_str(&cfg_text)?)?),
+            Arch::EmbeddingGemma2 => Model::Gemma(EmbeddingGemma2::load(
+                vb,
+                &serde_json::from_str(&cfg_text)?,
+                config.max_tokens,
+            )?),
+            Arch::UltraBert => Model::Ultra(UltraBert::load(
+                vb,
+                &serde_json::from_str(&cfg_text)?,
+                config.max_tokens + 8,
+            )?),
         };
         Ok(Self {
             model: Mutex::new(model),
@@ -134,6 +148,8 @@ impl CandleEmbedder {
             // Metal has no u32/f16 `where_cond`; u8 masks are supported.
             Model::Nomic(m) => m.forward(&input, None, Some(&mask.to_dtype(DType::U8)?))?,
             Model::Modern(m) => m.forward(&input, &mask)?,
+            Model::Gemma(m) => m.forward(&input, &mask)?,
+            Model::Ultra(m) => m.forward(&input, &mask)?,
             Model::Decoder(m) => {
                 let lens: Vec<usize> = ids.iter().map(|r| r.len()).collect();
                 m.last_hidden(&input, &lens)?.unsqueeze(1)?

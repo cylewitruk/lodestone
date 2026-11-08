@@ -52,6 +52,11 @@ pub enum Arch {
     /// Decoder-only transformer (Qwen2/Qwen3, from the checkpoint's `model_type`) with
     /// last-token pooling: Qwen3-Embedding, harrier-oss, jina-code-embeddings.
     Decoder,
+    /// EmbeddingGemma 2's text encoder.
+    EmbeddingGemma2,
+    /// UltraBERT (local/global attention, per-layer rotary bases).
+    #[serde(rename = "ultrabert")]
+    UltraBert,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -450,6 +455,42 @@ pub fn builtin_models() -> BTreeMap<String, ModelConfig> {
                     "Candidate code snippet:\n",
                     None,
                     "cc-by-nc-4.0",
+                )
+            },
+        ),
+        (
+            "embeddinggemma-2".into(),
+            ModelConfig {
+                // Its model card warns of NaN output in float16.
+                dtype: Some(Precision::F32),
+                ..m(
+                    "google/embeddinggemma-2",
+                    768,
+                    512,
+                    Arch::EmbeddingGemma2,
+                    Pooling::Mean,
+                    "task: code retrieval | query: ",
+                    "title: none | text: ",
+                    None,
+                    "apache-2.0 (Gemma prohibited use policy)",
+                )
+            },
+        ),
+        (
+            "ultrabert-150m".into(),
+            ModelConfig {
+                // The repo ships its own modeling code; this is the reviewed commit.
+                revision: Some("b06b36724c5417a1ec1b7863dd4fa542b74e4899".into()),
+                ..m(
+                    "dmis-lab/UltraBERT-Embed-150M",
+                    768,
+                    512,
+                    Arch::UltraBert,
+                    Pooling::Cls,
+                    &format!("Instruct: {CODE_SEARCH_TASK}\nQuery: "),
+                    "",
+                    None,
+                    "apache-2.0",
                 )
             },
         ),
