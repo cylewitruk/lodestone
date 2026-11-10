@@ -1,4 +1,5 @@
-//! The MCP server: three tools, `semantic_code_search`, `similar_code_search` and `status`. Their names, descriptions and
+//! The MCP server: three tools, `semantic_code_search`, `similar_code_search` and `status`,
+//! served over HTTP here and over stdio by the `lode mcp` relay. Their names, descriptions and
 //! inputs are part of the design (agents re-read them every turn); keep them verbatim.
 
 use std::sync::Arc;
@@ -268,12 +269,17 @@ impl LodestoneMcp {
     }
 }
 
+/// Server identity shared by the HTTP server and the `lode mcp` relay.
+pub fn server_info() -> ServerConfig {
+    let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
+    info.server_info.name = "lodestone".into();
+    info.server_info.version = env!("CARGO_PKG_VERSION").into();
+    info
+}
+
 impl ServerHandler for LodestoneMcp {
     fn get_info(&self) -> ServerConfig {
-        let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
-        info.server_info.name = "lodestone".into();
-        info.server_info.version = env!("CARGO_PKG_VERSION").into();
-        info
+        server_info()
     }
 
     async fn list_tools(

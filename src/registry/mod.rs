@@ -32,6 +32,32 @@ struct RepoEntry {
     name: String,
 }
 
+fn read_registry(path: &Path) -> RegistryFile {
+    fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Registered worktree roots, read without starting an engine.
+pub fn registered_roots(config: &Config) -> Vec<PathBuf> {
+    read_registry(&config.data_dir().join("registry.json"))
+        .repos
+        .into_iter()
+        .map(|r| r.root)
+        .collect()
+}
+
+/// The registered worktree containing `dir` (the innermost, for nested worktrees).
+pub fn root_of(roots: &[PathBuf], dir: &Path) -> Option<PathBuf> {
+    let dir = dir.canonicalize().ok()?;
+    roots
+        .iter()
+        .filter(|r| dir.starts_with(r))
+        .max_by_key(|r| r.as_os_str().len())
+        .cloned()
+}
+
 pub struct Engine {
     pub config: Config,
     pub languages: Arc<LanguageRegistry>,
@@ -184,10 +210,7 @@ impl Engine {
     }
 
     fn registry_file(&self) -> RegistryFile {
-        fs::read(self.registry_path())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        read_registry(&self.registry_path())
     }
 
     pub fn repos(&self) -> Vec<RepoInfo> {

@@ -36,6 +36,32 @@ pub struct SearchRequest {
     pub with_body: Option<usize>,
 }
 
+/// Takes or renews an agent session's lease (`POST /v1/sessions`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SessionRequest {
+    pub id: String,
+    /// The session's working directory; leases the registered worktree containing it.
+    pub cwd: String,
+    pub ttl_secs: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SessionResponse {
+    /// The registered worktree the session works in, if any.
+    pub repo: Option<RepoInfo>,
+}
+
+/// An MCP tool call relayed by `lode mcp` (`POST /v1/tool`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ToolRequest {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// Lease id; a call without `repo` searches the session's worktree.
+    #[serde(default)]
+    pub session: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct SearchResult {
     pub path: String,

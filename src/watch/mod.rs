@@ -28,6 +28,17 @@ struct Handle {
     _debouncer:
         Option<Debouncer<notify_debouncer_full::notify::RecommendedWatcher, RecommendedCache>>,
     tx: mpsc::UnboundedSender<Change>,
+    /// The fallback rescan timer, when the watcher failed.
+    poll: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // The timer holds a sender, which would keep the worker alive after `unwatch`.
+        if let Some(p) = &self.poll {
+            p.abort();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -173,6 +184,7 @@ impl Watchers {
             }
             Ok(d)
         });
+        let mut poll = None;
         let debouncer = match debouncer {
             Ok(d) => {
                 Self::set_state(
@@ -193,14 +205,14 @@ impl Watchers {
                     format!("polling every 60s (watcher failed: {e})"),
                 );
                 let poll_tx = tx.clone();
-                tokio::spawn(async move {
+                poll = Some(tokio::spawn(async move {
                     loop {
                         tokio::time::sleep(POLL).await;
                         if poll_tx.send(Change::Rescan).is_err() {
                             break;
                         }
                     }
-                });
+                }));
                 None
             }
         };
@@ -210,8 +222,37 @@ impl Watchers {
             Handle {
                 _debouncer: debouncer,
                 tx,
+                poll,
             },
         );
+    }
+
+    /// Stops watching `root`. Its worker finishes any queued pass, then exits.
+    pub fn unwatch(&self, engine: &Engine, root: &Path) {
+        let removed = self
+            .handles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(root);
+        if removed.is_some() {
+            Self::set_state(engine, root, "not watched (no active session)".into());
+        }
+    }
+
+    pub fn is_watched(&self, root: &Path) -> bool {
+        self.handles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(root)
+    }
+
+    pub fn watched(&self) -> Vec<PathBuf> {
+        self.handles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// Queues an indexing pass for `w` on its worker (starting the watcher if needed).

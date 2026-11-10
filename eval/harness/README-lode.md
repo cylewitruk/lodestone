@@ -3,7 +3,7 @@
 1. Fetch the corpus (`../README.md`), start the daemon and register the corpus:
 
    ```bash
-   lode serve &
+   lode serve --port 4600 &    # MCP over HTTP needs TCP; the CLI uses the socket
    lode register eval/corpus
    ```
 

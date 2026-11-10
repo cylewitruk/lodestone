@@ -4,7 +4,7 @@
 Usage: run.py <out-dir> --repo <corpus> --port <daemon port>
               [--situations write,review,refactor,locate] [--arms none,tools,skill]
               [--reps 3] [--jobs 4] [--model sonnet] [--effort medium] [--subagents]
-              [--only id,id]
+              [--only id,id] [--socket <daemon socket>]
 
 Transcripts land in <out-dir>/<situation>/<arm>/<id>.r<rep>.jsonl; existing ones are skipped.
 """
@@ -110,7 +110,9 @@ def run_one(args, situation: str, arm: str, t: dict, rep: int) -> None:
     tmp = out.with_suffix(".tmp")
     # The plugin's hook runs `lode hook session-start` against this daemon; prefer this build.
     path = f"{EVAL.parent / 'target' / 'release'}{os.pathsep}{os.environ.get('PATH', '')}"
-    env = dict(os.environ, LODESTONE_PORT=str(args.port), PATH=path)
+    env = dict(os.environ, PATH=path)
+    if args.socket:
+        env["LODESTONE_SOCKET"] = str(args.socket)
     with tmp.open("w") as fh:
         proc = subprocess.run(cmd, cwd=args.repo, stdout=fh, stderr=subprocess.PIPE, env=env, timeout=600)
     tmp.rename(out)
@@ -132,6 +134,8 @@ def main() -> None:
     ap.add_argument("--subagents", action="store_true", help="also allow the Agent tool (e.g. Explore)")
     ap.add_argument("--only", default="")
     ap.add_argument("--plugin", type=Path, default=PLUGIN, help="plugin directory for arm `shipped`")
+    ap.add_argument("--socket", type=Path, help="the daemon's socket, for the plugin's hook "
+                    "(default: the configured one)")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "mcp-empty.json").write_text('{"mcpServers": {}}\n')
