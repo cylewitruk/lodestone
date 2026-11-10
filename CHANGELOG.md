@@ -769,3 +769,21 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   9 of 18 review and refactor runs; no false equivalents on controls. Offline, 16 results instead
   of 24 would save about 0.5% of a run's tokens and lose 5 of 78 replay hits, so 24 stays.
   Details in `eval/situations/README.md`.
+
+## `lode install` for Claude Code and Codex
+
+- `lode install` / `lode uninstall` (`--client claude|codex`, `--scope user|project`,
+  `--dry-run`) add the skill, the MCP server and the SessionStart reminder to each harness whose
+  CLI is on PATH. The skill goes to the shared `.agents/skills/lodestone/`, which Codex reads at
+  both scopes; Claude Code 2.1.301 reads `~/.agents/skills` but not a repository's
+  `.agents/skills` (checked from its startup event), so it gets a symlink from `.claude/skills/`.
+  MCP servers use `claude mcp add` / `codex mcp add` (user) or `.mcp.json` /
+  `.codex/config.toml` (project); hooks go to `settings.json` / `hooks.json`. Re-running is
+  idempotent and other hooks and keys are left in place.
+- `lode hook session-start` replaces the plugin's shell script (and its `curl` dependency): it
+  reads the session's `cwd` from the hook's stdin and prints the reminder only when the daemon
+  serves it. The skill and reminder text are built into the binary.
+- Checked against the real CLIs in a temporary `HOME`: `codex mcp get` and `claude mcp get` list
+  the server, and a Claude Code session there starts with the reminder, the skill and the three
+  tools connected. Codex's hook trust (`/hooks`) was not exercised.
+
