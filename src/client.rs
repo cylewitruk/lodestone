@@ -1,14 +1,68 @@
-//! Blocking HTTP client the CLI uses when a daemon is running.
+//! Blocking HTTP client for the daemon, and starting an on-demand daemon when none runs.
 
-use std::time::Duration;
+use std::fs::OpenOptions;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use serde::de::DeserializeOwned;
 
 use crate::api::types::{
     ErrorBody, IndexRequest, IndexResponse, RegisterRequest, RepoInfo, SearchRequest,
-    SearchResponse, StatusReport,
+    SearchResponse, SessionRequest, SessionResponse, StatusReport, ToolRequest,
 };
+use crate::config::Config;
+
+/// Starts `lode serve --on-demand` in the background, detached from the caller's process group
+/// and logging to `<data dir>/daemon.log`. Losing a race with another starter is harmless: the
+/// second daemon cannot bind the port and exits.
+pub fn start_daemon(config: &Config, config_path: Option<&Path>) -> anyhow::Result<()> {
+    let log_path = config.data_dir().join("daemon.log");
+    std::fs::create_dir_all(config.data_dir())?;
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .with_context(|| format!("opening {}", log_path.display()))?;
+    let mut cmd = Command::new(std::env::current_exe()?);
+    if let Some(p) = config_path {
+        cmd.arg("--config").arg(p);
+    }
+    cmd.args(["serve", "--on-demand", "--port", &config.port.to_string()])
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log);
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    cmd.spawn().context("starting the lodestone daemon")?;
+    Ok(())
+}
+
+/// Connects to the daemon, starting one on demand and waiting up to `wait` for it.
+pub fn connect_or_start(
+    config: &Config,
+    config_path: Option<&Path>,
+    wait: Duration,
+) -> anyhow::Result<Client> {
+    if let Some(c) = Client::connect(config.port) {
+        return Ok(c);
+    }
+    start_daemon(config, config_path)?;
+    let deadline = Instant::now() + wait;
+    loop {
+        if let Some(c) = Client::connect(config.port) {
+            return Ok(c);
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "the lodestone daemon did not start within {wait:?}; see {}",
+                config.data_dir().join("daemon.log").display()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
 
 pub struct Client {
     base: String,
@@ -80,5 +134,38 @@ impl Client {
 
     pub fn repos(&self) -> anyhow::Result<Vec<RepoInfo>> {
         Self::decode(self.agent.get(format!("{}/v1/repos", self.base)).call()?)
+    }
+
+    pub fn session(&self, req: &SessionRequest) -> anyhow::Result<SessionResponse> {
+        Self::decode(
+            self.agent
+                .post(format!("{}/v1/sessions", self.base))
+                .send_json(req)?,
+        )
+    }
+
+    pub fn release(&self, id: &str) -> anyhow::Result<()> {
+        self.agent
+            .delete(format!("{}/v1/sessions/{id}", self.base))
+            .call()?;
+        Ok(())
+    }
+
+    /// Runs an MCP tool: `Err` when the daemon cannot be reached, `Ok(Err(message))` when the
+    /// tool itself fails.
+    pub fn tool(&self, req: &ToolRequest) -> anyhow::Result<Result<String, String>> {
+        let mut resp = self
+            .agent
+            .post(format!("{}/v1/tool", self.base))
+            .send_json(req)?;
+        let ok = resp.status().is_success();
+        let text = resp.body_mut().read_to_string()?;
+        Ok(if ok {
+            Ok(text)
+        } else {
+            Err(serde_json::from_str::<ErrorBody>(&text)
+                .map(|e| e.error)
+                .unwrap_or(text))
+        })
     }
 }

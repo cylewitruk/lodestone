@@ -787,3 +787,35 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   the server, and a Claude Code session there starts with the reminder, the skill and the three
   tools connected. Codex's hook trust (`/hooks`) was not exercised.
 
+## On-demand daemon
+
+- The MCP server is now `lode mcp`, a stdio relay that harnesses start per session, in place of
+  the HTTP URL. It starts `lode serve --on-demand` in the background when no daemon answers
+  (like sccache), waits for it, takes a lease on the session's worktree (renewed every 30 s,
+  released when the harness closes stdin), and relays tool calls to a new `POST /v1/tool`. A call
+  without `repo` searches the session's worktree, so several registered repositories no longer
+  need `repo` on every call. If the daemon dies mid-session, the relay starts it again and
+  retries once.
+- An on-demand daemon watches only leased worktrees: a session lease (`POST /v1/sessions`,
+  `DELETE /v1/sessions/{id}`), or a search, register or index request (a lease of 10 min, at
+  most the idle timeout). Taking a lease catches the worktree up, and unleased worktrees stop
+  being watched. The daemon exits `idle_timeout_secs` (default 1800, 0 = never) after the last
+  lease ends. Plain `lode serve` keeps watching everything and runs until stopped.
+- The daemon binds its port before loading the model, so a second daemon started at the same
+  time exits at once instead of loading a model it cannot serve.
+- `lode hook session-start` decides from the registry when no daemon runs, and starts one in the
+  background. With a daemon running, it takes a 5-minute lease, so catch-up starts as the
+  session opens.
+- `lode install` registers `lode mcp` (`claude mcp add … -- <lode> mcp`, `codex mcp add … --
+  <lode> mcp`, or `"command": "lode", "args": ["mcp"]` in `.mcp.json` and `.codex/config.toml`).
+- `LODESTONE_PORT` now overrides the configured port for every command. `GET /v1/search`
+  defaulted to 8 results; it now uses the shared default of 24.
+- Watchers can be removed; a polling watcher's timer no longer outlives its worktree.
+- Checked:
+  - Integration tests cover an on-demand daemon that watches a leased worktree, unwatches it
+    after release and exits when idle, and a `lode mcp` that starts the daemon itself and
+    searches the session's worktree with two repositories registered.
+  - In a real Claude Code session with no daemon running, the hook started one and the relay
+    connected in 0.5 s. The first search returned 2.8 s after the session started, model load
+    included.
+

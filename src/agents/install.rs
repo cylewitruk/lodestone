@@ -3,7 +3,8 @@
 //!
 //! The skill lives in the shared `.agents/skills/` location (read by Codex, and by Claude Code
 //! at user level); Claude also gets a symlink from `.claude/skills/`, its documented location.
-//! MCP servers and hooks have no shared location, so each harness gets its own.
+//! MCP servers and hooks have no shared location, so each harness gets its own. The MCP server is
+//! `lode mcp`, which starts the daemon on demand.
 
 use std::fmt;
 use std::fs;
@@ -62,10 +63,8 @@ pub struct Target {
     pub home: PathBuf,
     /// Repository root, for `Scope::Project`.
     pub project: PathBuf,
-    /// The `lode` binary the user-level hook runs.
+    /// The `lode` binary user-level config runs.
     pub exe: PathBuf,
-    /// The daemon's MCP endpoint.
-    pub url: String,
 }
 
 impl Target {
@@ -100,11 +99,18 @@ impl Target {
         self.base().join(h.dir()).join(file)
     }
 
-    /// A repository's hook relies on `lode` being on PATH; a user's runs this binary.
+    /// `lode`: this binary for user config; from PATH in a repository, which other machines share.
+    fn program(&self) -> String {
+        match self.scope {
+            Scope::User => self.exe.display().to_string(),
+            Scope::Project => "lode".into(),
+        }
+    }
+
     fn hook_command(&self) -> String {
         match self.scope {
-            Scope::User => format!("'{}' {HOOK_ARGS}", self.exe.display()),
-            Scope::Project => format!("lode {HOOK_ARGS}"),
+            Scope::User => format!("'{}' {HOOK_ARGS}", self.program()),
+            Scope::Project => format!("{} {HOOK_ARGS}", self.program()),
         }
     }
 }
@@ -133,15 +139,15 @@ pub enum Step {
         path: PathBuf,
         command: Option<String>,
     },
-    /// Adds or removes our server in a `.mcp.json` file.
+    /// Adds or removes our server (`<program> mcp`) in a `.mcp.json` file.
     McpJson {
         path: PathBuf,
-        url: Option<String>,
+        program: Option<String>,
     },
     /// Adds or removes our `[mcp_servers.lodestone]` table in a Codex `config.toml`.
     CodexToml {
         path: PathBuf,
-        url: Option<String>,
+        program: Option<String>,
     },
 }
 
@@ -161,18 +167,19 @@ impl fmt::Display for Step {
                 verb(command.is_some()),
                 path.display()
             ),
-            Step::McpJson { path, url } | Step::CodexToml { path, url } => write!(
+            Step::McpJson { path, program } | Step::CodexToml { path, program } => write!(
                 f,
                 "{} MCP server `{NAME}` in {}",
-                verb(url.is_some()),
+                verb(program.is_some()),
                 path.display()
             ),
         }
     }
 }
 
+/// The MCP server is `lode mcp`, a stdio relay that starts the daemon on demand.
 fn mcp_steps(h: Harness, t: &Target, add: bool) -> Vec<Step> {
-    let url = add.then(|| t.url.clone());
+    let program = t.program();
     let run = |args: &[&str], may_fail: bool| Step::Run {
         program: h.program().into(),
         args: args.iter().map(|a| a.to_string()).collect(),
@@ -180,20 +187,11 @@ fn mcp_steps(h: Harness, t: &Target, add: bool) -> Vec<Step> {
     };
     match (h, t.scope) {
         (Harness::Claude, Scope::User) => {
-            // Re-adding replaces an entry with an old port.
+            // Re-adding replaces an older entry (another binary path, or the old HTTP server).
             let mut steps = vec![run(&["mcp", "remove", "--scope", "user", NAME], true)];
             if add {
                 steps.push(run(
-                    &[
-                        "mcp",
-                        "add",
-                        "--transport",
-                        "http",
-                        "--scope",
-                        "user",
-                        NAME,
-                        &t.url,
-                    ],
+                    &["mcp", "add", "--scope", "user", NAME, "--", &program, "mcp"],
                     false,
                 ));
             }
@@ -202,17 +200,17 @@ fn mcp_steps(h: Harness, t: &Target, add: bool) -> Vec<Step> {
         (Harness::Codex, Scope::User) => {
             let mut steps = vec![run(&["mcp", "remove", NAME], true)];
             if add {
-                steps.push(run(&["mcp", "add", NAME, "--url", &t.url], false));
+                steps.push(run(&["mcp", "add", NAME, "--", &program, "mcp"], false));
             }
             steps
         }
         (Harness::Claude, Scope::Project) => vec![Step::McpJson {
             path: t.project.join(".mcp.json"),
-            url,
+            program: add.then_some(program),
         }],
         (Harness::Codex, Scope::Project) => vec![Step::CodexToml {
             path: t.project.join(".codex/config.toml"),
-            url,
+            program: add.then_some(program),
         }],
     }
 }
@@ -297,12 +295,14 @@ pub fn apply(step: &Step) -> anyhow::Result<()> {
             Ok(())
         }
         Step::Hook { path, command } => edit_json(path, |doc| set_hook(doc, command.as_deref())),
-        Step::McpJson { path, url } => edit_json(path, |doc| set_mcp_server(doc, url.as_deref())),
-        Step::CodexToml { path, url } => {
+        Step::McpJson { path, program } => {
+            edit_json(path, |doc| set_mcp_server(doc, program.as_deref()))
+        }
+        Step::CodexToml { path, program } => {
             let text = read_or_empty(path)?;
-            let table = url
+            let table = program
                 .as_ref()
-                .map(|u| format!("url = {}\n", Value::from(u.as_str())));
+                .map(|p| format!("command = {}\nargs = [\"mcp\"]\n", Value::from(p.as_str())));
             write_if_changed(
                 path,
                 &text,
@@ -405,15 +405,18 @@ fn set_hook(doc: &mut Map<String, Value>, command: Option<&str>) {
     }
 }
 
-fn set_mcp_server(doc: &mut Map<String, Value>, url: Option<&str>) {
+fn set_mcp_server(doc: &mut Map<String, Value>, program: Option<&str>) {
     let servers = doc
         .entry("mcpServers")
         .or_insert_with(|| json!({}))
         .as_object_mut();
     let Some(servers) = servers else { return };
-    match url {
-        Some(url) => {
-            servers.insert(NAME.into(), json!({ "type": "http", "url": url }));
+    match program {
+        Some(program) => {
+            servers.insert(
+                NAME.into(),
+                json!({ "type": "stdio", "command": program, "args": ["mcp"] }),
+            );
         }
         None => {
             servers.remove(NAME);
@@ -468,7 +471,6 @@ mod tests {
             home: root.join("home"),
             project: root.join("repo"),
             exe: PathBuf::from("/opt/bin/lode"),
-            url: "http://127.0.0.1:4600/mcp".into(),
         }
     }
 
@@ -499,9 +501,9 @@ mod tests {
             runs,
             [
                 "run claude mcp remove --scope user lodestone",
-                "run claude mcp add --transport http --scope user lodestone http://127.0.0.1:4600/mcp",
+                "run claude mcp add --scope user lodestone -- /opt/bin/lode mcp",
                 "run codex mcp remove lodestone",
-                "run codex mcp add lodestone --url http://127.0.0.1:4600/mcp",
+                "run codex mcp add lodestone -- /opt/bin/lode mcp",
             ]
         );
         run_all(&steps);
@@ -549,12 +551,12 @@ mod tests {
         assert!(repo.join(".claude/skills/lodestone/SKILL.md").exists());
         assert_eq!(
             read_json(&repo.join(".mcp.json")),
-            json!({ "mcpServers": { "lodestone": { "type": "http", "url": "http://127.0.0.1:4600/mcp" } } })
+            json!({ "mcpServers": { "lodestone": { "type": "stdio", "command": "lode", "args": ["mcp"] } } })
         );
         assert_eq!(
             fs::read_to_string(repo.join(".codex/config.toml")).unwrap(),
             "# mine\nmodel = \"x\"\n\n[mcp_servers.other]\nurl = \"http://o\"\n\n\
-             [mcp_servers.lodestone]\nurl = \"http://127.0.0.1:4600/mcp\"\n"
+             [mcp_servers.lodestone]\ncommand = \"lode\"\nargs = [\"mcp\"]\n"
         );
         assert_eq!(
             read_json(&repo.join(".codex/hooks.json"))["hooks"]["SessionStart"][0]["hooks"][0]["command"],

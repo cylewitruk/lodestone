@@ -19,13 +19,13 @@ Requires a stable Rust toolchain (edition 2024) and a C compiler.
 
 ```bash
 cargo install --path .
-lode serve                        # daemon on 127.0.0.1:4600
-lode register ~/src/my-repo       # watch and index
-lode search "retry an HTTP call with exponential backoff"
+lode register ~/src/my-repo       # index a repository
 lode install                      # wire up Claude Code and/or Codex
+lode search "retry an HTTP call with exponential backoff"
 ```
 
-Models download on first use into `~/.lodestone/models`.
+There is nothing to start: agent sessions start the daemon on demand, and it exits when they are
+done (see [Daemon](#daemon)). Models download on first use into `~/.lodestone/models`.
 
 ## Writing queries
 
@@ -48,13 +48,15 @@ lode uninstall                    # same flags; --dry-run prints the steps only
 | Part | User scope | Project scope |
 | ---- | ---- | ---- |
 | Skill | `~/.agents/skills/lodestone/`, linked from `~/.claude/skills/` | `.agents/skills/lodestone/`, linked from `.claude/skills/` |
-| MCP server | `claude mcp add` / `codex mcp add` | `.mcp.json` / `.codex/config.toml` |
+| MCP server (`lode mcp`) | `claude mcp add` / `codex mcp add` | `.mcp.json` / `.codex/config.toml` |
 | SessionStart reminder | `~/.claude/settings.json` / `~/.codex/hooks.json` | `.claude/settings.json` / `.codex/hooks.json` |
 
 - **Skill location:** the shared `.agents/skills/`. Claude Code doesn't read a repository's
   `.agents/skills`, so it gets a symlink from `.claude/skills/`.
-- **Reminder:** `lode hook session-start` prints it only when the daemon serves the session's
-  repository (port 4600, or `LODESTONE_PORT`).
+- **MCP server:** `lode mcp`, a stdio relay the harness starts per session. It starts the daemon
+  if needed and searches the session's repository when a call names none.
+- **Reminder:** `lode hook session-start` prints it only in a registered repository, and starts
+  the daemon early so the model loads while the session starts.
 - **First use:** Codex asks you to trust the hook once (`/hooks`). At project scope, Codex must
   trust the project and Claude Code asks you to approve the `.mcp.json` server.
 - **Plugin:** `plugin/` bundles the same skill, server and hook as a Claude Code plugin
@@ -97,11 +99,27 @@ stacks-common/src/util/retry.rs:25:12  lines 25-29  pub struct RetryReader<'a, R
 All numbers are 1-based, and columns count characters. Language servers count from 0, so
 subtract 1 from both. JSON results carry `line`, `line_end`, `name_line` and `name_column`.
 
+## Daemon
+
+One daemon per machine (port 4600, or `LODESTONE_PORT`) keeps the model loaded and serves every
+repository. It runs in one of two modes:
+
+| | On demand (default) | Always on |
+| ---- | ---- | ---- |
+| Started by | `lode mcp` or the session hook, like sccache | you: `lode serve` |
+| Watches | only repositories an agent session is in | every registered repository |
+| Stops | `idle_timeout_secs` (30 min) after the last session ends | when you stop it |
+
+- **Sessions:** each `lode mcp` holds a lease on its session's repository, renewed every 30 s. A
+  CLI or REST search takes a shorter one.
+- **Catching up:** a repository is re-scanned when a session starts using it, so changes made
+  while it wasn't watched are picked up.
+- **Races:** two sessions starting together can't start two daemons. The daemon binds its port
+  before loading the model, so the second one exits.
+- **Log:** an auto-started daemon logs to `~/.lodestone/daemon.log`.
+
 ## How it works
 
-- **Daemon:** `lode serve` keeps the embedding model resident and reopens every registered
-  worktree. It watches each worktree for file changes and catches up on changes made while it was
-  down.
 - **Registering:** `lode register` canonicalizes the path, adds it to
   `~/.lodestone/registry.json`, then starts watching and indexing it.
 - **CLI:** every subcommand uses the daemon when it is running and runs in-process otherwise
@@ -117,7 +135,8 @@ subtract 1 from both. JSON results carry `line`, `line_end`, `name_line` and `na
 
 | Command | Purpose |
 | ---- | ---- |
-| `lode serve [--port N]` | run the daemon |
+| `lode serve [--port N]` | run the daemon in the foreground, always on |
+| `lode mcp` | MCP server over stdio; starts the daemon on demand |
 | `lode register <path>` | add, watch and index a worktree |
 | `lode index <path> [--force]` | re-index a worktree (incremental unless `--force`) |
 | `lode search <query>` | search a registered worktree |
@@ -144,6 +163,7 @@ GET  /v1/repos
 
 ```toml
 port = 4600
+idle_timeout_secs = 1800    # on-demand daemon: exit this long after the last session; 0 = never
 model = "jina-code-v2"      # alias into [models]; see `lode models`
 backend = "candle-metal"    # candle-metal | candle-cpu | fastembed | remote
 batch_size = 64

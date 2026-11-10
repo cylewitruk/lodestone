@@ -515,3 +515,170 @@ fn kill_mid_index_leaves_consistent_index() {
         rows.len()
     );
 }
+
+/// A home whose config sets `port` and a short idle timeout for on-demand daemons.
+fn on_demand_home(port: u16, idle_secs: u64) -> PathBuf {
+    let home = tempdir();
+    write(
+        &home,
+        "config.toml",
+        &format!("port = {port}\nidle_timeout_secs = {idle_secs}\n"),
+    );
+    home
+}
+
+fn lode(home: &Path) -> Command {
+    let mut c = Command::new(BIN);
+    c.env("LODESTONE_HOME", home)
+        .env("LODESTONE_TEST_EMBEDDER", "hash")
+        .env_remove("LODESTONE_PORT");
+    c
+}
+
+fn answers(base: &str) -> bool {
+    ureq::get(format!("{base}/v1/repos")).call().is_ok()
+}
+
+fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn on_demand_daemon_watches_leased_worktrees_and_exits_when_idle() {
+    let root = repo(3);
+    let port = free_port();
+    let home = on_demand_home(port, 4);
+    let mut child = lode(&home)
+        .args(["serve", "--on-demand"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let base = format!("http://127.0.0.1:{port}");
+    wait_until("the daemon", Duration::from_secs(30), || answers(&base));
+    let get_status = || -> StatusReport {
+        ureq::get(format!("{base}/v1/status"))
+            .call()
+            .unwrap()
+            .body_mut()
+            .read_json()
+            .unwrap()
+    };
+    let post = |path: &str, body: Value| -> Value {
+        ureq::post(format!("{base}{path}"))
+            .send_json(&body)
+            .unwrap()
+            .body_mut()
+            .read_json()
+            .unwrap()
+    };
+    post("/v1/register", json!({ "path": root.to_string_lossy() }));
+
+    // A session in a subdirectory leases the worktree; it stays watched while the lease lives.
+    let resp = post(
+        "/v1/sessions",
+        json!({ "id": "s1", "cwd": root.join("core").to_string_lossy(), "ttl_secs": 60 }),
+    );
+    assert_eq!(resp["repo"]["name"], "repo");
+    assert!(get_status().watcher.starts_with("watching"));
+
+    // Released (and the registration's lease, capped at the idle timeout, expired): unwatched,
+    // then the daemon exits.
+    ureq::delete(format!("{base}/v1/sessions/s1"))
+        .call()
+        .unwrap();
+    wait_until("unwatch", Duration::from_secs(15), || {
+        get_status().watcher.starts_with("not watched")
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "{status}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "daemon did not exit when idle");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Reads JSON-RPC responses from the relay until the one with `id`.
+fn rpc_response(lines: &mut impl Iterator<Item = std::io::Result<String>>, id: u64) -> Value {
+    for line in lines {
+        let v: Value = serde_json::from_str(&line.unwrap()).unwrap();
+        if v["id"] == id {
+            return v;
+        }
+    }
+    panic!("relay closed before answering {id}");
+}
+
+#[test]
+fn mcp_relay_starts_the_daemon_and_searches_the_session_worktree() {
+    use std::io::{BufRead, BufReader, Write};
+
+    let root = repo(5);
+    // A second repository, so a call without `repo` is ambiguous unless the session decides.
+    let other = repo(2);
+    let port = free_port();
+    let home = on_demand_home(port, 3);
+    for r in [&other, &root] {
+        let ok = lode(&home)
+            .args(["--local", "register"])
+            .arg(r)
+            .stdout(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+    }
+    let base = format!("http://127.0.0.1:{port}");
+    assert!(!answers(&base));
+
+    let mut relay = lode(&home)
+        .arg("mcp")
+        .current_dir(root.join("core"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = relay.stdin.take().unwrap();
+    let mut lines = BufReader::new(relay.stdout.take().unwrap()).lines();
+    let mut send = |v: Value| writeln!(stdin, "{v}").unwrap();
+    send(
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": { "name": "test", "version": "0" } } }),
+    );
+    assert_eq!(
+        rpc_response(&mut lines, 1)["result"]["serverInfo"]["name"],
+        "lodestone"
+    );
+    send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    send(json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }));
+    let tools = rpc_response(&mut lines, 2);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 3);
+
+    // No `repo`: the relay's session lease supplies the worktree it runs in.
+    send(
+        json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
+        "name": "semantic_code_search", "arguments": { "query": "helper_3" } } }),
+    );
+    let out = rpc_response(&mut lines, 3);
+    let text = out["result"]["content"][0]["text"].as_str().unwrap();
+    assert_eq!(out["result"]["isError"], false, "{text}");
+    assert!(text.contains("pub fn helper_3"), "{text}");
+    assert!(text.contains("core/src/m3.rs"), "{text}");
+    assert!(answers(&base), "the relay started a daemon");
+
+    // Closing stdin ends the session; the daemon then exits after its idle timeout.
+    drop(stdin);
+    assert!(relay.wait().unwrap().success());
+    wait_until("the idle daemon to exit", Duration::from_secs(30), || {
+        !answers(&base)
+    });
+}

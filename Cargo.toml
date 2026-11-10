@@ -25,7 +25,7 @@ ignore = "0.4.34"
 notify = "8.2.1"
 notify-debouncer-full = "0.7.0"
 rayon = "1.12.0"
-rmcp = { version = "3.9.0", features = ["transport-streamable-http-server"] }
+rmcp = { version = "3.9.0", features = ["transport-streamable-http-server", "transport-io"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }

@@ -35,7 +35,13 @@ enum Cmd {
     Serve {
         #[arg(long)]
         port: Option<u16>,
+        /// Watch only worktrees agent sessions use, and exit `idle_timeout_secs` after the last
+        /// session ends (how `lode mcp` and the session hook start the daemon).
+        #[arg(long)]
+        on_demand: bool,
     },
+    /// MCP server over stdio for agent harnesses: relays to the daemon, starting it if needed.
+    Mcp,
     /// Register a worktree: canonicalize, add to the registry, watch, index if needed.
     Register { path: PathBuf },
     /// Index a worktree (incremental unless --force).
@@ -140,7 +146,7 @@ struct HarnessArgs {
 
 #[derive(Subcommand)]
 enum HookCmd {
-    /// Print the lodestone reminder when the daemon serves the session's repository.
+    /// Print the lodestone reminder in a registered repository; start the daemon if needed.
     SessionStart,
 }
 
@@ -160,12 +166,16 @@ fn main() -> anyhow::Result<()> {
         Client::connect(config.port)
     };
     match cli.cmd {
-        Cmd::Serve { port } => {
+        Cmd::Serve { port, on_demand } => {
             if let Some(p) = port {
                 config.port = p;
             }
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(lodestone::api::serve(config))
+            rt.block_on(lodestone::api::serve(config, on_demand))
+        }
+        Cmd::Mcp => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(agents::run_relay(config, cli.config))
         }
         Cmd::Register { path } => {
             let path = std::path::absolute(&path)?;
@@ -239,11 +249,8 @@ fn main() -> anyhow::Result<()> {
         Cmd::Install(args) => harness_command(&config, args, true),
         Cmd::Uninstall(args) => harness_command(&config, args, false),
         Cmd::Hook(HookCmd::SessionStart) => {
-            let port = std::env::var("LODESTONE_PORT")
-                .ok()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(config.port);
-            if let Some(out) = agents::session_start(&session_dir()?, port) {
+            let dir = session_dir()?;
+            if let Some(out) = agents::session_start(&dir, &config, cli.config.as_deref()) {
                 println!("{out}");
             }
             Ok(())
@@ -430,7 +437,6 @@ fn harness_command(config: &Config, args: HarnessArgs, add: bool) -> anyhow::Res
         home: dirs::home_dir().context("no home directory")?,
         project,
         exe: std::env::current_exe()?,
-        url: format!("http://127.0.0.1:{}/mcp", config.port),
     };
     let steps = if add {
         agents::install(&clients, &target)
@@ -444,15 +450,17 @@ fn harness_command(config: &Config, args: HarnessArgs, add: bool) -> anyhow::Res
         }
     }
     if add && !args.dry_run {
-        print_next_steps(&clients, args.scope);
+        print_next_steps(config, &clients, args.scope);
     }
     Ok(())
 }
 
-fn print_next_steps(clients: &[Harness], scope: Scope) {
+fn print_next_steps(config: &Config, clients: &[Harness], scope: Scope) {
     println!(
-        "\nNext: run the daemon (`lode serve`) and register repositories (`lode register <path>`); \
-         the reminder appears only in repositories the daemon serves."
+        "
+Next: register repositories (`lode register <path>`). Agent sessions start the daemon \
+         on demand; it exits {} min after the last session ends.",
+        config.idle_timeout_secs / 60
     );
     if clients.contains(&Harness::Codex) {
         println!("Codex: run /hooks once to trust the lodestone SessionStart hook.");

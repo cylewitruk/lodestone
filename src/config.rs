@@ -216,7 +216,11 @@ impl Default for RemoteConfig {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
+    /// Daemon port; `LODESTONE_PORT` overrides it.
     pub port: u16,
+    /// An auto-started daemon (`lode serve --on-demand`) exits this long after its last agent
+    /// session ends; 0 keeps it running.
+    pub idle_timeout_secs: u64,
     pub model: String,
     pub backend: Backend,
     pub batch_size: usize,
@@ -260,6 +264,7 @@ impl Default for Config {
         let (backend, model) = default_engine();
         Self {
             port: 4600,
+            idle_timeout_secs: 1800,
             model: model.into(),
             backend,
             batch_size: 64,
@@ -534,6 +539,12 @@ impl Config {
         };
         if cfg.data_dir.is_none() {
             cfg.data_dir = Some(default_data_dir());
+        }
+        if let Some(port) = std::env::var("LODESTONE_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+        {
+            cfg.port = port;
         }
         Ok(cfg)
     }
