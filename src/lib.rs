@@ -1,5 +1,6 @@
 //! Lodestone: local semantic code search for coding agents.
 
+pub mod agents;
 pub mod api;
 pub mod bench;
 pub mod cache;

@@ -108,7 +108,9 @@ def run_one(args, situation: str, arm: str, t: dict, rep: int) -> None:
     elif arm.startswith("skill-"):  # skill-description variants, e.g. skill-v2
         cmd += ["--plugin-dir", str(HERE / "skill-variants" / arm.removeprefix("skill-"))]
     tmp = out.with_suffix(".tmp")
-    env = dict(os.environ, LODESTONE_PORT=str(args.port))  # the plugin's hook checks this daemon
+    # The plugin's hook runs `lode hook session-start` against this daemon; prefer this build.
+    path = f"{EVAL.parent / 'target' / 'release'}{os.pathsep}{os.environ.get('PATH', '')}"
+    env = dict(os.environ, LODESTONE_PORT=str(args.port), PATH=path)
     with tmp.open("w") as fh:
         proc = subprocess.run(cmd, cwd=args.repo, stdout=fh, stderr=subprocess.PIPE, env=env, timeout=600)
     tmp.rename(out)

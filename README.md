@@ -69,15 +69,34 @@ Files are walked with `.gitignore` and `.lodestoneignore` rules; directories con
 `fs.inotify.max_user_watches`; if the watcher fails, lodestone falls back to a 60 s rescan poll
 and reports it in `status`.
 
-## Wire Claude Code
-
-Install the plugin in `plugin/`, which bundles the MCP server config, a `lodestone` skill (when
-and how to search) and a SessionStart reminder. The reminder is added only when a daemon on port
-4600 (or `LODESTONE_PORT`) serves the session's repository:
+## Install into Claude Code and Codex
 
 ```bash
-claude --plugin-dir plugin        # one session; or add it to a marketplace for /plugin install
+lode install                      # every harness whose CLI is on PATH, for all your sessions
+lode install --client codex       # one harness; repeat --client for several
+lode install --scope project      # files to commit in the current repository instead
+lode uninstall                    # same flags; --dry-run prints the steps without applying them
 ```
+
+`install` adds three things to each harness:
+
+| Part | User scope | Project scope |
+| ---- | ---- | ---- |
+| Skill (when and how to search) | `~/.agents/skills/lodestone/`, linked from `~/.claude/skills/` | `.agents/skills/lodestone/`, linked from `.claude/skills/` |
+| MCP server | `claude mcp add` / `codex mcp add` | `.mcp.json` / `.codex/config.toml` |
+| SessionStart reminder | `~/.claude/settings.json` / `~/.codex/hooks.json` | `.claude/settings.json` / `.codex/hooks.json` |
+
+The skill uses the shared `.agents/` location, which Codex reads at both scopes. Claude Code
+reads `~/.agents/skills` but not a repository's `.agents/skills`, and documents only
+`.claude/skills`, so it gets a symlink. MCP servers and hooks have no shared location.
+
+The reminder runs `lode hook session-start`, which prints it only when the daemon (port 4600, or
+`LODESTONE_PORT`) serves the session's repository. Codex asks you to trust a new hook once
+(`/hooks`). Project scope needs Codex to trust the project and Claude Code to approve the
+`.mcp.json` server on first use.
+
+`plugin/` holds the same skill, server and hook as a Claude Code plugin
+(`claude --plugin-dir plugin`); its hook needs `lode` on PATH.
 
 The reminder tells agents to look for existing code and reuse what fits, then points them at
 lodestone. In `eval/situations/` (28 realistic tasks on stacks-core and LibreChat, Opus 5.5), the
@@ -89,13 +108,7 @@ half the tool calls, though both arms solved nearly every task there. Splitting 
 three repositories) moved correctness from 23/27 to 25/27 with 12% fewer tool calls at about the
 same cost once prompt-cache warmth is evened out.
 
-Without the plugin, add the server to the repository's `.mcp.json` (or your user MCP config):
-
-```json
-{"mcpServers": {"lodestone": {"type": "http", "url": "http://127.0.0.1:4600/mcp"}}}
-```
-
-Claude Code then sees three tools:
+Agents then see three tools:
 
 - `semantic_code_search`: "Find existing code by what it does, when you do not know its name. …"
   with `query` (one sentence) and `example_identifiers` (guessed names), joined into one query.

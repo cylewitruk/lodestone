@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
+use lodestone::agents::{self, Harness, Scope, Target};
 use lodestone::api::types::{IndexRequest, RegisterRequest, SearchRequest};
 use lodestone::bench::{self, BenchOptions};
 use lodestone::client::Client;
@@ -112,6 +113,35 @@ enum Cmd {
     Models,
     /// Built-in grammars, grammars found via tree-sitter's config, and the extension map.
     Languages,
+    /// Install the skill, MCP server and SessionStart reminder into Claude Code and/or Codex.
+    Install(HarnessArgs),
+    /// Remove what `install` added.
+    Uninstall(HarnessArgs),
+    /// Hooks that agent harnesses run.
+    #[command(subcommand)]
+    Hook(HookCmd),
+}
+
+#[derive(clap::Args)]
+struct HarnessArgs {
+    /// Harness to (un)install for; repeatable (default: every harness whose CLI is on PATH).
+    #[arg(long, value_enum)]
+    client: Vec<Harness>,
+    /// `user` (every session) or `project` (files to commit in a repository).
+    #[arg(long, value_enum, default_value = "user")]
+    scope: Scope,
+    /// Repository for `--scope project` (default: the enclosing git repository).
+    #[arg(long)]
+    project: Option<PathBuf>,
+    /// Print the steps without applying them.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Subcommand)]
+enum HookCmd {
+    /// Print the lodestone reminder when the daemon serves the session's repository.
+    SessionStart,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -203,6 +233,18 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
                 println!("{}", resp.to_text());
+            }
+            Ok(())
+        }
+        Cmd::Install(args) => harness_command(&config, args, true),
+        Cmd::Uninstall(args) => harness_command(&config, args, false),
+        Cmd::Hook(HookCmd::SessionStart) => {
+            let port = std::env::var("LODESTONE_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(config.port);
+            if let Some(out) = agents::session_start(&session_dir()?, port) {
+                println!("{out}");
             }
             Ok(())
         }
@@ -360,4 +402,89 @@ fn spawn_progress(
         }
     });
     done
+}
+
+fn harness_command(config: &Config, args: HarnessArgs, add: bool) -> anyhow::Result<()> {
+    let mut clients = args.client;
+    if clients.is_empty() {
+        clients = Harness::ALL
+            .into_iter()
+            .filter(|h| on_path(h.program()))
+            .collect();
+        anyhow::ensure!(
+            !clients.is_empty(),
+            "neither claude nor codex is on PATH; pass --client"
+        );
+    }
+    let cwd = std::env::current_dir()?;
+    let project = match args.project {
+        Some(p) => std::path::absolute(p)?,
+        None => cwd
+            .ancestors()
+            .find(|d| d.join(".git").exists())
+            .unwrap_or(&cwd)
+            .to_path_buf(),
+    };
+    let target = Target {
+        scope: args.scope,
+        home: dirs::home_dir().context("no home directory")?,
+        project,
+        exe: std::env::current_exe()?,
+        url: format!("http://127.0.0.1:{}/mcp", config.port),
+    };
+    let steps = if add {
+        agents::install(&clients, &target)
+    } else {
+        agents::uninstall(&clients, &target)
+    };
+    for step in &steps {
+        println!("{step}");
+        if !args.dry_run {
+            agents::apply(step)?;
+        }
+    }
+    if add && !args.dry_run {
+        print_next_steps(&clients, args.scope);
+    }
+    Ok(())
+}
+
+fn print_next_steps(clients: &[Harness], scope: Scope) {
+    println!(
+        "\nNext: run the daemon (`lode serve`) and register repositories (`lode register <path>`); \
+         the reminder appears only in repositories the daemon serves."
+    );
+    if clients.contains(&Harness::Codex) {
+        println!("Codex: run /hooks once to trust the lodestone SessionStart hook.");
+        if scope == Scope::Project {
+            println!("Codex: the project must be trusted for .codex/ to load.");
+        }
+    }
+    if clients.contains(&Harness::Claude) && scope == Scope::Project {
+        println!("Claude Code: approve the `lodestone` server from .mcp.json on first use.");
+    }
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(program).is_file()))
+}
+
+/// The session's directory: `cwd` from the hook's stdin JSON (Claude Code and Codex both send
+/// it), else `CLAUDE_PROJECT_DIR`, else the current directory.
+fn session_dir() -> anyhow::Result<PathBuf> {
+    use std::io::{IsTerminal, Read};
+    let mut input = String::new();
+    if !std::io::stdin().is_terminal() {
+        std::io::stdin().read_to_string(&mut input)?;
+    }
+    let cwd = serde_json::from_str::<serde_json::Value>(&input)
+        .ok()
+        .and_then(|v| v["cwd"].as_str().map(PathBuf::from));
+    Ok(
+        match cwd.or_else(|| std::env::var_os("CLAUDE_PROJECT_DIR").map(PathBuf::from)) {
+            Some(dir) => dir,
+            None => std::env::current_dir()?,
+        },
+    )
 }
