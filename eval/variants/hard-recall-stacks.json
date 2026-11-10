@@ -1,0 +1,130 @@
+{
+ "hs01": {
+  "task": "I'm writing signer logic that, given each signer's earliest acceptable Unix timestamp and its voting weight plus a weight threshold, finds the earliest time at which enough signers have accepted to reach the threshold, or returns a never sentinel. I'd like to reuse an existing helper rather than write my own.",
+  "identifier": "compute_approval_time earliest_time_to_threshold calculate_tenure_extend_timestamp get_threshold_timestamp signer weight threshold u64::MAX timestamp"
+ },
+ "hs02": {
+  "task": "I need to write a file atomically: write through a callback into a temporary sibling file, fsync it, then rename it over the destination, optionally removing the temp file if the callback fails. I'd rather reuse an existing atomic write helper.",
+  "identifier": "atomic_write write_file_atomically safe_write_file with_temp_file_rename fn rename fsync tmp file"
+ },
+ "hs03": {
+  "task": "I keep a per-reward-cycle bitvector of booleans and need to extract a window starting at an index with a count, packed eight bits per byte LSB-first, also returning how many bits were actually included since the range can overrun the end. I'd like to reuse an existing bit-packing helper.",
+  "identifier": "get_bitvec_range pack_bits compress_bitvec bitvec_from_bools reward_cycle bitvec u8 lsb"
+ },
+ "hs04": {
+  "task": "I'm implementing std::io::Write over an in-process bounded sync channel; when the channel is full I want to buffer the unsent bytes locally and still report them written, only erroring once the receiver is disconnected. I'd like to reuse an existing channel writer.",
+  "identifier": "PipeWrite ChannelWriter SyncSenderWriter impl Write for PipeWrite try_send TrySendError buffer pipe"
+ },
+ "hs05": {
+  "task": "I'm parsing event observer subscription keys from the node config: besides '*' or 'stx', I need to turn 'SP123.my-contract::my-topic' into a contract print-event filter and 'SP123.my-contract.my-token' into an FT/NFT asset event filter. I'd like to reuse the existing parser.",
+  "identifier": "EventKeyType from_string parse_event_key EventObserverConfig events_keys SmartContractEvent AssetEventType contract topic"
+ },
+ "hs06": {
+  "task": "I'm formatting human-readable log lines: a dimmed timestamp, then the level coloured (red error/critical, yellow warn, blue info) only when stderr is a TTY, and in debug/verbose mode append thread id and file:line. I'd like to reuse the existing slog formatter.",
+  "identifier": "print_msg_header TermFormat color_if_tty format_log_level slog Drain isatty thread_id file line colour"
+ },
+ "hs07": {
+  "task": "When a peer sends an updated PoX bitvector of reward cycles it knows anchors for, I merge it into my per-peer state; if a previously unset cycle becomes set, I must invalidate block inventory from that cycle onward and return the first such cycle. I'd like to reuse the existing merge function.",
+  "identifier": "merge_pox_inv PeerPoxInventory update_pox_inv truncate_block_inventories pox_bitvec reward_cycle inventory invalidate"
+ },
+ "hs08": {
+  "task": "A peer reports two packed bitvectors starting at a burn height for blocks and microblock streams it has. I want to merge them into my per-peer inventory, growing it as needed, optionally clearing bits it no longer advertises, and return counts of newly learned blocks and microblocks. I'd like to reuse the existing merge helper.",
+  "identifier": "merge_blocks_inv PeerBlocksInv merge_block_inventory update_inv block_bitvec microblocks_bitvec burn_height inventory"
+ },
+ "hs09": {
+  "task": "I'm smoothing fee rate estimates across blocks: blend the prior low/middle/high with the latest block's values using a decay factor exponential moving average, clamp each to at least 1, and store the result as a single DB row. I'd like to reuse the existing estimator update.",
+  "identifier": "update_estimate WeightedMedianFeeRateEstimator ScalarFeeRateEstimator FeeRateEstimate decay_rate exponential moving average fee rate sqlite"
+ },
+ "hs10": {
+  "task": "My event dispatcher POSTs JSON payloads to observer URLs; on connection failure I want to retry with exponential backoff plus up to 100ms random jitter, capped at 3x the request timeout, unless the observer is configured to disable retries. I'd like to reuse the existing send loop.",
+  "identifier": "send_payload_directly EventObserver send_payload disable_retries backoff jitter timeout http post"
+ },
+ "hs11": {
+  "task": "For StackerDB, whose write slots come from a smart contract, I need to call the contract's read-only slot-listing function and reject the config if any principal's slot count or the total exceeds the max, or the sum overflows. I'd like to reuse the existing StackerDB config loader.",
+  "identifier": "eval_signer_slots StackerDBConfig from_smart_contract parse_slots get_signers_slots stackerdb slots max_slots checked_add"
+ },
+ "hs12": {
+  "task": "While validating or mining a block I need to scan print events from the PoX boot contract in a tx receipt and detect any successful print whose pox-addr field can't be decoded into a valid Bitcoin address for this network, ignoring other contracts. I'd like to reuse the existing check.",
+  "identifier": "check_pox_addrs_in_print_events contains_invalid_pox_addr validate_pox_addr_events PoxAddress try_from_pox_tuple boot contract print event"
+ },
+ "hs13": {
+  "task": "While building a block a tx exceeds the remaining execution budget. I want to decide between rejecting it as too big if the block was nearly empty, skipping it if less than a configurable percentage of the budget is used, or treating the block as full. I'd like to reuse the existing classification logic.",
+  "identifier": "BlockLimitFunction TransactionResult::skipped_due_to_error CostLimitReached block_limit_hit soft_limit_percent ExecutionCost budget block full"
+ },
+ "hs14": {
+  "task": "A contract prints a tuple announcing an attachment with a content hash and index; I need to convert that print event plus block and txid into an attachment instance for the downloader, treating an empty hash buffer as the empty hash and hex-encoding metadata. I'd like to reuse the existing converter.",
+  "identifier": "AttachmentInstance try_new_from_value attachment_index content_hash metadata Hash160 print attachment"
+ },
+ "hs15": {
+  "task": "Given a block id and a chain tip, I need the block id that started that block's tenure; pre-Nakamoto blocks map to themselves, and if the epoch is unknown it should determine block kind by which headers table contains it. I'd like to reuse the existing tenure lookup.",
+  "identifier": "get_tenure_block_id_at_cb_height get_block_tenure_start get_tenure_start_block_id NakamotoChainState tenure_start nakamoto_block_headers block_headers epoch"
+ },
+ "hs16": {
+  "task": "Operators provide bootstrap peers as 'hexpubkey@host:port'; I need to parse one into a neighbor entry, resolving the hostname with a few retries using doubling delay when DNS fails. I'd like to reuse the existing config parser.",
+  "identifier": "add_bootstrap_node parse_bootstrap_node Neighbor from_neighbor_key_and_host to_socket_addrs bootstrap_node pubkey dns retry"
+ },
+ "hs17": {
+  "task": "I need to parse a 'host[:port]' string from a Host header or config value into either IP-and-port or DNS-name-and-port, defaulting to port 80 when absent. I'd like to reuse the existing peer host parser.",
+  "identifier": "PeerHost from_str PeerHost::DNS PeerHost::IP from_host_port parse_host_header port 80 hostname"
+ },
+ "hs18": {
+  "task": "For a signature malleability test I need to take a 65-byte recoverable secp256k1 signature and compute its high-S twin by replacing s with n - s and flipping the recovery id parity bit. I'd like to reuse an existing helper.",
+  "identifier": "to_malleable_signature flip_signature_s make_high_s MessageSignature secp256k1 recovery_id malleable curve order"
+ },
+ "hs19": {
+  "task": "Before mining a new block, my miner should wait if the parent block was produced less than a configured number of milliseconds ago, using the Nakamoto header timestamp or the burn block header time for older blocks. I'd like to reuse the existing check.",
+  "identifier": "check_min_block_interval min_time_between_blocks_ms last_block_time parent_block_timestamp BlockMinerThread mine block interval timestamp"
+ },
+ "hs20": {
+  "task": "To sync mempool transactions from other nodes I want to pick a random outbound authenticated peer that advertises the mempool-query service and a data URL, preferring one whose URL is already DNS-resolved, otherwise kicking off a DNS lookup. I'd like to reuse the existing mempool sync peer picker.",
+  "identifier": "mempool_sync_pick_outbound_peer pick_mempool_peer MempoolSync ServiceFlags::RPC data_url dns_request mempool sync outbound"
+ },
+ "hs21": {
+  "task": "I record (timestamp, bytes) samples per peer and need a helper that, given a sample list and max age, returns the bytes-per-second receive rate across recent samples, handling clock going backwards. I'd like to reuse the existing bandwidth helper.",
+  "identifier": "get_bandwidth NeighborStats bytes_rx get_rx_bandwidth VecDeque timestamp bytes per second"
+ },
+ "hs22": {
+  "task": "I'm reading an HTTP response and need the status line and headers parsed into a preamble struct: lowercase header names, reject duplicates, handle Connection keep-alive/close, and reject replies with both content-length and chunked encoding or neither. I'd like to reuse the existing parser.",
+  "identifier": "HttpResponsePreamble consensus_deserialize parse_http_response_preamble httparse keep_alive content_length chunked transfer-encoding"
+ },
+ "hs23": {
+  "task": "I want to construct a Clarity TupleData checked against a TupleTypeSignature: error on unknown fields or mistyped values, and depending on flags allow or reject duplicate fields (last wins) and missing fields. I'd like to reuse the existing tuple constructor.",
+  "identifier": "TupleData from_data_typed TupleTypeSignature admits_type CheckErrors::NoSuchTupleField allow_duplicates tuple clarity value"
+ },
+ "hs24": {
+  "task": "My miner needs enough UTXOs for its public key to cover an amount, fetched from bitcoind with retries on RPC errors; on regtest with none found it should import the address into bitcoind's wallet and retry, giving up if still short. I'd like to reuse the existing UTXO fetcher.",
+  "identifier": "get_utxos BitcoinRegtestController import_public_key list_unspent UTXOSet total_available utxos bitcoind regtest"
+ },
+ "hs25": {
+  "task": "In the Clarity datastore I need to look up the current owner principal of a non-fungible token, type-checking the asset identifier against its key type first and returning NoSuchToken if it was never minted or was burned. I'd like to reuse the existing getter.",
+  "identifier": "get_nft_owner ClarityDatabase NonFungibleTokenMetadata RuntimeErrorType::NoSuchToken key_type nft owner principal burned"
+ },
+ "hs26": {
+  "task": "On each new burn block my signer should take the higher of the node's tip and the notification's height, load the signer config for the current reward cycle if missing, and for the next cycle once in its prepare phase. I'd like to reuse the existing refresh logic.",
+  "identifier": "refresh_signers RunLoop refresh_signer_config is_in_prepare_phase current_reward_cycle burn_block_height signer reward cycle"
+ },
+ "hs27": {
+  "task": "When mempool transactions are evicted I want to notify event observers with a reason from a fixed set: replaced by higher fee, replaced across fork, stale garbage collection, too expensive, or problematic. I'd like to reuse the existing enum.",
+  "identifier": "MemPoolDropReason MemPoolEventDispatcher mempool_txs_dropped ReplaceByFee ReplaceAcrossFork StaleCollect TooExpensive Problematic"
+ },
+ "hs28": {
+  "task": "When a tx's nonce doesn't match the account's nonce I want an error value recording expected and actual nonce, txid, principal, whether it's the origin or sponsor, and a quiet flag to suppress logging. I'd like to reuse the existing error type.",
+  "identifier": "InvalidNonce BadNonce Error::BadNonce TransactionNonceMismatch is_origin quiet expected actual nonce"
+ },
+ "hs29": {
+  "task": "For testnets operators override epoch activation heights in config; I need to convert that list into a full epoch schedule, rejecting unknown names, out-of-order or skipped epochs, a first epoch not at height 0, and fill each end height from the next start. I'd like to reuse the existing converter.",
+  "identifier": "make_epochs StacksEpochConfigFile assert_valid_epoch_settings StacksEpoch start_height end_height epoch_name burnchain config"
+ },
+ "hs30": {
+  "task": "I want a SQL helper that returns a single optional row but panics with a lazily-built message if the query returns more than one row. I'd like to reuse an existing rusqlite helper.",
+  "identifier": "query_row_panic query_row_expect query_expect_row query_row rusqlite panic_message FromRow sqlite"
+ },
+ "hs31": {
+  "task": "Before accepting another HTTP client connection on the RPC server, I want to reject it if inbound connections are at the configured max or if the same remote IP already has too many connections. I'd like to reuse the existing admission check.",
+  "identifier": "can_register_http max_http_clients ConnectionOptions max_http_clients_per_ip HttpPeer register_http too_many_connections"
+ },
+ "hs32": {
+  "task": "For my network poller I need a free event id: probe round-robin from a starting counter, skipping ids already in use or in a reserved set, and fail after checking the full capacity. I'd like to reuse the existing allocator.",
+  "identifier": "next_event_id NetworkState next_event_id event_map reserved_event_ids mio Token poll capacity"
+ }
+}

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use lodestone::api::mcp::{SEARCH_DESCRIPTION, STATUS_DESCRIPTION};
+use lodestone::api::mcp::{SEMANTIC_DESCRIPTION, SIMILAR_DESCRIPTION, STATUS_DESCRIPTION};
 use lodestone::api::types::{SearchResponse, StatusReport};
 use lodestone::config::Config;
 use lodestone::index::{ItemStore, Lexical, Manifest, TokenizerKind, VectorIndex, worktree_id};
@@ -211,30 +211,41 @@ fn daemon_rest_mcp_and_freshness() {
     d.wait_fresh(Duration::from_secs(30));
     assert_eq!(d.search("helper_7").results[0].name, "helper_7");
 
-    // MCP: exactly two tools with the exact descriptions, and both callable.
+    // MCP: three tools with the exact descriptions, all callable.
     let mut mcp = Mcp::connect(&d.base);
     let tools = mcp.request("tools/list", json!({}))["tools"]
         .as_array()
         .unwrap()
         .clone();
-    assert_eq!(tools.len(), 2);
+    assert_eq!(tools.len(), 3);
     let desc = |n: &str| {
         tools.iter().find(|t| t["name"] == n).unwrap()["description"]
             .as_str()
             .unwrap()
             .to_string()
     };
-    assert_eq!(desc("search"), SEARCH_DESCRIPTION);
+    assert_eq!(desc("semantic_code_search"), SEMANTIC_DESCRIPTION);
+    assert_eq!(desc("similar_code_search"), SIMILAR_DESCRIPTION);
     assert_eq!(desc("status"), STATUS_DESCRIPTION);
     let out = mcp.request(
         "tools/call",
-        json!({ "name": "search", "arguments": { "query": "helper_3" } }),
+        json!({ "name": "semantic_code_search", "arguments": { "query": "helper_3" } }),
     );
     let text = out["content"][0]["text"].as_str().unwrap();
     assert!(
         text.lines().next().unwrap().starts_with(
             "core/src/m3.rs:2:8  lines 2-2  pub fn helper_3(x: u64) -> u64  — Module 3 helper"
         ),
+        "{text}"
+    );
+    let out = mcp.request(
+        "tools/call",
+        json!({ "name": "similar_code_search", "arguments": { "code": "pub fn helper_3(x: u64) -> u64 { x + 3 }" } }),
+    );
+    let text = out["content"][0]["text"].as_str().unwrap();
+    assert!(!text.contains("fn helper_3("), "{text}");
+    assert!(
+        text.contains("# note: left out the passed code itself: core/src/m3.rs:2 helper_3"),
         "{text}"
     );
     let out = mcp.request("tools/call", json!({ "name": "status", "arguments": {} }));

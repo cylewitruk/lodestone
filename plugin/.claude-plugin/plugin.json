@@ -1,0 +1,5 @@
+{
+  "name": "lodestone",
+  "version": "0.1.0",
+  "description": "Semantic code search over the lodestone daemon: find existing code by what it does before writing, reviewing or refactoring."
+}

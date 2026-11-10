@@ -1,0 +1,5 @@
+{
+  "name": "lodestone",
+  "version": "0.1.0",
+  "description": "The lodestone plugin without its SessionStart hook (situations experiment, arm `skill`)."
+}

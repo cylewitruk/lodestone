@@ -1,0 +1,130 @@
+{
+ "hl01": {
+  "task": "I'm building the message payload for an OpenAI Assistants thread with attachments. I want to reuse an existing helper that maps each attached file to tools: code_interpreter for all, image_file content for images, and file_search only for retrieval-supported MIME types.",
+  "identifier": "processMessageFiles addThreadAttachments getFileTools mapFilesToTools buildAttachments code_interpreter file_search retrievalMimeTypes"
+ },
+ "hl02": {
+  "task": "I'm adding an endpoint to refresh a shared conversation link. I need an existing model method that re-snapshots the conversation's current messages into the shared link and regenerates its shareId so the old URL is invalidated.",
+  "identifier": "updateSharedLink refreshSharedLink regenerateShareId updateSharedLinkSnapshot SharedLink shareId nanoid messages"
+ },
+ "hl03": {
+  "task": "On server startup I need to sync MongoDB with MeiliSearch: compare document counts of conversations and messages against the search index and trigger a background reindex if they differ, creating missing indexes after a delay.",
+  "identifier": "indexSync syncMeiliSearch checkSyncStatus ensureMeiliIndexes MeiliSearch syncWithMeili countDocuments numberOfDocuments"
+ },
+ "hl04": {
+  "task": "I'm handling errors thrown mid-stream from the LLM API. I want an existing handler that saves the partial generated text as an unfinished message if enough tokens came through, otherwise sends a friendly error message to the client.",
+  "identifier": "handleAbortError sendError handleStreamError savePartialResponse abortMessage partialText unfinished error"
+ },
+ "hl05": {
+  "task": "In the local email/password login strategy I need to auto-verify legacy users created before email verification was required when no email service is configured, by setting emailVerified to true.",
+  "identifier": "passportLogin localStrategy checkEmailConfig loginUser updateUser emailVerified isEmailConfigured legacy"
+ },
+ "hl06": {
+  "task": "I'm loading conversations by IDs returned from search. I need a helper that fetches them for the user, excludes expiring temporary chats, paginates in memory into fixed-size pages, and returns a map keyed by conversationId.",
+  "identifier": "getConvosQueried getConvosByIds paginateConvos fetchConvosByIds conversationId expiredAt pageSize convoMap"
+ },
+ "hl07": {
+  "task": "In the React client I'm validating files before upload. I want an existing validator that rejects duplicates already pending (same name and size), enforces count and total size limits, and fixes empty MIME types for code file extensions.",
+  "identifier": "validateFiles useFileHandling checkDuplicateFiles inferMimeType fileLimit totalSizeLimit codeTypeMapping mime"
+ },
+ "hl08": {
+  "task": "When a bookmark tag is dragged to a new position I want to update the react-query cache without refetching: move the item to its new index and shift the position field of items in between.",
+  "identifier": "updateConversationTag useUpdateConversationTagMutation updateTagsInCache reorderTags moveTag position queryClient setQueryData"
+ },
+ "hl09": {
+  "task": "After optimistic inserts and deletes my infinite query pages are uneven with duplicates. I want a utility that flattens pages, dedupes by a key, re-chunks into pageSize pages and drops trailing empty pages.",
+  "identifier": "normalizeData normalizePages dedupePages chunkPages InfiniteData pages pageSize unique"
+ },
+ "hl10": {
+  "task": "During file upload I want to show a toast warning if the upload takes too long, with timeout scaled by file size, and clear the timer once the upload completes.",
+  "identifier": "useFileHandling startUploadTimer clearUploadTimer uploadTimeout showToast setTimeout fileSize upload"
+ },
+ "hl11": {
+  "task": "I need a reusable React hook for an infinite-query sidebar list that observes a scroll container, fetches the next page near the bottom, throttles the fetch, and toggles a loading flag.",
+  "identifier": "useInfiniteScroll useNavScrolling useScrollToFetch fetchNextPage throttle scrollTop hasNextPage isFetching"
+ },
+ "hl12": {
+  "task": "In the chat messages view I need a hook managing a scroll-to-bottom button shown only when the end of the messages is out of view (debounced to avoid flicker), plus auto-scroll during streaming unless the user disabled it.",
+  "identifier": "useMessageScrolling ScrollToBottom useScrollToRef showScrollButton IntersectionObserver debounce autoScroll isSubmitting"
+ },
+ "hl13": {
+  "task": "I'm merging file upload limits from librechat.yaml fileConfig onto default per-endpoint limits. I need an existing function that converts MB to bytes and makes disabled endpoints accept zero files of any type.",
+  "identifier": "mergeFileConfig getFileConfig fileConfig endpointFileConfig mbToBytes disabled fileLimit supportedMimeTypes"
+ },
+ "hl14": {
+  "task": "For MCP server connections I need reconnection logic that retries a limited number of times with exponential backoff capped at 30 seconds, aborting if shutdown was requested.",
+  "identifier": "MCPConnection handleReconnect reconnect maxReconnectAttempts backoff isShuttingDown exponential delay"
+ },
+ "hl15": {
+  "task": "I need to wait for a pending OAuth flow stored in the shared Keyv cache to complete. I want an existing flow manager method that polls the flow state every couple of seconds, resolves with the result, deletes it on failure and times out after its TTL.",
+  "identifier": "FlowStateManager monitorFlow waitForFlow createFlow keyv flowState COMPLETED FAILED ttl"
+ },
+ "hl16": {
+  "task": "Agents call user-defined OpenAPI actions. I need the existing request builder that applies auth by type (basic base64, bearer, custom header) and refuses to execute when the OAuth access token is missing or expired.",
+  "identifier": "ActionRequest setAuth createActionTool AuthTypeEnum AuthorizationTypeEnum oauth_token_expires_at bearer basic custom"
+ },
+ "hl17": {
+  "task": "I want chat input drafts (text and attached files) saved per conversation in localStorage, throttled while typing, and restored when the user returns to that conversation.",
+  "identifier": "useAutoSave saveDraft restoreDraft LocalStorageKeys TEXT_DRAFT FILES_DRAFT conversationId debounce"
+ },
+ "hl18": {
+  "task": "I'm handling URL query parameters in the chat route: prefill the input with a prompt from the URL, start a new conversation with validated settings from the params, and then strip the params from the address bar.",
+  "identifier": "useQueryParams processValidSettings parseQueryParams newConversation searchParams prompt history.replaceState setSearchParams"
+ },
+ "hl19": {
+  "task": "I'm merging MeiliSearch results of messages and conversation title hits into one entry per conversation, sorted by match count, preserving the matched conversation title.",
+  "identifier": "searchConversations groupMessagesByConversation mergeSearchResults reduceHits conversationId title count meiliSearch"
+ },
+ "hl20": {
+  "task": "In the axios interceptor, when multiple requests 401 at once, only one should call the refresh-token endpoint while the others queue. I need the existing queue processing that resolves all waiting requests with the new token or rejects them on failure.",
+  "identifier": "processQueue failedQueue isRefreshing refreshToken axios interceptors 401 setTokenHeader"
+ },
+ "hl21": {
+  "task": "For streaming text-to-speech I need a helper that finds the index of the last sentence boundary in buffered text, including CJK, Arabic and Spanish punctuation, newlines and code fences.",
+  "identifier": "findLastSeparatorIndex splitTextIntoChunks getLastSentenceEnd SEPARATORS tts textToSpeech punctuation"
+ },
+ "hl22": {
+  "task": "Messages now store content as an array of typed parts. I need a helper that joins only text parts into one string, adding a space between parts only when neither side already has whitespace, skipping images and tool calls.",
+  "identifier": "parseTextParts getTextContent extractText joinTextParts ContentTypes TEXT content parts"
+ },
+ "hl23": {
+  "task": "I need to check whether a model name supports vision: match against built-in vision model list plus admin-configured additions, exclude known text-only variants, and require the model to be in the available models list.",
+  "identifier": "validateVisionModel visionModels isVisionModel checkVision availableModels additionalModels gpt-4-turbo vision"
+ },
+ "hl24": {
+  "task": "During registration I need to validate an invite token from the request: it must match the invited email, otherwise reject, and it must be deleted after use so it can't be reused.",
+  "identifier": "registerUser checkInviteUser getInvite inviteToken deleteToken registration email hashToken"
+ },
+ "hl25": {
+  "task": "I need a maintenance function that deletes conversations with a null conversationId along with their messages and returns the counts of deleted conversations and messages.",
+  "identifier": "deleteNullOrEmptyConversations deleteNullConvos cleanupConversations deleteMany Conversation Message conversationId null deletedCount"
+ },
+ "hl26": {
+  "task": "I need to parse a LangChain error message that has a serialized JSON blob after some text, extract and JSON.parse that part, and recursively find the nested text in its kwargs constructor args.",
+  "identifier": "extractLangChainErrorMessage parseLangChainError extractMessageFromError getMessageFromKwargs kwargs lc JSON.parse error"
+ },
+ "hl27": {
+  "task": "Users can edit artifact code in an assistant message. I need a helper that finds the original code inside the artifact's fenced code block (or raw body) in the message text and replaces it with the edited code, returning null if not found.",
+  "identifier": "replaceArtifactContent findArtifacts editArtifact updateArtifactContent artifact ARTIFACT_START fence content"
+ },
+ "hl28": {
+  "task": "When switching endpoint mid-conversation I need to decide whether to keep the current conversation (same endpoint, interchangeable endpoints if modular chat enabled, or same assistants backend) and build the new conversation template.",
+  "identifier": "getConvoSwitchLogic useNewConvo isAssistantsEndpoint modularChat shouldSwitch newEndpointType template conversation"
+ },
+ "hl29": {
+  "task": "For prompt suggestions on the landing page I need a MongoDB aggregation returning a random sample of prompt groups, at most one per category, excluding empty categories, with skip and limit.",
+  "identifier": "getRandomPromptGroups getPromptGroups PromptGroup aggregate $sample $group category skip limit"
+ },
+ "hl30": {
+  "task": "Since file uploads lack byte-level progress, I want a simulated progress percentage on a timer: faster for small files, slower and tapering for big ones, capped at 95% until completion then 100%.",
+  "identifier": "useFileProgress simulateProgress useUploadProgress startProgress setProgress setInterval fileSize progress"
+ },
+ "hl31": {
+  "task": "I need to compute the sender label shown above an AI message from the endpoint and model, preferring a user-set modelLabel, with fallbacks for custom OpenAI-compatible endpoints.",
+  "identifier": "getResponseSender getSender getModelLabel EModelEndpoint modelLabel chatGptLabel endpoint model"
+ },
+ "hl32": {
+  "task": "When users delete attachments quickly, I want them removed from local state immediately but batched into one debounced delete request, skipping files still uploading and files already attached to a sent message.",
+  "identifier": "useFileDeletion deleteFiles debounce useDeleteFilesMutation setFiles filesToDelete progress temp_file_id"
+ }
+}

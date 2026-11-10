@@ -90,7 +90,7 @@ enum Cmd {
         skip_index: bool,
         #[arg(long)]
         force: bool,
-        /// Enable the reranker (on by default unless the config disables it).
+        /// Enable the reranker (off by default unless the config enables it).
         #[arg(long, conflicts_with = "no_rerank")]
         rerank: bool,
         /// Disable the reranker for this run.
@@ -99,8 +99,8 @@ enum Cmd {
         /// Cross-encoder to rerank with (Hugging Face repo); implies `--rerank`.
         #[arg(long, conflicts_with = "no_rerank")]
         reranker: Option<String>,
-        /// Candidates passed to the reranker (overrides `rerank.candidates`).
-        #[arg(long)]
+        /// Candidates passed to the reranker (overrides `rerank.candidates`); implies `--rerank`.
+        #[arg(long, conflicts_with = "no_rerank")]
         rerank_candidates: Option<usize>,
         /// Include test items (down-weighted by `search.test_weight`).
         #[arg(long)]
@@ -240,6 +240,7 @@ fn main() -> anyhow::Result<()> {
             if let Some(b) = backend {
                 config.backend = b;
             }
+            let rerank = rerank || reranker.is_some() || rerank_candidates.is_some();
             if let Some(repo) = reranker {
                 config.rerank.hf_repo = repo;
             }

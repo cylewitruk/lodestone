@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::index::{IndexReport, Progress};
 
 /// Results per search when the caller does not ask for a number (MCP, REST, CLI).
-pub const DEFAULT_TOP_K: usize = 8;
+pub const DEFAULT_TOP_K: usize = 24;
 
 fn default_top_k() -> usize {
     DEFAULT_TOP_K
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn search_request_defaults() {
         let r: SearchRequest = serde_json::from_str(r#"{"query":"x"}"#).unwrap();
-        assert_eq!(r.top_k, 8);
+        assert_eq!(r.top_k, DEFAULT_TOP_K);
         assert!(!r.include_tests);
     }
 }

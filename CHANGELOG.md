@@ -479,6 +479,293 @@ pool because its answers sit deeper in the candidate list.
 - **Hosted embedding APIs** (Voyage, OpenAI, Gemini) were not measured: they need keys and cost
   per index.
 - **Linux CPU numbers** come from this Mac's CPU; a run on Linux runners was proposed, not done.
-- **Reranker × embedder pairs** beyond the default reranker were measured on CodeRankEmbed's
-  candidates only; Qwen3-Reranker on Qwen3's candidates is untested.
 - The question writers read the code's doc comments, which may favour documented items slightly.
+
+## Settings sweep
+
+Query phrasing, reranker × embedder pairs, chunk size and search settings, on the same 137
+questions with paired 95% bootstrap intervals. Without a reranker, or with the default reranker at
+pool 20; the baselines reproduce the model comparison exactly. Half of the runs were on an M4 Pro,
+which gave per-question ranks identical to the M4 Max; all times below are from the M4 Max. With
+about 50 comparisons, one or two narrowly significant results are expected by chance.
+
+### Query phrasing
+
+Each question was rewritten in four styles by writers who saw only the question, not the code
+(`eval/variants/`, built with `build.py`): **terse** keywords, a **short** question, a **task**
+("find the code that…") and **identifier** (guessed function or type names in code vocabulary).
+`build.py` derives three more: **combined** (the task sentence, then the identifier guesses on a
+new line) and, as a worst case for guessing, **identifier** and **combined** with every word that
+contains an answer symbol removed ("names removed").
+
+| Style (top 8, no reranker / reranker) | CodeRankEmbed | Qwen3-Embedding-0.6B | granite-small-r2 |
+| ---- | ---- | ---- | ---- |
+| original question | 0.701 / 0.737 | 0.825 / 0.869 | 0.679 / 0.745 |
+| terse | 0.832 / 0.876 | 0.847 / 0.876 | 0.825 / 0.847 |
+| short | 0.854 / 0.869 | 0.869 / 0.898 | 0.766 / 0.847 |
+| task | 0.883 / 0.891 | 0.942 / 0.934 | 0.869 / 0.898 |
+| identifier | **0.949 / 0.978** | **0.949 / 0.978** | **0.920 / 0.971** |
+
+Identifier rewrites happen to name an answer symbol in 82 of 137 questions, but the gain holds on
+the other 55: +0.20 for CodeRankEmbed and +0.15 for Qwen3 without a reranker. Guessed names help
+even when wrong. With identifier-style queries the three embedders score within 0.03 of each
+other. Terse queries help the small models but not Qwen3 (+0.02, not significant).
+
+Task, identifier and combined queries on six embedders (top 8, no reranker / reranker / reranker
+at 384 tokens; pool 20):
+
+| Embedder | Original | Task | Identifier | Combined | Combined, names removed |
+| ---- | ---- | ---- | ---- | ---- | ---- |
+| Qwen3-Embedding-0.6B | **0.825 / 0.869** | **0.942 / 0.934** | 0.949 / 0.978 | 0.978 / 0.971 / **0.985** | **0.956** / 0.934 / 0.949 |
+| jina-embeddings-v2-base-code | 0.715 / 0.759 | 0.869 / 0.898 | 0.927 / 0.978 | **0.985** / 0.971 / **0.985** | **0.956 / 0.942 / 0.956** |
+| UltraBERT-Embed-150M | 0.730 / 0.781 | 0.854 / 0.891 | **0.971 / 0.985** | 0.971 / 0.956 / 0.978 | 0.927 / 0.927 / 0.949 |
+| CodeRankEmbed | 0.701 / 0.737 | 0.883 / 0.891 | 0.949 / 0.978 | 0.956 / 0.964 / 0.978 | 0.934 / 0.912 / 0.927 |
+| granite-embedding-english-r2 | 0.723 / 0.781 | 0.912 / 0.927 | 0.956 / 0.978 | 0.956 / 0.956 / 0.971 | 0.942 / 0.927 / 0.942 |
+| granite-small-r2 | 0.679 / 0.745 | 0.869 / 0.898 | 0.920 / 0.971 | 0.942 / 0.956 / 0.971 | 0.920 / 0.934 / 0.934 |
+
+- **Qwen3 leads only on the original wording**, by 0.095 to 0.146 over every other model (all
+  significant). With combined queries no model's interval against it excludes zero in any mode,
+  with or without the answer names; jina-embeddings-v2-base-code ties or leads it everywhere (+0.007 at
+  most) at 2.5× its Metal indexing speed. The benchmark is near its ceiling here: the spread
+  between models is one to six questions.
+- **Combined is the most robust style.** Without a reranker it beats identifier for Qwen3 (+0.029
+  [+0.007, +0.058]) and jina-code-v2 (+0.058 [+0.022, +0.102]) and ties it for the rest. Removing
+  the answer names costs identifier queries 0.05 to 0.11 but combined queries only 0.01 to 0.05:
+  the task sentence carries the query when the guesses are wrong.
+- **The reranker adds little to combined queries.** The query uses part of its 192-token budget,
+  leaving less of each candidate: top 8 moves by −0.015 to +0.015 (none significant). At 384
+  tokens it adds 0 to +0.029 over no reranker, at about 1.9× the search latency of the default
+  (p50 about 735 ms against 380 ms).
+- **These rewrites partly recall the repositories.** Their writers were told each repository's
+  name, and tantivy and LibreChat are public; most of their identifier guesses match real names
+  (30 of 34 for LibreChat). Identifier and combined scores here therefore overstate unfamiliar
+  code; see the hard question set below.
+
+### Reranker × embedder (pool 20)
+
+| Embedder (top 8 / search p50) | gte-reranker-modernbert-base (default) | Qwen3-Reranker-0.6B | jina-reranker-v3 |
+| ---- | ---- | ---- | ---- |
+| Qwen3-Embedding-0.6B | 0.869 / 429 ms | **0.920** / 1,115 ms | 0.905 / 1,054 ms |
+| granite-small-r2 | 0.745 / 357 ms | 0.766 / 1,104 ms | 0.766 / 1,202 ms |
+| CodeRankEmbed | 0.737 / 376 ms | 0.752 / 1,103 ms | 0.745 / 1,201 ms |
+
+The order is the same for every embedder; there is no pairing effect. Qwen3-Reranker on Qwen3's
+candidates gains +0.051 [+0.022, +0.088] (7 questions gained, none lost) for about 2.6× the
+search latency.
+
+### Chunk size (`chunk_tokens`)
+
+| Model (top 8, no reranker / reranker) | 128 | **200** | 350 | 500 |
+| ---- | ---- | ---- | ---- | ---- |
+| CodeRankEmbed | 0.693 / 0.759 | 0.701 / 0.737 | 0.745 / 0.766 | 0.737 / 0.759 |
+| Qwen3-Embedding-0.6B | 0.803 / 0.832 | 0.825 / 0.869 | 0.847 / 0.861 | 0.847 / 0.861 |
+| granite-small-r2 | 0.642 / 0.730 | 0.679 / 0.745 | 0.686 / 0.759 | 0.701 / 0.745 |
+
+At 500 and above, the model's `max_tokens` was raised so that chunks are not truncated a second
+time; Qwen3 at 1,000 scores 0.847 / 0.869. Only CodeRankEmbed gains significantly: at 350, +0.044
+[+0.007, +0.088] without a reranker and +0.029 [+0.007, +0.058] with it. Chunks are truncated,
+not split, so larger chunks cost more per definition:
+
+| Indexing time relative to 200 | 128 | 350 | 500 |
+| ---- | ---- | ---- | ---- |
+| Qwen3-Embedding-0.6B, Metal | 0.74× | 1.31× | 1.59× (2.18× at 1,000) |
+| granite-small-r2, Metal | 0.72× | 1.46× | 1.86× |
+| CodeRankEmbed, CPU | 0.89× | 1.29× | 1.50× |
+| granite-small-r2, CPU | 0.81× | 1.26× | 1.52× |
+
+Raising the reranker's `max_tokens` from 192 to match larger chunks adds +0.008 to +0.029 against
+the same chunk size at 192 (significant only for Qwen3 at 500 and 1,000 tokens with 512). The best
+such setup, Qwen3 at 1,000 tokens with 512, reaches 0.898 against the default's 0.869 (+0.029
+[−0.007, +0.073]) at 2.2× the indexing time and 3.6× the search latency.
+
+### Search settings
+
+- **`lexical_weight`** (fusion with full-text search): 0.25 is neutral; 0.5 and 1 hurt, most
+  without a reranker (−0.21 top 8 for CodeRankEmbed at 1). With the reranker, only CodeRankEmbed
+  at 0.5 breaks even.
+- **`identifier_lexical_weight`**, on identifier-style queries: 1 and 2 change top 8 by at most
+  ±0.015 and lower MRR; adding `exact_identifier_first` costs 0.03–0.05 top 8.
+- **Qwen3 query instruction:** the default ("Given a description of what some code should do…") is
+  the best of those tried. A generic code-snippet instruction scores −0.007, an agent-oriented one
+  −0.029, no instruction −0.109 and Qwen's web-search instruction −0.219 (no reranker).
+
+### Decisions
+
+- **Defaults unchanged.** CodeRankEmbed at 350 tokens is the only significant chunk-size gain, it
+  is narrow, and it costs 29% more CPU indexing time; Qwen3 and granite gain nothing significant.
+  Qwen3-Reranker stays opt-in for its latency. Fusion, identifier weighting and the Qwen3
+  instruction all stay as they are.
+- **Query phrasing is the largest lever measured**, larger than any model or setting change. The
+  agent skill and the search tool's description should ask for combined queries: one sentence on
+  what the code does, then guessed function or type names; a wrong guess still helps.
+- **Default embedder stays Qwen3-Embedding-0.6B for now** (superseded by the hard question set). With combined queries
+  jina-embeddings-v2-base-code matches it at a fraction of the indexing cost, but Qwen3 is about
+  0.11 ahead on poorly phrased queries, and this question set cannot separate the leaders. The
+  hard question set below can.
+- **Reranker stays on at 192 tokens** (superseded by the hard question set). It barely changes combined queries, but it adds 0.036 to
+  0.066 on the original wording, which is what a poorly phrased query looks like.
+
+## Hard question set
+
+96 harder questions, 32 per repository (`eval/questions-hard-*.json`, method in `eval/README.md`):
+answers without doc comments, behaviour past the embedded part of long definitions, look-alike
+definitions and a vocabulary gap, chosen with grep only and re-checked by a separate reviewer.
+Combined queries were rewritten from the question text by writers told to invent every name. All
+runs without a reranker.
+
+| Embedder (top 8) | Original question | Combined | Combined, names removed | Combined, recalled names | vs Qwen3, combined |
+| ---- | ---- | ---- | ---- | ---- | ---- |
+| **jina-embeddings-v2-base-code** | **0.646** | **0.948** | **0.948** | **0.969** | +0.094 [+0.042, +0.156] |
+| Qwen3-Embedding-0.6B | 0.615 | 0.854 | 0.854 | 0.948 | — |
+| CodeRankEmbed | 0.542 | 0.844 | 0.844 | 0.948 | −0.010 [−0.073, +0.052] |
+| granite-embedding-english-r2 | 0.479 | 0.750 | 0.729 | 0.927 | −0.104 [−0.188, −0.021] |
+| UltraBERT-Embed-150M | 0.427 | 0.708 | 0.698 | 0.896 | −0.146 [−0.250, −0.042] |
+| granite-small-r2 | 0.396 | 0.698 | 0.698 | 0.896 | −0.156 [−0.250, −0.073] |
+
+- **jina-embeddings-v2-base-code is the most accurate model measured.** With combined queries it
+  finds 9 answers Qwen3 misses and misses none Qwen3 finds, in all three repositories and under
+  every criterion. Its MRR is the same as Qwen3's (0.697 against 0.688): it gets more answers into
+  the top 8 without ranking them higher.
+- **Qwen3's lead on poorly phrased queries does not hold here.** On the original wording jina-code-v2
+  scores +0.031 [−0.062, +0.125] against it and CodeRankEmbed −0.073 [−0.167, +0.031]; granite-r2,
+  UltraBERT and granite-small are significantly worse.
+- **Recalled names hide the differences.** Rewriters told the repository's name named an answer in
+  69 of 96 questions (5 of 96 without), and with those queries every model scores 0.90 to 0.97.
+- **Behaviour past the embedded text is the hardest case** (40 questions): 0.88 for jina-code-v2,
+  0.78 for Qwen3, 0.72 for CodeRankEmbed and 0.60 for granite-r2.
+
+### Reranker on the hard set (pool 20)
+
+| Top 8 (search p50) | jina-code-v2, no reranker | jina-code-v2, reranker | Qwen3, no reranker | Qwen3, reranker |
+| ---- | ---- | ---- | ---- | ---- |
+| Combined | **0.948** (9 ms) | 0.833 (364 ms) | 0.854 (21 ms) | 0.760 (381 ms) |
+| Original question | 0.646 | 0.698 | 0.615 | 0.656 |
+
+- **The reranker lowers well-phrased queries' scores:** −0.115 [−0.188, −0.052] for jina-code-v2
+  (no question gained, 11 lost) and −0.094 [−0.156, −0.031] for Qwen3. It reads 192 tokens of
+  query and code together, so a two-part query leaves it little of each candidate, and the set is
+  built around look-alikes and behaviour past the start of long definitions.
+- **On the original wording it adds +0.052 and +0.042, neither significant.**
+- **On CPU it costs 40×:** jina-code-v2 on tantivy's hard questions takes 65 ms per search
+  without it and 2.6 s with it (top 8 0.969 and 0.875); without it, CPU and Metal scores match.
+- Against the previous default (Qwen3 with the reranker), jina-code-v2 without it scores +0.188
+  [+0.115, +0.271] on combined queries (18 gained, none lost) and −0.010 on the original wording.
+
+### Decisions
+
+- **Default embedder is now jina-embeddings-v2-base-code on every backend** (Metal, CPU and the
+  fastembed fallback). It is the most accurate model on the hard set, indexes 2.5× faster than
+  Qwen3 on Metal, and on CPU runs about 16% slower than CodeRankEmbed for +0.10 top 8.
+- **The reranker is off by default.** `[rerank] enabled = true` or `--rerank` turns it on;
+  `--reranker` and `--rerank-candidates` now imply `--rerank` (they were ignored once the default
+  changed).
+- **The search tool asks for combined queries:** one sentence on the behaviour, then guessed
+  names. It previously said to avoid guessed names.
+- Upgrading: indexes built with Qwen3 or CodeRankEmbed are reported stale until
+  `lode index --force` re-embeds them, or set `model` to keep the old one.
+
+## Agent situations and the lodestone plugin
+
+`plugin/` packages lodestone for Claude Code: a `lodestone` skill (when to search in each
+situation, the query format, when to use Grep instead) and the MCP server config.
+`eval/situations/` measures how agents use it: write, review, refactor and locate tasks on
+stacks-core, each run headless on Sonnet without lodestone, with its tools, with the tools and the
+skill, and with a SessionStart reminder added (624 runs, $30; method and full table in
+`eval/situations/README.md`).
+
+| Situation | Correct without lodestone | With tools + skill | With the reminder | Runs that searched (skill / reminder) |
+| ---- | ---- | ---- | ---- | ---- |
+| write | 25/54 | 24/54 | **37/54** | 6% / 50% |
+| review | 33/36 | 34/36 | 33/36 | 31% / 69% |
+| refactor | 30/30 | 30/30 | 30/30 | 43% / 97% |
+| locate | 36/36 | 36/36 | 36/36 | 8% / 3% |
+
+- **Agents do not discover lodestone from the tool or the skill alone**; the skill was never
+  loaded in any run. A one-paragraph SessionStart reminder makes them search where it helps, with
+  well-formed queries, and leaves locate (where Grep suffices) alone.
+- **On write tasks the reminder raises correctness by +0.22 per task [+0.09, +0.37], but not
+  because of lodestone.** A control with the same reminder and no lodestone (Grep only) scored
+  the same, 37/54 (+0.222 [+0.074, +0.389] over no reminder); the shipped plugin scored 34/54
+  (−0.056 against the control, n.s.). Effort to find the helper was also the same: about one
+  tool call. stacks-core's helper names are predictable and largely known to the model, so Grep
+  with guessed names is as fast as lodestone here. Review, refactor and locate are at the ceiling
+  in every arm, so they show adoption and cost, not accuracy.
+- **Side effect:** with lodestone's prompts present, stacks-core's own review skill loads in 3–9
+  of 36 review runs instead of 31.
+- **The reminder now ships in the plugin** (`plugin/hooks/`, a SessionStart hook). It stays silent
+  unless a running daemon serves the session's repository, so it never points agents at a tool
+  that is not there. The skill-only variant stays in `eval/situations/plugin-skill/` for the
+  experiment's `skill` arm.
+- **The skill's description is now request-matching** ("Use when asked to write, add or implement a
+  function, … or to review, refactor or deduplicate code"). No description got the skill loaded
+  (0 of 216 runs), but the listing itself steers agents: on write tasks this wording made them
+  search in 48% of runs and lifted correctness to 36/54 (+0.204 [+0.056, +0.389]), about what the
+  reminder does; the original "Use before writing…" phrasing reached 6% and 24/54. The skill-only
+  arm (`plugin-skill/`) now uses the new description too.
+- **The reminder stays for now.** Without it, v4 searches in 44% of review and 77% of refactor runs
+  against 69% and 97% with it (accuracy is at the ceiling in both), and both crowd out
+  stacks-core's own review skill (loaded in 9 and 3 of 36 review runs, against 31 without
+  lodestone). Since a lodestone-free reminder does as well on write tasks, the agent-level case
+  for lodestone itself is unproven; it needs tasks where guessing names fails (the hard set).
+
+## Agent situations on Opus 5.5
+
+**Corrected:** the first run's LibreChat plugin arm searched the stacks-core index (a shared MCP
+config file; `run.py` now writes one per port). After re-running it (28 runs, all searches on the
+LibreChat index):
+
+| Positives correct (48 runs per arm) | No reminder | Advice only, Grep | Advice + lodestone (plugin) |
+| ---- | ---- | ---- | ---- |
+| stacks-core + LibreChat | 27/48 | 37/48 | **43/48** |
+| Cost per correct answer | $0.296 | $0.227 | $0.194 |
+
+Plugin vs advice only: +0.125 per task [+0.000, +0.271] (5 gained, 1 lost), +0.208 [+0.042,
++0.417] on LibreChat alone; wall time ×0.93 [×0.89, ×0.98], cost ×0.97 [×0.91, ×1.03]. The table
+and bullets below are the original figures with the invalid LibreChat arm.
+
+28 realistic write, review, refactor and locate tasks on stacks-core and LibreChat (hard targets,
+no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and tables in
+`eval/situations/README.md`.
+
+| Positives correct (48 runs per arm) | No reminder | Advice only, Grep | Advice + lodestone (plugin) |
+| ---- | ---- | ---- | ---- |
+| stacks-core + LibreChat | 27/48 | 37/48 | **41/48** |
+| Cost per correct answer | $0.296 | $0.227 | $0.210 |
+
+- **The plugin's reminder now leads with the advice**: look for existing code and reuse what fits,
+  then point at lodestone. The `remind` control uses the same advice word for word, so the two
+  arms differ only in lodestone.
+- **Lodestone adds a little correctness and no efficiency on Opus.** Plugin vs advice only: +0.083
+  per task [−0.021, +0.229] (3 tasks gained, 1 lost); cost ×1.01, wall time ×0.97, tool calls
+  ×1.12 per task. Advice vs nothing: +0.208 [+0.062, +0.375]. Most of the gain is the advice.
+- **The model matters more than the wording.** In a 27-run pilot, Sonnet at medium effort used the
+  plugin's search in 2 of 9 runs, Sonnet at high in 5, Opus 5.5 at medium in 9; Opus searched in
+  51 of 56 runs here. Subagents were never used (0 of 222 runs with the Agent tool), and an Explore
+  subagent would get lodestone's tools but not the reminder.
+- **Harness fix:** `claude -p --setting-sources project` still loads `~/.claude/CLAUDE.md`, so all
+  earlier agent runs saw the author's global instructions (the same in every arm). `run.py` now
+  excludes it.
+- **On a private repository** (a 185k-line Rust workspace the model cannot have seen; 12 tasks,
+  48 runs, advice vs plugin), lodestone found the answer with half the tool calls and ×0.67
+  [×0.50, ×0.87] the tokens, but whole runs cost about the same (×0.95 [×0.85, ×1.06]), and
+  correctness was at the ceiling in both arms (19/20 vs 20/20). Details in
+  `eval/situations/README.md`.
+- **Replaying the agents' 78 lodestone queries** puts the answer in the top 8 for 59. The query
+  format is fine (combined beats sentence or names alone); the reranker (+1) and a top 16 (+3)
+  barely help. The misses come from searching for the surrounding feature instead of the piece
+  that already exists, and from vocabulary gaps; see `eval/situations/README.md`.
+
+## Two MCP search tools, 24 results
+
+- MCP `search` is replaced by `semantic_code_search(query, example_identifiers[])`, which joins
+  the sentence and the guessed names into the query form the index was tuned on, and
+  `similar_code_search(code)`, which searches with one function's source, strips diff prefixes
+  and leaves out the passed code's own definition (ignoring whitespace and comments).
+- `DEFAULT_TOP_K` 8 → 24 (MCP, REST, CLI); the MCP tools no longer take `top_k`.
+- The skill and SessionStart reminder name the tool for each situation.
+- Opus 5.5, 27 tasks, one run each: correct 23 → 25/27 (+0.074 [+0.000, +0.185]), tool calls
+  ×0.88 [0.78, 0.98], tokens ×0.90; billed cost ×1.14 [1.04, 1.26], mostly cold prompt-cache
+  starts in the new arm (×1.04 [0.90, 1.21] priced as warm starts); `similar_code_search` used in
+  9 of 18 review and refactor runs; no false equivalents on controls. Offline, 16 results instead
+  of 24 would save about 0.5% of a run's tokens and lose 5 of 78 replay hits, so 24 stays.
+  Details in `eval/situations/README.md`.

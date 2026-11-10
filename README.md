@@ -6,12 +6,15 @@ this codebase does X?" over MCP and HTTP in well under a second.
 
 - Definitions come from tree-sitter tags queries (Rust, Python, TypeScript/JavaScript, Go and
   Markdown built in; any other grammar via tree-sitter's own config).
-- Retrieval: embeddings (Qwen3-Embedding-0.6B on Apple GPUs, CodeRankEmbed on CPU) reranked
-  by a cross-encoder, one line per item. A BM25 index is built alongside and can be
-  fused in with reciprocal rank fusion (`[search] lexical_weight`, `identifier_lexical_weight`).
+- Retrieval: embeddings (jina-embeddings-v2-base-code on GPU and CPU), one line per item. A
+  cross-encoder reranker (`[rerank] enabled`) and a BM25 index fused in with reciprocal rank
+  fusion (`[search] lexical_weight`, `identifier_lexical_weight`) are available but off by default.
+- Queries work best as one sentence on what the code does, followed by guessed function or type
+  names; a wrong guess still helps.
 - Content-addressed embedding cache shared by every worktree: a second worktree of the same
   repository costs chunking and hashing only.
-- Two MCP tools (`search`, `status`); a REST API for scripts.
+- Three MCP tools (`semantic_code_search`, `similar_code_search`, `status`); a REST API for
+  scripts.
 
 ## Install
 
@@ -68,17 +71,42 @@ and reports it in `status`.
 
 ## Wire Claude Code
 
-Add to the repository's `.mcp.json` (or your user MCP config):
+Install the plugin in `plugin/`, which bundles the MCP server config, a `lodestone` skill (when
+and how to search) and a SessionStart reminder. The reminder is added only when a daemon on port
+4600 (or `LODESTONE_PORT`) serves the session's repository:
+
+```bash
+claude --plugin-dir plugin        # one session; or add it to a marketplace for /plugin install
+```
+
+The reminder tells agents to look for existing code and reuse what fits, then points them at
+lodestone. In `eval/situations/` (28 realistic tasks on stacks-core and LibreChat, Opus 5.5), the
+advice alone raised correctness from 27/48 to 37/48, and the plugin to 43/48 (+0.125 per task
+over the advice, [+0.000, +0.271]; +0.21 on LibreChat), with 7% shorter runs and a 15% lower cost
+per correct answer. On a private repository the model cannot know, lodestone found answers with
+half the tool calls, though both arms solved nearly every task there. Splitting `search` into
+`semantic_code_search` and `similar_code_search` with 24 results (one run per task, 27 tasks on all
+three repositories) moved correctness from 23/27 to 25/27 with 12% fewer tool calls at about the
+same cost once prompt-cache warmth is evened out.
+
+Without the plugin, add the server to the repository's `.mcp.json` (or your user MCP config):
 
 ```json
 {"mcpServers": {"lodestone": {"type": "http", "url": "http://127.0.0.1:4600/mcp"}}}
 ```
 
-Claude Code then sees exactly two tools:
+Claude Code then sees three tools:
 
-- `search`: "Find existing code by what it does. …" with `query`, optional `repo`, `from_unit`
-  (layer filter from the build graph), `language`, `top_k`, `include_tests`.
+- `semantic_code_search`: "Find existing code by what it does, when you do not know its name. …"
+  with `query` (one sentence) and `example_identifiers` (guessed names), joined into one query.
+- `similar_code_search`: "Find existing code that does the same job as a given piece of code. …"
+  with `code`, the source of one function or type (diff `+` prefixes are stripped). The passed
+  code's own definition is left out of the results, ignoring whitespace and comments.
 - `status`: index freshness for a repo.
+
+Both searches take optional `repo`, `from_unit` (layer filter from the build graph), `language`
+and `include_tests`, and return 24 results. There is no `top_k`: agents asked for 8 to 12 and
+missed answers ranked below that. REST and the CLI keep `top_k` (default 24).
 
 Results are plain text, one line per item:
 
@@ -110,8 +138,7 @@ GET  /v1/repos
 
 ```toml
 port = 4600
-model = "qwen3-0.6b"        # alias into [models]; see `lode models`. Default: qwen3-0.6b on
-                            # Apple GPUs, coderank on CPU
+model = "jina-code-v2"      # alias into [models]; see `lode models`
 backend = "candle-metal"    # candle-metal | candle-cpu | fastembed | remote
 batch_size = 64
 cache_max_gb = 4
@@ -125,15 +152,16 @@ extensions = { "cljc" = "clojure" }
 index_untagged_as_text = ["md", "txt", "adoc", "rst"]
 
 [rerank]
-enabled = true              # cross-encoder over the top candidates: ~0.4 s per search
+enabled = false             # cross-encoder over the top candidates: ~0.4 s per search on Metal,
+                            # ~2.6 s on CPU; lowers well-phrased queries' scores (see CHANGELOG)
 hf_repo = "Alibaba-NLP/gte-reranker-modernbert-base"
 candidates = 20             # use 50 with coderank or another weaker embedding model
 max_tokens = 192
 ```
 
-Built-in models (`lode models`) include `qwen3-0.6b`, `harrier-0.6b`, `coderank`, `granite-r2`,
-`granite-small-r2`, `jina-code-v2`, `ultrabert-150m`, `embeddinggemma-2`, `minilm-l6` and,
-under a non-commercial licence, `jina-code-0.5b`. Rerankers are chosen by Hugging Face repo in
+Built-in models (`lode models`) include `jina-code-v2`, `qwen3-0.6b`, `harrier-0.6b`, `coderank`,
+`granite-r2`, `granite-small-r2`, `ultrabert-150m`, `embeddinggemma-2`, `minilm-l6` and, under a
+non-commercial licence, `jina-code-0.5b`. Rerankers are chosen by Hugging Face repo in
 `[rerank] hf_repo`; the comparison in the CHANGELOG lists which were measured and how they did.
 Changing the embedding model means a full re-index (`lode index --force`); the embedding cache
 keeps each model's vectors apart.
@@ -157,11 +185,11 @@ lode bench eval --hard q06,q07,q08,q18
 ```
 
 The first summary line is the agent view: the share of questions whose answer is within the
-top 8 results an agent receives by default. rank@1/5/10 and MRR follow and measure ranking
+top 24 results an agent receives by default. rank@1/5/10 and MRR follow and measure ranking
 accuracy.
 
-Compare models or backends with `--model` and `--backend`; `--rerank` enables the
-cross-encoder. The question file schema is generic (`[{id, kind, question, answers:[{path,
+Compare models or backends with `--model` and `--backend`; `--rerank` (or `--reranker`,
+`--rerank-candidates`) enables the cross-encoder. The question file schema is generic (`[{id, kind, question, answers:[{path,
 symbol}]}]`), so other repositories can be benchmarked with `--corpus` and `--questions`.
 
 Agent-level evaluation (headless Claude Code, 18 tasks × 3 reps) with the daemon running and the

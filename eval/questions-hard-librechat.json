@@ -1,0 +1,912 @@
+[
+ {
+  "id": "hl01",
+  "kind": "hard",
+  "question": "When a user messages an OpenAI-style assistant with attachments, I need to decide which built-in tools each attached item is exposed to: everything goes to the code interpreter, pictures are also added as inline image content, and only document types the retrieval tool can read also get file search. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "api/server/controllers/assistants/chatV2.js",
+    "symbol": "getRequestFileIds"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/server/controllers/assistants/chatV1.js",
+    "symbol": "getRequestFileIds"
+   },
+   {
+    "path": "api/server/controllers/assistants/chatV1.js",
+    "symbol": "addVisionPrompt"
+   },
+   {
+    "path": "api/server/controllers/assistants/v2.js",
+    "symbol": "updateAssistant"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "Only the v2 closure assigns per-attachment tools and checks retrieval MIME types (lines ~36-42 of 47); the v1 namesake just collects ids.",
+  "review": "ok"
+ },
+ {
+  "id": "hl02",
+  "kind": "hard",
+  "question": "Users publish a read-only public copy of a chat, but the chat keeps going afterwards. On the server I want an operation that re-snapshots the current messages into that public copy and gives it a brand-new public ID so the old URL stops working. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "api/models/Share.js",
+    "symbol": "updateSharedLink"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/models/Share.js",
+    "symbol": "createSharedLink"
+   },
+   {
+    "path": "api/models/Share.js",
+    "symbol": "getSharedLink"
+   },
+   {
+    "path": "client/src/components/Conversations/ConvoOptions/SharedLinkButton.tsx",
+    "symbol": "updateSharedLink"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "The DB-layer function refetches messages and rotates the id; create/get and the client button wrapper look similar but do not re-snapshot server-side. Question says 'public copy'/'re-snapshot' rather than 'shared link'.",
+  "review": "ok"
+ },
+ {
+  "id": "hl03",
+  "kind": "hard",
+  "question": "On server boot I want to compare how many chats and messages MongoDB holds with how many our full-text search engine holds and, if the counts differ, kick off a background re-import; if the engine's collections don't exist yet, create them shortly after. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "api/lib/db/indexSync.js",
+    "symbol": "indexSync"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H2",
+   "H4"
+  ],
+  "rationale": "Count comparison and re-sync sit past line 20 of a 55-line undocumented function; question avoids 'index'/'sync'/'Meili'.",
+  "review": "ok"
+ },
+ {
+  "id": "hl04",
+  "kind": "hard",
+  "question": "If the model API blows up halfway through streaming a reply, I'd rather keep what was already generated as an unfinished message than show a generic failure, but only when a meaningful amount of text came through; otherwise send the user a friendly failure notice. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "api/server/middleware/abortMiddleware.js",
+    "symbol": "handleAbortError"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/server/middleware/abortMiddleware.js",
+    "symbol": "abortMessage"
+   },
+   {
+    "path": "api/server/middleware/abortMiddleware.js",
+    "symbol": "abortCompletion"
+   },
+   {
+    "path": "api/server/utils/streamResponse.js",
+    "symbol": "sendError"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "The partial-text (>5 chars) branch that saves an unfinished message is at the end of a 72-line function; abortMessage/sendError are the pieces it calls.",
+  "review": "ok"
+ },
+ {
+  "id": "hl05",
+  "kind": "hard",
+  "question": "We introduced mandatory email confirmation after launch, and accounts created before that shouldn't get locked out when the server has no mail setup. During email-and-password sign-in, I need to quietly mark those older accounts as confirmed. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "api/strategies/localStrategy.js",
+    "symbol": "passportLogin"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H2",
+   "H4"
+  ],
+  "rationale": "The created-before-verification-timestamp auto-verify branch is ~25-35 lines into a 52-line undocumented strategy callback; described by effect, not by its names.",
+  "review": "ok"
+ },
+ {
+  "id": "hl06",
+  "kind": "hard",
+  "question": "Search gives me a list of matching chat IDs. I need to load those chats for the current user, skip temporary ones that are set to expire, and split the result into fixed-size pages in memory along with a lookup map keyed by ID. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "api/models/Conversation.js",
+    "symbol": "getConvosQueried"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/models/Conversation.js",
+    "symbol": "getConvosByPage"
+   },
+   {
+    "path": "api/models/Conversation.js",
+    "symbol": "getConvo"
+   },
+   {
+    "path": "api/lib/utils/reduceHits.js",
+    "symbol": "reduceMessages"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "In-memory paging and the id map come after line 20; getConvosByPage pages via DB skip/limit and has no id list.",
+  "review": "ok"
+ },
+ {
+  "id": "hl07",
+  "kind": "hard",
+  "question": "In the browser, before sending attachments, I want to refuse the batch if the user picked something already pending (same name and size), on top of count and total-size limits, and patch empty or wrong MIME types for source-code extensions. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "client/src/utils/files.ts",
+    "symbol": "validateFiles"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/server/services/Files/process.js",
+    "symbol": "filterFile"
+   },
+   {
+    "path": "packages/data-provider/src/file-config.ts",
+    "symbol": "checkType"
+   },
+   {
+    "path": "packages/data-provider/src/file-config.ts",
+    "symbol": "mergeFileConfig"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "Duplicate detection is the last block of an 86-line function; filterFile is the server-side checker without duplicate detection.",
+  "review": "ok"
+ },
+ {
+  "id": "hl08",
+  "kind": "hard",
+  "question": "When the user drags a bookmark label to a new spot in their list, I want to patch our locally cached list without refetching: put the edited item at its new slot and renumber the order field of everything it moved past. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "client/src/utils/conversationTags.ts",
+    "symbol": "updateConversationTag"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/models/ConversationTag.js",
+    "symbol": "updateConversationTag"
+   },
+   {
+    "path": "packages/data-provider/src/data-service.ts",
+    "symbol": "updateConversationTag"
+   },
+   {
+    "path": "client/src/data-provider/mutations.ts",
+    "symbol": "useConversationTagMutation"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "Same-named server and API functions exist; only the client util rewrites the cache, and the renumbering loops sit past line 25.",
+  "review": "ok"
+ },
+ {
+  "id": "hl09",
+  "kind": "hard",
+  "question": "After optimistic inserts and removals, our infinite-scroll pages end up uneven and sometimes hold the same item twice. I want something that flattens all loaded pages, drops duplicates by a key, re-chunks to the page size and discards trailing empty pages. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "client/src/utils/collection.ts",
+    "symbol": "normalizeData"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "client/src/utils/collection.ts",
+    "symbol": "addData"
+   },
+   {
+    "path": "client/src/utils/collection.ts",
+    "symbol": "updateData"
+   },
+   {
+    "path": "client/src/utils/collection.ts",
+    "symbol": "updateFields"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Sibling cache helpers in the same file operate on InfiniteData too; only this one dedupes and re-paginates.",
+  "review": "ok"
+ },
+ {
+  "id": "hl10",
+  "kind": "hard",
+  "question": "If sending a big attachment to the server takes unusually long, I'd like to pop a warning telling the user it's still going, with the wait before warning growing with file size, and cancel it once the transfer finishes. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "client/src/hooks/Files/useDelayedUploadToast.ts",
+    "symbol": "useDelayedUploadToast"
+   },
+   {
+    "path": "client/src/hooks/Files/useDelayedUploadToast.ts",
+    "symbol": "startUploadTimer"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "Undocumented hook; question describes the user-visible effect instead of 'toast'/'timer'/'delay'.",
+  "review": "answers added (inner function that schedules the size-scaled warning)"
+ },
+ {
+  "id": "hl11",
+  "kind": "hard",
+  "question": "For a sidebar list backed by an infinite query, I want a reusable hook that watches a container, fetches the next page once the user is almost at the bottom, throttles that so fast scrolls don't fire repeated fetches, and toggles a loading-spinner flag. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "client/src/hooks/Nav/useNavScrolling.ts",
+    "symbol": "useNavScrolling"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "client/src/components/ui/DataTable.tsx",
+    "symbol": "handleScroll"
+   },
+   {
+    "path": "client/src/hooks/Messages/useMessageScrolling.ts",
+    "symbol": "useMessageScrolling"
+   },
+   {
+    "path": "client/src/data-provider/queries.ts",
+    "symbol": "useConversationsInfiniteQuery"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "DataTable has its own unthrottled near-bottom loader inside a component; only this hook is reusable, throttled and sets a loading flag.",
+  "review": "ok"
+ },
+ {
+  "id": "hl12",
+  "kind": "hard",
+  "question": "In the chat view I want a floating 'jump to latest' button that only shows when the end of the thread is out of view, without flickering as the user moves, and the view should follow new output while a reply is streaming unless the user has stopped that. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "client/src/hooks/Messages/useMessageScrolling.ts",
+    "symbol": "useMessageScrolling"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "client/src/hooks/Artifacts/useAutoScroll.ts",
+    "symbol": "useAutoScroll"
+   },
+   {
+    "path": "client/src/hooks/useScrollToRef.ts",
+    "symbol": "useScrollToRef"
+   },
+   {
+    "path": "client/src/hooks/Nav/useNavScrolling.ts",
+    "symbol": "useNavScrolling"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "useAutoScroll also follows streaming output but has no visibility-based button; the follow-while-streaming effect is past line 70 of 102.",
+  "review": "ok"
+ },
+ {
+  "id": "hl13",
+  "kind": "hard",
+  "question": "Admins set attachment limits in megabytes per AI provider in the YAML, and can turn attachments off entirely for one provider. I need to fold those overrides onto our built-in defaults, converting to bytes and making a turned-off provider accept zero items of any type. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "packages/data-provider/src/file-config.ts",
+    "symbol": "mergeFileConfig"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H2",
+   "H4"
+  ],
+  "rationale": "The disabled-endpoint zeroing and per-endpoint MB conversion are ~28-55 lines into a 60-line undocumented function.",
+  "review": "ok"
+ },
+ {
+  "id": "hl14",
+  "kind": "hard",
+  "question": "If the link to an external tool server drops, I want to retry bringing it back a limited number of times, doubling the wait before each attempt up to a 30-second cap, and stop early if a shutdown was requested. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "packages/mcp/src/connection.ts",
+    "symbol": "handleReconnection"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "packages/mcp/src/connection.ts",
+    "symbol": "connectClient"
+   },
+   {
+    "path": "packages/mcp/src/connection.ts",
+    "symbol": "connect"
+   },
+   {
+    "path": "api/server/services/Runs/handle.js",
+    "symbol": "waitForRun"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Connect methods on the same class look like answers but do not retry; waitForRun retries a different thing. Vocabulary avoids 'MCP'/'reconnect'/'backoff'.",
+  "review": "ok"
+ },
+ {
+  "id": "hl15",
+  "kind": "hard",
+  "question": "Another request, like an OAuth callback, will eventually mark a pending record in our shared key-value cache as completed or failed. Given a record that already exists, I need to wait on it by checking every couple of seconds, resolve with its result, delete it on failure and give up once its time-to-live has passed. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "packages/mcp/src/flow/manager.ts",
+    "symbol": "monitorFlow"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "packages/mcp/src/flow/manager.ts",
+    "symbol": "createFlow"
+   },
+   {
+    "path": "packages/mcp/src/flow/manager.ts",
+    "symbol": "createFlowWithHandler"
+   },
+   {
+    "path": "api/server/services/Runs/handle.js",
+    "symbol": "waitForRun"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "createFlow* create the record then delegate the waiting; TTL timeout logic is past line 30 of the private poller.",
+  "review": "ok"
+ },
+ {
+  "id": "hl16",
+  "kind": "hard",
+  "question": "Agents can call user-configured third-party HTTP APIs. I need to attach the stored credential the way the user chose (base64 Basic, a bearer token, or a custom header name) and refuse to make the call when their OAuth access token is missing or past its expiry. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "packages/data-provider/src/actions.ts",
+    "symbol": "setAuth"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "packages/data-provider/src/parsers.ts",
+    "symbol": "resolveHeaders"
+   },
+   {
+    "path": "api/app/clients/tools/util/handleTools.js",
+    "symbol": "loadAuthValues"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H4"
+  ],
+  "rationale": "Header building and token-expiry checks start ~45 lines into a 77-line method (indexed name also covers the 4-line delegating wrapper in the same file).",
+  "review": "ok"
+ },
+ {
+  "id": "hl17",
+  "kind": "hard",
+  "question": "If someone half-types a message, attaches something, then hops to another chat, I want both the text and the attachments to be back when they return, kept per chat in the browser, with writes throttled while they type. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "client/src/hooks/Input/useAutoSave.ts",
+    "symbol": "useAutoSave"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "client/src/hooks/useLocalStorage.tsx",
+    "symbol": "useLocalStorage"
+   },
+   {
+    "path": "client/src/store/utils.ts",
+    "symbol": "atomWithLocalStorage"
+   },
+   {
+    "path": "client/src/hooks/Input/useDebounce.ts",
+    "symbol": "useDebounce"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Restore-on-chat-switch logic is past line 140 of a 211-line hook; generic local-storage helpers look similar. Avoids 'draft'/'save'.",
+  "review": "ok"
+ },
+ {
+  "id": "hl18",
+  "kind": "hard",
+  "question": "I want shareable links that, when opened, pre-fill the chat box with text carried in the URL, start a new chat with whatever settings in the link are valid, and then clean the address bar so a refresh doesn't apply them again. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "client/src/hooks/Input/useQueryParams.ts",
+    "symbol": "useQueryParams"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H2",
+   "H4"
+  ],
+  "rationale": "Pre-fill and history.replaceState are ~110-140 lines into a 147-line hook; question avoids 'query'/'params'/'search params'.",
+  "review": "ok"
+ },
+ {
+  "id": "hl19",
+  "kind": "hard",
+  "question": "Full-text search returns individual matching messages plus chats whose titles match. I need to collapse those into one entry per chat, ranked by how many matches it got, keeping the chat title when one was matched. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "api/lib/utils/reduceHits.js",
+    "symbol": "reduceHits"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/lib/utils/reduceHits.js",
+    "symbol": "reduceMessages"
+   },
+   {
+    "path": "api/lib/utils/mergeSort.js",
+    "symbol": "mergeSort"
+   },
+   {
+    "path": "api/models/Conversation.js",
+    "symbol": "getConvosQueried"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "reduceMessages in the same file counts per chat too but ignores titles; the title merge is the separating detail.",
+  "review": "ok"
+ },
+ {
+  "id": "hl20",
+  "kind": "hard",
+  "question": "When several API calls from the browser fail at once because the session expired, only one should renew the session while the rest wait. Once renewal finishes I need to release all the parked calls with the new token, or reject them all if renewal failed. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "packages/data-provider/src/request.ts",
+    "symbol": "processQueue"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "packages/data-provider/src/request.ts",
+    "symbol": "refreshToken"
+   },
+   {
+    "path": "packages/data-provider/src/request.ts",
+    "symbol": "dispatchTokenUpdatedEvent"
+   },
+   {
+    "path": "client/src/hooks/AuthContext.tsx",
+    "symbol": "AuthContextProvider"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "A 10-line undocumented helper next to token-refresh look-alikes; the interceptor itself is anonymous and not indexed.",
+  "review": "ok"
+ },
+ {
+  "id": "hl21",
+  "kind": "hard",
+  "question": "While streaming a reply into speech, I need a small helper that, given the buffered text, returns the position of the latest sentence end, counting CJK, Arabic and Spanish punctuation, newlines and code fences, so I can cut there and half sentences aren't spoken. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "packages/data-provider/src/parsers.ts",
+    "symbol": "findLastSeparatorIndex"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/server/services/Files/Audio/streamAudio.js",
+    "symbol": "splitTextIntoChunks"
+   },
+   {
+    "path": "api/app/clients/prompts/truncate.js",
+    "symbol": "smartTruncateText"
+   },
+   {
+    "path": "api/app/clients/prompts/truncate.js",
+    "symbol": "truncateText"
+   },
+   {
+    "path": "api/server/services/Files/Audio/streamAudio.js",
+    "symbol": "processChunks"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "splitTextIntoChunks also splits on sentence ends for audio; the answer is a tiny undocumented helper named by mechanism, not purpose.",
+  "review": "reworded (ask for the position-finding helper so the streaming caller processChunks, which does the cut, is not also an answer)"
+ },
+ {
+  "id": "hl22",
+  "kind": "hard",
+  "question": "Newer messages store their body as an array of typed content pieces. I need to flatten only the textual pieces into one string, inserting a space between neighbours only when neither side already has one, and ignoring images and tool calls. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "packages/data-provider/src/parsers.ts",
+    "symbol": "parseTextParts"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/app/clients/prompts/formatMessages.js",
+    "symbol": "formatContentStrings"
+   },
+   {
+    "path": "client/src/hooks/Conversations/useExportConversation.ts",
+    "symbol": "getMessageText"
+   },
+   {
+    "path": "client/src/hooks/Conversations/useExportConversation.ts",
+    "symbol": "getMessageContent"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "formatContentStrings also reduces text parts but joins with newlines and mutates LangChain payloads; the space-joining rule identifies the answer.",
+  "review": "ok"
+ },
+ {
+  "id": "hl23",
+  "kind": "hard",
+  "question": "Given an LLM's name I need to know whether it can take image inputs: it should match our built-in list of image-capable names plus any admin-added ones, explicitly exclude a couple of known text-only variants, and fail if the name isn't among those available. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "packages/data-provider/src/config.ts",
+    "symbol": "validateVisionModel"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/app/clients/OpenAIClient.js",
+    "symbol": "checkVisionRequest"
+   },
+   {
+    "path": "api/app/clients/GoogleClient.js",
+    "symbol": "checkVisionRequest"
+   },
+   {
+    "path": "api/app/clients/AnthropicClient.js",
+    "symbol": "checkVisionRequest"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Provider clients' checkVisionRequest methods (documented) look like answers but inspect attachments and call this helper.",
+  "review": "ok"
+ },
+ {
+  "id": "hl24",
+  "kind": "hard",
+  "question": "Sign-up should work as usual, but if the form carries an invitation token it must match the email address it was issued for, be rejected otherwise, and be consumed so it can't be used twice. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "api/server/middleware/checkInviteUser.js",
+    "symbol": "checkInviteUser"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/models/inviteUser.js",
+    "symbol": "getInvite"
+   },
+   {
+    "path": "api/models/inviteUser.js",
+    "symbol": "createInvite"
+   },
+   {
+    "path": "api/server/middleware/validateRegistration.js",
+    "symbol": "validateRegistration"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "getInvite (documented) looks up the token but neither rejects the request nor consumes it; the middleware does both.",
+  "review": "ok"
+ },
+ {
+  "id": "hl25",
+  "kind": "hard",
+  "question": "Bad data left some chat records with no ID at all. I need a maintenance routine that purges those records and their associated messages and reports how many of each were removed. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "api/models/Conversation.js",
+    "symbol": "deleteNullOrEmptyConversations"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/models/Conversation.js",
+    "symbol": "deleteConvos"
+   },
+   {
+    "path": "api/models/Message.js",
+    "symbol": "deleteMessages"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Generic deleters in the same models look like answers; only this one targets missing/blank ids. Avoids 'null'/'empty'.",
+  "review": "ok"
+ },
+ {
+  "id": "hl26",
+  "kind": "hard",
+  "question": "An error string from LangChain has a serialized JSON blob after some prose. I want to cut out the JSON part, parse it, and dig recursively for the text payload LangChain nests inside its serialized constructor arguments. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "api/utils/findMessageContent.js",
+    "symbol": "findMessageContent"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/utils/findMessageContent.js",
+    "symbol": "findContent"
+   },
+   {
+    "path": "client/src/utils/json.ts",
+    "symbol": "extractJson"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "findContent only does the recursive object walk; extractJson pulls JSON from text but on the client and without the nested lookup.",
+  "review": "ok"
+ },
+ {
+  "id": "hl27",
+  "kind": "hard",
+  "question": "Users can hand-edit the code of a generated preview block embedded in an assistant reply. I need to locate their original snippet inside that block's fenced code (or its body if unfenced) within the stored reply text and swap in the edited version, returning nothing if the snippet isn't found. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "api/server/services/Artifacts/update.js",
+    "symbol": "replaceArtifactContent"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "Undocumented; the question avoids the 'artifact' term and the ':::' markers.",
+  "review": "ok"
+ },
+ {
+  "id": "hl28",
+  "kind": "hard",
+  "question": "When the user picks a different AI provider mid-chat, I need to decide whether the current chat can carry on (same provider, interchangeable providers when that setting is on, or the same assistants backend) and build the template for what comes next. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "client/src/utils/endpoints.ts",
+    "symbol": "getConvoSwitchLogic"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "Undocumented; code speaks of 'modular endpoints', the question of interchangeable providers.",
+  "review": "ok"
+ },
+ {
+  "id": "hl29",
+  "kind": "hard",
+  "question": "For a 'try one of these' strip on the landing page, I need a database query that returns a shuffled sample of saved message templates with at most one per category, skipping uncategorized ones, with skip/limit paging. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "api/models/Prompt.js",
+    "symbol": "getRandomPromptGroups"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "api/models/Prompt.js",
+    "symbol": "getPromptGroups"
+   },
+   {
+    "path": "api/models/Prompt.js",
+    "symbol": "getAllPromptGroups"
+   },
+   {
+    "path": "api/models/Prompt.js",
+    "symbol": "getPromptGroupsWithPrompts"
+   },
+   {
+    "path": "client/src/data-provider/queries.ts",
+    "symbol": "useGetRandomPrompts"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Several template-group getters in the same file; only this one does a per-category $sample aggregation.",
+  "review": "reworded (scoped to the database query so client fetch wrappers are not answers)"
+ },
+ {
+  "id": "hl30",
+  "kind": "hard",
+  "question": "We don't get real byte-level feedback when sending attachments, so I want a simulated percentage that creeps up on a timer: faster for small items, slower and tapering off for big ones, never passing 95% until the real completion arrives, then snapping to 100%. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "client/src/hooks/Messages/useProgress.ts",
+    "symbol": "useProgress"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H2",
+   "H4"
+  ],
+  "rationale": "The 95% cap and snap-to-done effect are past line 45 of a 71-line hook; question avoids its name.",
+  "review": "ok"
+ },
+ {
+  "id": "hl31",
+  "kind": "hard",
+  "question": "I need the display name to show above an AI reply, derived from the provider and the model family, but preferring any custom label the user set, with sensible fallbacks for self-hosted OpenAI-compatible providers. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "packages/data-provider/src/parsers.ts",
+    "symbol": "getResponseSender"
+   },
+   {
+    "path": "client/src/hooks/Conversations/useGetSender.ts",
+    "symbol": "useGetSender"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H2",
+   "H4"
+  ],
+  "rationale": "85-line undocumented function; Google and custom-provider branches are past line 40. Question avoids 'sender'/'label' mechanism words.",
+  "review": "answers added (client hook that just passes through to the parser function)"
+ },
+ {
+  "id": "hl32",
+  "kind": "hard",
+  "question": "When a user removes several attachments in quick succession, I want to drop them from the local list immediately but send a single removal call to the server once they pause, skipping items still being sent and not touching items already part of a sent message. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "client/src/hooks/Files/useFileDeletion.ts",
+    "symbol": "useFileDeletion"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "client/src/data-provider/Files/mutations.ts",
+    "symbol": "useDeleteFilesMutation"
+   },
+   {
+    "path": "client/src/hooks/Files/useSetFilesToDelete.ts",
+    "symbol": "useSetFilesToDelete"
+   },
+   {
+    "path": "client/src/hooks/Input/useDebounce.ts",
+    "symbol": "useDebounce"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3",
+   "H4"
+  ],
+  "rationale": "The mutation hook does the server call without batching; the in-progress/attached skips are ~55-90 lines into a 139-line hook.",
+  "review": "ok"
+ }
+]

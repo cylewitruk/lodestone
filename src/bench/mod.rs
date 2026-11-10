@@ -382,10 +382,8 @@ mod tests {
         assert_eq!(report.rank_at_50, 0.5);
         assert_eq!(report.hard_hits_top5, Some((1, 1)));
         assert_eq!(report.hard_hits_agent_k, Some((1, 1)));
-        assert!(
-            report
-                .to_text()
-                .contains("agent view: answer within the default top 8: 0.500 (1/2)")
-        );
+        assert!(report.to_text().contains(&format!(
+            "agent view: answer within the default top {DEFAULT_TOP_K}: 0.500 (1/2)"
+        )));
     }
 }

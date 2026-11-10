@@ -131,8 +131,8 @@ pub struct RerankConfig {
     pub model: String,
     /// Hugging Face repo of the cross-encoder for the candle backends.
     pub hf_repo: String,
-    /// Candidates passed to the cross-encoder. 20 suits the default embedder, which puts 92% of
-    /// answers in its top 20; weaker embedders gain from 50 (see CHANGELOG, model comparison).
+    /// Candidates passed to the cross-encoder. 20 suits strong embedders; weaker ones gain from
+    /// 50 (see CHANGELOG, model comparison).
     pub candidates: usize,
     /// Token budget per (query, document) pair.
     pub max_tokens: usize,
@@ -144,7 +144,9 @@ pub struct RerankConfig {
 impl Default for RerankConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            // Off by default: on the hard question set it lowers well-phrased queries' scores and
+            // costs ~0.4 s per search on Metal, ~2.6 s on CPU (see CHANGELOG).
+            enabled: false,
             model: "bge-reranker-base".into(),
             hf_repo: "Alibaba-NLP/gte-reranker-modernbert-base".into(),
             candidates: 20,
@@ -239,18 +241,18 @@ pub struct Config {
     pub data_dir: Option<PathBuf>,
 }
 
-/// Default embedding runtime and model for this build. On Apple GPUs the larger
-/// Qwen3-Embedding-0.6B indexes fast enough (~43 chunks/s); on CPU it manages ~7 chunks/s, so
-/// CPU builds default to CodeRankEmbed (~17 chunks/s). Builds without candle fall back to a
-/// model fastembed ships.
+/// Default embedding runtime for this build; the model is jina-embeddings-v2-base-code on every
+/// runtime (the most accurate model measured on the hard question set, ~107 chunks/s on Metal
+/// and ~14 on CPU). Builds without candle use fastembed's build of it.
 pub fn default_engine() -> (Backend, &'static str) {
-    if cfg!(feature = "candle") && cfg!(target_os = "macos") {
-        (Backend::CandleMetal, "qwen3-0.6b")
+    let backend = if cfg!(feature = "candle") && cfg!(target_os = "macos") {
+        Backend::CandleMetal
     } else if cfg!(feature = "candle") {
-        (Backend::CandleCpu, "coderank")
+        Backend::CandleCpu
     } else {
-        (Backend::Fastembed, "jina-code-v2")
-    }
+        Backend::Fastembed
+    };
+    (backend, "jina-code-v2")
 }
 
 impl Default for Config {

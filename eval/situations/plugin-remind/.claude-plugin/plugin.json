@@ -1,0 +1,5 @@
+{
+  "name": "reuse-reminder",
+  "version": "0.1.0",
+  "description": "Control for the situations experiment (arm `remind`): the lodestone reminder's advice without lodestone."
+}

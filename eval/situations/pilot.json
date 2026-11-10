@@ -1,0 +1,170 @@
+[
+ {
+  "id": "pw1",
+  "situation": "write",
+  "kind": "positive",
+  "prompt": "In stackslib we're adding an RPC endpoint that tells a caller which of the last N tenures this node has fully stored. In a new module `stackslib/src/net/api/gettenurepresence.rs`, add `pub fn encode_tenure_presence(present: &[bool]) -> Vec<u8>` that packs the per-tenure flags into a compact bitmap for the response body: flag i lives in byte i / 8 at bit position i % 8 (least-significant bit first), the unused high bits of the final byte are zero, and an empty slice yields an empty vector. N is always well below 65,536.\n\nReply with the complete Rust code in one fenced block (include the `use` lines it needs). Do not edit any files.",
+  "answers": [
+   {
+    "path": "stackslib/src/net/codec.rs",
+    "symbol": "compress_bools"
+   }
+  ],
+  "accept": "\\bcompress_bools\\b",
+  "criteria": [
+   "a",
+   "b",
+   "c"
+  ],
+  "note": "BlocksInvData::compress_bools is exactly this LSB-first flag packer (pub, same crate); undocumented, named 'compress bools' rather than bitmap/pack, and look-alikes (stacks-common BitVec, PoxId::bit_slice, bloom BitField, bin_bytes) pull a searcher elsewhere.",
+  "review": "ok"
+ },
+ {
+  "id": "pw2",
+  "situation": "write",
+  "kind": "positive",
+  "prompt": "In the clarity crate we're adding a native that takes a 33-byte compressed public key. In `clarity/src/vm/functions/conversions.rs`, write `pub fn compressed_pubkey_arg(arg: &Value) -> Result<[u8; 33], VmExecutionError>` that returns the argument's bytes when it holds exactly 33 bytes of binary data, and otherwise fails with a runtime type-value check error reporting the expected 33-byte type and the offending value.\n\nReply with the complete Rust code in one fenced block (include the `use` lines it needs). Do not edit any files.",
+  "answers": [
+   {
+    "path": "clarity/src/vm/functions/mod.rs",
+    "symbol": "buff_to_array"
+   }
+  ],
+  "accept": "\\bbuff_to_array\\b",
+  "criteria": [
+   "b",
+   "c"
+  ],
+  "note": "clarity::vm::functions::buff_to_array<N> does the exact-length buffer extraction (pub, parent module); look-alikes buff_to_vec, Value::expect_buff/expect_buff_padded and crypto.rs' many inline `data.len() == 33` matches compete. Residual risk: `fn .*buff` in vm/functions lists ~12 hits including the target.",
+  "review": "fixed: the const-generic signature (`<const N: usize> ... [u8; N]`) let `grep 'const N: usize'` find the target among 4 hits and echoed its doc ('fixed-size byte array'); prompt also said 'helper' and 'the usual ... error'. Now a concrete 33-byte case with no generic, no 'helper'/'usual'/'buffer' wording."
+ },
+ {
+  "id": "pv1",
+  "situation": "review",
+  "kind": "positive",
+  "prompt": "Please review this PR before it is merged. Do not edit any files.\n\n```diff\ndiff --git a/stackslib/src/net/api/getstackers.rs b/stackslib/src/net/api/getstackers.rs\n--- a/stackslib/src/net/api/getstackers.rs\n+++ b/stackslib/src/net/api/getstackers.rs\n@@ -19,7 +19,7 @@ use stacks_common::types::net::PeerHost;\n \n use crate::burnchains::Burnchain;\n use crate::chainstate::burn::db::sortdb::SortitionDB;\n-use crate::chainstate::coordinator::OnChainRewardSetProvider;\n+use crate::chainstate::coordinator::{OnChainRewardSetProvider, PoxAnchorBlockStatus};\n use crate::chainstate::stacks::boot::{PoxVersions, RewardSet};\n use crate::chainstate::stacks::db::StacksChainState;\n use crate::net::http::{\n@@ -95,10 +95,28 @@ impl GetStackersResponse {\n         }\n \n         let provider = OnChainRewardSetProvider::new();\n-        let stacker_set = provider\n-            .read_reward_set_nakamoto(chainstate, cycle_number, sortdb, tip, true)\n-            .map_err(GetStackersErrors::NotAvailableYet)?;\n+        let stacker_set =\n+            match provider.read_reward_set_nakamoto(chainstate, cycle_number, sortdb, tip, true) {\n+                Ok(stacker_set) => stacker_set,\n+                // Fall back to the set the sortition DB stored for this cycle,\n+                // if it was ever computed.\n+                Err(e) => Self::load_from_sortition_db(sortdb, cycle_number)\n+                    .ok_or(GetStackersErrors::NotAvailableYet(e))?,\n+            };\n \n         Ok(Self { stacker_set })\n     }\n+\n+    fn load_from_sortition_db(sortdb: &SortitionDB, cycle_number: u64) -> Option<RewardSet> {\n+        let burn_tip = SortitionDB::get_canonical_burn_chain_tip(sortdb.conn()).ok()?;\n+        let (rc_info, _) = sortdb\n+            .get_preprocessed_reward_set_for_reward_cycle(&burn_tip.sortition_id, cycle_number)\n+            .ok()?;\n+        match rc_info.anchor_status {\n+            PoxAnchorBlockStatus::SelectedAndKnown(_, _, reward_set) => Some(reward_set),\n+            PoxAnchorBlockStatus::SelectedAndUnknown(..) | PoxAnchorBlockStatus::NotSelected => {\n+                None\n+            }\n+        }\n+    }\n }\n```",
+  "answers": [
+   {
+    "path": "stackslib/src/chainstate/coordinator/mod.rs",
+    "symbol": "known_selected_anchor_block"
+   },
+   {
+    "path": "stackslib/src/chainstate/coordinator/mod.rs",
+    "symbol": "known_selected_anchor_block_owned"
+   }
+  ],
+  "criteria": [
+   "a",
+   "b",
+   "c"
+  ],
+  "note": "load_from_sortition_db's match on anchor_status re-implements RewardCycleInfo::known_selected_anchor_block_owned (and the borrowing known_selected_anchor_block), used by sortdb, nakamoto coordinator, relay, p2p and getpoxinfo; getpoxinfo.rs does the same sortition-DB fallback via .known_selected_anchor_block(). Targets are undocumented, sit among look-alikes (selected_anchor_block, is_reward_info_known, CurrentRewardSet::reward_set, get_preprocessed_reward_set_size, NakamotoChainState::get_reward_set), and 'known selected anchor block' names what a developer calls 'the reward set'. Grep path: 8 non-test SelectedAndKnown hits.",
+  "review": "replaced: PoxConstants::reward_cycle_index has zero callers and the codebase inlines the same modulo ~10 times, so the positive was weak; new diff re-implements a used RewardCycleInfo accessor."
+ },
+ {
+  "id": "pv2",
+  "situation": "review",
+  "kind": "positive",
+  "prompt": "Please review this PR before it is merged. Do not edit any files.\n\n```diff\ndiff --git a/stacks-signer/src/monitor_signers.rs b/stacks-signer/src/monitor_signers.rs\n--- a/stacks-signer/src/monitor_signers.rs\n+++ b/stacks-signer/src/monitor_signers.rs\n@@ -138,6 +138,11 @@ impl SignerMonitor {\n             })\n             .collect::<Vec<_>>()\n             .join(\", \");\n+        let formatted_btc_addrs = missing_signers\n+            .iter()\n+            .map(legacy_btc_address_string)\n+            .collect::<Vec<_>>()\n+            .join(\", \");\n         let missing_weight = missing_signers\n             .iter()\n             .map(|addr| self.cycle_state.signers_weights.get(addr).unwrap())\n@@ -147,6 +152,7 @@ impl SignerMonitor {\n         warn!(\n             \"Missing messages for {} of {} signer(s). Missing {percentage_missing:.2}% of signing weight  ({missing_weight}/{total_weight})\", missing_signers.len(), self.cycle_state.signers_addresses.len();\n             \"signer_addresses\" => formatted_signers,\n+            \"signer_btc_addresses\" => formatted_btc_addrs,\n             \"signer_keys\" => formatted_keys\n         );\n     }\n@@ -331,3 +337,19 @@ impl SignerMonitor {\n         }\n     }\n }\n+\n+/// Base58check-encode the address's hash160 under the legacy Bitcoin\n+/// version byte that matches its Stacks address version.\n+fn legacy_btc_address_string(addr: &StacksAddress) -> String {\n+    let btc_version: u8 = match addr.version() {\n+        22 => 0x00, // SP.. -> 1..\n+        20 => 0x05, // SM.. -> 3..\n+        26 => 0x6f, // ST.. -> m/n..\n+        21 => 0xc4, // SN.. -> 2..\n+        other => other,\n+    };\n+    let mut versioned = Vec::with_capacity(21);\n+    versioned.push(btc_version);\n+    versioned.extend_from_slice(&addr.bytes().0);\n+    stacks_common::address::b58::check_encode_slice(&versioned)\n+}\n```",
+  "answers": [
+   {
+    "path": "stackslib/src/chainstate/stacks/address.rs",
+    "symbol": "to_b58"
+   },
+   {
+    "path": "stackslib/src/burnchains/bitcoin/address.rs",
+    "symbol": "to_b58_version_byte"
+   }
+  ],
+  "criteria": [
+   "a",
+   "b",
+   "c"
+  ],
+  "note": "legacy_btc_address_string duplicates StacksAddress::to_b58 (StacksAddressExtensions in stackslib, a stacks-signer dependency), including the c32->b58 version mapping already in to_b58_version_byte; target is undocumented, shares its name with PoxAddress::to_b58 / LegacyBitcoinAddress::to_b58, and 'b58' differs from 'legacy BTC address string'. `to_b58` is also PoxAddress::to_b58 / the trait decl in the same file; PoxAddress::Standard(..).to_b58() delegates to the StacksAddress one, so crediting either is acceptable. to_b58_version_byte (pub, stackslib) replaces the hard-coded version table and is also a reasonable reviewer finding. Residual risk: `fn to_b58` is a guessable name and `check_encode_slice` has ~5 non-test callers including the target.",
+  "review": "fixed: added to_b58_version_byte as an accepted answer; to_b58 name collision judged harmless (PoxAddress::to_b58 delegates)."
+ },
+ {
+  "id": "pv3",
+  "situation": "review",
+  "kind": "control",
+  "prompt": "Please review this PR before it is merged. Do not edit any files.\n\n```diff\ndiff --git a/clarity/src/vm/analysis/errors.rs b/clarity/src/vm/analysis/errors.rs\n--- a/clarity/src/vm/analysis/errors.rs\n+++ b/clarity/src/vm/analysis/errors.rs\n@@ -26,6 +26,7 @@ use stacks_common::types::StacksEpochId;\n \n use crate::vm::costs::{CostErrors, ExecutionCost};\n use crate::vm::diagnostic::{DiagnosableError, Diagnostic};\n+use crate::vm::functions::NativeFunctions;\n \n /// What kind of syntax binding was found to be in error?\n #[derive(Debug, PartialEq, Clone, Copy)]\n@@ -1310,7 +1311,38 @@ impl DiagnosableError for StaticCheckErrorKind {\n             StaticCheckErrorKind::NoSuchBlockInfoProperty(_) => Some(\n                 \"properties available: time, header-hash, burnchain-header-hash, vrf-seed\".into(),\n             ),\n+            StaticCheckErrorKind::UnknownFunction(name)\n+            | StaticCheckErrorKind::IllegalOrUnknownFunctionApplication(name) => {\n+                closest_native_function(name).map(|found| format!(\"did you mean '{found}'?\"))\n+            }\n             _ => None,\n         }\n     }\n }\n+\n+/// Find the built-in whose name is within a few single-character edits of\n+/// `name`, preferring the closest. Only used to enrich error messages.\n+fn closest_native_function(name: &str) -> Option<&'static str> {\n+    let max_edits = (name.len() / 3).clamp(1, 3);\n+    NativeFunctions::ALL_NAMES\n+        .iter()\n+        .map(|candidate| (edit_distance(name, candidate), *candidate))\n+        .filter(|(dist, _)| *dist <= max_edits)\n+        .min_by_key(|(dist, _)| *dist)\n+        .map(|(_, candidate)| candidate)\n+}\n+\n+fn edit_distance(a: &str, b: &str) -> usize {\n+    let b_chars: Vec<char> = b.chars().collect();\n+    let mut prev: Vec<usize> = (0..=b_chars.len()).collect();\n+    let mut cur = vec![0; b_chars.len() + 1];\n+    for (i, ca) in a.chars().enumerate() {\n+        cur[0] = i + 1;\n+        for (j, cb) in b_chars.iter().enumerate() {\n+            let substitution = prev[j] + usize::from(ca != *cb);\n+            cur[j + 1] = substitution.min(prev[j + 1] + 1).min(cur[j] + 1);\n+        }\n+        std::mem::swap(&mut prev, &mut cur);\n+    }\n+    prev[b_chars.len()]\n+}\n```",
+  "answers": [],
+  "criteria": [],
+  "note": "Control: edit-distance 'did you mean' hints for unknown Clarity functions; greps for levenshtein/edit_distance/distance/similar/fuzzy/closest/nearest/did you mean/strsim found nothing comparable (only NativeFunctions::ALL_NAMES, which the diff uses).",
+  "review": "ok"
+ },
+ {
+  "id": "pr1",
+  "situation": "refactor",
+  "kind": "positive",
+  "prompt": "We want to move `fn write_compact_size` from `stackslib/src/chainstate/stacks/sbtc.rs` into stacks-common so other crates can use it. Explain what the move involves and anything we should watch out for. Do not edit any files.",
+  "answers": [
+   {
+    "path": "stacks-common/src/deps_common/bitcoin/network/encodable.rs",
+    "symbol": "VarInt"
+   }
+  ],
+  "criteria": [
+   "b",
+   "c"
+  ],
+  "note": "stacks-common already has the same Bitcoin CompactSize encoding as VarInt's ConsensusEncodable impl (serialize(&VarInt(n))); vocabulary differs ('compact size' vs 'VarInt'), and look-alikes (CheckedData, signet challenge_hash's CompactSize comment, clarity bitcoin.rs) distract. Caveat: write_compact_size's own doc says '(varint)', so `grep -i varint` in stacks-common (4 files) reaches VarInt once the agent decides to look; the name still differs from 'compact size'.",
+  "review": "ok (doubt: source doc comment bridges the vocabulary via 'varint'; corpus cannot be changed)"
+ },
+ {
+  "id": "pr2",
+  "situation": "refactor",
+  "kind": "positive",
+  "prompt": "We want to move `fn to_txid` from `stackslib/src/burnchains/bitcoin/bits.rs` into stacks-common so other crates can use it. Explain what the move involves and anything we should watch out for. Do not edit any files.",
+  "answers": [
+   {
+    "path": "stacks-common/src/types/chainstate.rs",
+    "symbol": "from_bitcoin_tx_hash"
+   }
+  ],
+  "criteria": [
+   "b",
+   "c"
+  ],
+  "note": "to_txid's core is reversing a bitcoin Sha256dHash into a Txid, which Txid::from_bitcoin_tx_hash in stacks-common already does (to_txid = (from_bitcoin_tx_hash(&prev.txid), prev.vout)); names share nothing and look-alikes (Txid::to_bitcoin_tx_hash, BurnchainHeaderHash::to_bitcoin_hash/from_bitcoin_hash, a test-only to_txid in blocks.rs) compete.",
+  "review": "ok: from_bitcoin_tx_hash is the non-trivial part (byte-order reversal); the rest is building a (Txid, vout) tuple, so 'just call Txid::from_bitcoin_tx_hash, no move needed' is the expected finding. Target is used in stacks-node."
+ },
+ {
+  "id": "pl1",
+  "situation": "locate",
+  "kind": "positive",
+  "prompt": "Our Nakamoto miner never attempts an idle-based tenure extension whenever a chunk of the signer set hasn't posted its status yet, even if every signer that has reported says extending is fine right now. In the miner's debug output the computed extension moment is an absurd far-future value. Where does the miner turn the individual signers' reported extension times into the single moment it uses, and why does it give up in that case?\n\nFind the code responsible and answer briefly. Do not edit any files. End your reply with one final line in exactly this form: `ANSWER: <repo-relative path>::<function name>`.",
+  "answers": [
+   {
+    "path": "stacks-node/src/nakamoto_node/stackerdb_listener.rs",
+    "symbol": "find_weighted_timestamp_by_threshold"
+   }
+  ],
+  "criteria": [
+   "a",
+   "b",
+   "c"
+  ],
+  "note": "The sort-by-time/accumulate-voting-power loop that returns u64::MAX below the 70% bar lives only in StackerDBListenerComms::find_weighted_timestamp_by_threshold (undocumented); wrappers get_tenure_extend_timestamp/get_read_count_extend_timestamp and the signer-side SignerDb::calculate_tenure_extend_timestamp are look-alikes.",
+  "review": "ok"
+ },
+ {
+  "id": "pl2",
+  "situation": "locate",
+  "kind": "positive",
+  "prompt": "In the p2p peer-discovery random walk, nodes hosted in large cloud networks seem to be stepped to about as often as nodes on rare networks, even though I thought the walk deliberately favours peers from less common autonomous systems. Which function computes the factor that combines the current and candidate peers' connectivity with how common each one's network is, i.e. the weighting that decides whether a proposed step is accepted?\n\nFind the code responsible and answer briefly. Do not edit any files. End your reply with one final line in exactly this form: `ANSWER: <repo-relative path>::<function name>`.",
+  "answers": [
+   {
+    "path": "stackslib/src/net/neighbors/walk.rs",
+    "symbol": "degree_ratio"
+   }
+  ],
+  "criteria": [
+   "b",
+   "c"
+  ],
+  "note": "NeighborWalk::degree_ratio computes (d1*as_d2)/(d2*as_d1), the AS-biased MHRWDA factor; look-alikes include NeighborWalk::step (uses it), relay.rs' AS-diversity relay ranking, prune.rs AS pruning and PeerDB::asn_count, and 'degree ratio' shares no words with the report.",
+  "review": "fixed: 'under-represented' is verbatim from degree_ratio's doc comment and 'coin toss' from the comment at its call site in step(); both reworded. step() remains wrong for this question (it consumes the factor, does not compute it)."
+ }
+]

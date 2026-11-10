@@ -1,0 +1,942 @@
+[
+ {
+  "id": "ht01",
+  "kind": "hard",
+  "question": "I need to order a signed 64-bit integer against a double exactly, without first casting the integer to floating point and losing precision near the extremes, and with an error rather than a silent answer when the double is NaN. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/aggregation/bucket/composite/numeric_types.rs",
+    "symbol": "cmp_i64_f64"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/aggregation/bucket/composite/numeric_types.rs",
+    "symbol": "cmp_u64_f64"
+   },
+   {
+    "path": "src/aggregation/bucket/composite/numeric_types.rs",
+    "symbol": "cmp_i64_u64"
+   },
+   {
+    "path": "src/collector/sort_key/order.rs",
+    "symbol": "compare_owned_value"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3"
+  ],
+  "rationale": "Exact i64-vs-f64 ordering with NaN error; siblings handle u64/f64 and i64/u64, and the sort comparator casts lossily.",
+  "review": "ok"
+ },
+ {
+  "id": "ht02",
+  "kind": "hard",
+  "question": "When sorting hits by a document field whose entries may be absent or of different numeric kinds, I want one ordering function that returns a plain ordering (never an error) where the caller picks whether absent entries go first or last, a negative signed number always ranks below any unsigned one, and entries of unrelated kinds are ordered by kind. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/collector/sort_key/order.rs",
+    "symbol": "compare_owned_value"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/aggregation/bucket/composite/numeric_types.rs",
+    "symbol": "cmp_i64_u64"
+   },
+   {
+    "path": "src/aggregation/bucket/composite/numeric_types.rs",
+    "symbol": "cmp_i64_f64"
+   },
+   {
+    "path": "src/indexer/merger_sorted_index_test.rs",
+    "symbol": "compare_option_values"
+   },
+   {
+    "path": "src/aggregation/bucket/composite/mod.rs",
+    "symbol": "composite_intermediate_key_ordering"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "Const-generic null placement plus cross-type numeric arms (past line 27 of 57); the num_cmp helpers and a test comparator look similar.",
+  "review": "reworded: composite-agg key ordering also has caller-chosen missing placement and cross-type numerics but returns Result; added 'never an error' to exclude it"
+ },
+ {
+  "id": "ht03",
+  "kind": "hard",
+  "question": "Users filter an integer column with decimal limits like `> 2.5` or `<= 7.9`; I need those turned into whole-number limits (round the lower one up, the upper one down), and limits outside the integer type's span should become either no limit or match-nothing. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/query/range_query/range_query_fastfield.rs",
+    "symbol": "transform_from_f64_bounds"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/query/range_query/range_query_fastfield.rs",
+    "symbol": "bound_to_value_range"
+   },
+   {
+    "path": "src/query/range_query/range_query_fastfield.rs",
+    "symbol": "bound_range_inclusive_ip"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "Converts f64 range limits to integer-column limits via ceil/floor; question speaks of decimal limits, not f64 bounds/fract.",
+  "review": "ok"
+ },
+ {
+  "id": "ht04",
+  "kind": "hard",
+  "question": "Before creating an index whose documents are kept presorted by a chosen column, I want the configuration rejected if that column isn't stored column-wise, is a tie-breaker, has a type that can't be ordered (booleans, IP addresses), or if presorting is combined with caller-assigned document numbering. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/index/index.rs",
+    "symbol": "validate"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H2"
+  ],
+  "rationale": "IndexBuilder::validate; the supported-type whitelist sits ~31 lines into a 54-line body.",
+  "review": "ok"
+ },
+ {
+  "id": "ht05",
+  "kind": "hard",
+  "question": "When opening the file that holds the stored, retrievable document contents, I need its fixed-size trailing metadata record split off from the body, with a corruption error if the file is too short to even contain it. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/store/footer.rs",
+    "symbol": "extract_footer"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/directory/footer.rs",
+    "symbol": "extract_footer"
+   },
+   {
+    "path": "src/store/reader.rs",
+    "symbol": "block_read_index"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3"
+  ],
+  "rationale": "DocStoreFooter::extract_footer; the generic per-file Footer::extract_footer (checksum/version) has the same name.",
+  "review": "ok"
+ },
+ {
+  "id": "ht06",
+  "kind": "hard",
+  "question": "I want to notice when another process commits changes to an on-disk index: a background thread that periodically hashes the index's metadata file and notifies subscribers only when the hash differs from last time, started at most once even if requested repeatedly. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/directory/mmap_directory/file_watcher.rs",
+    "symbol": "spawn"
+   },
+   {
+    "path": "src/directory/mmap_directory/file_watcher.rs",
+    "symbol": "FileWatcher"
+   },
+   {
+    "path": "src/directory/mmap_directory/file_watcher.rs",
+    "symbol": "watch"
+   },
+   {
+    "path": "src/directory/mmap_directory/mod.rs",
+    "symbol": "watch"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/directory/mmap_directory/file_watcher.rs",
+    "symbol": "compute_checksum"
+   },
+   {
+    "path": "src/directory/watch_event_router.rs",
+    "symbol": "broadcast"
+   }
+  ],
+  "criteria": [
+   "H3",
+   "H4"
+  ],
+  "rationale": "FileWatcher::spawn runs the polling checksum loop behind a compare_exchange; checksum/watch/broadcast helpers are adjacent look-alikes.",
+  "review": "answers added: subscribe-and-start watch() wrappers in FileWatcher and MmapDirectory"
+ },
+ {
+  "id": "ht07",
+  "kind": "hard",
+  "question": "For distinct-count estimation over string columns I precompute a hash token per dictionary id; the id-to-token lookup should be a plain array when ids are small or densely packed and a hash map when they're sparse, with a fallback token for documents that have no entry. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/aggregation/metric/cardinality/str_collector.rs",
+    "symbol": "CouponCache"
+   },
+   {
+    "path": "src/aggregation/metric/cardinality/str_collector.rs",
+    "symbol": "new"
+   },
+   {
+    "path": "src/aggregation/metric/cardinality/str_collector.rs",
+    "symbol": "build_coupon_cache"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/aggregation/metric/cardinality/term_ord_accumulator.rs",
+    "symbol": "TermOrdSet"
+   },
+   {
+    "path": "src/aggregation/metric/cardinality/term_ord_accumulator.rs",
+    "symbol": "PagedBitset"
+   },
+   {
+    "path": "src/aggregation/bucket/term_agg/mod.rs",
+    "symbol": "PagedTermMap"
+   }
+  ],
+  "criteria": [
+   "H2",
+   "H3",
+   "H4"
+  ],
+  "rationale": "CouponCache::new picks Dense vs Sparse (threshold past ~800 chars); TermOrdSet/PagedBitset are other dense/sparse id structures but are sets, not id->token maps.",
+  "review": "answers added: build_coupon_cache precomputes the tokens and returns this lookup"
+ },
+ {
+  "id": "ht08",
+  "kind": "hard",
+  "question": "For hierarchical category paths like /electronics/phones/android, I need each document also indexed under every enclosing category (/electronics, /electronics/phones) so a search on a broader category matches it. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/tokenizer/facet_tokenizer.rs",
+    "symbol": "advance"
+   },
+   {
+    "path": "src/tokenizer/facet_tokenizer.rs",
+    "symbol": "FacetTokenizer"
+   },
+   {
+    "path": "src/tokenizer/facet_tokenizer.rs",
+    "symbol": "FacetTokenStream"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/schema/facet.rs",
+    "symbol": "is_prefix_of"
+   },
+   {
+    "path": "src/collector/facet_collector.rs",
+    "symbol": "is_child_facet"
+   },
+   {
+    "path": "src/collector/facet_collector.rs",
+    "symbol": "compute_collapse_mapping"
+   }
+  ],
+  "criteria": [
+   "H3",
+   "H4"
+  ],
+  "rationale": "The facet tokenizer emits one token per ancestor path; prefix/child checks and collector collapsing deal with hierarchy but don't index ancestors.",
+  "review": "answers added: the token stream type that emits the ancestor tokens"
+ },
+ {
+  "id": "ht09",
+  "kind": "hard",
+  "question": "From a stream of character-boundary offsets I want every (start, end) window spanning between a minimum and maximum number of characters, produced lazily from a small ring of remembered offsets rather than collecting the whole input first. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/tokenizer/ngram_tokenizer.rs",
+    "symbol": "StutteringIterator"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/tokenizer/ngram_tokenizer.rs",
+    "symbol": "NgramTokenizer"
+   },
+   {
+    "path": "src/tokenizer/ngram_tokenizer.rs",
+    "symbol": "CodepointFrontiers"
+   }
+  ],
+  "criteria": [
+   "H3",
+   "H4"
+  ],
+  "rationale": "StutteringIterator yields (a,b) offset pairs between min and max gram via a ring buffer; the n-gram tokenizer and codepoint-boundary iterator sit beside it.",
+  "review": "ok"
+ },
+ {
+  "id": "ht10",
+  "kind": "hard",
+  "question": "Users configure the stored-document codec with a text setting that names the algorithm plus an optional parenthesized level option; I need that parsed, unknown options rejected, and a warning logged when the chosen level is high enough to slow indexing down. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/store/compressors.rs",
+    "symbol": "deser_from_str"
+   },
+   {
+    "path": "src/store/compressors.rs",
+    "symbol": "deserialize"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/store/compressors.rs",
+    "symbol": "Compressor"
+   },
+   {
+    "path": "src/store/compressors.rs",
+    "symbol": "ser_to_string"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3"
+  ],
+  "rationale": "ZstdCompressor::deser_from_str parses options and warns at level>=15; Compressor's serde impl only dispatches on the prefix, ser_to_string is the inverse.",
+  "review": "answers added: Compressor::deserialize parses the setting and delegates the option parsing"
+ },
+ {
+  "id": "ht11",
+  "kind": "hard",
+  "question": "To keep the number of index chunks under control I want chunks grouped into tiers by order-of-magnitude size, with a tier combined only once it has enough members (or sooner if one of them has a high share of removed documents), while ignoring chunks that are already very large. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/indexer/log_merge_policy.rs",
+    "symbol": "compute_merge_candidates"
+   },
+   {
+    "path": "src/indexer/log_merge_policy.rs",
+    "symbol": "LogMergePolicy"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/indexer/merge_policy.rs",
+    "symbol": "compute_merge_candidates"
+   },
+   {
+    "path": "src/indexer/segment_updater.rs",
+    "symbol": "consider_merge_options"
+   }
+  ],
+  "criteria": [
+   "H3",
+   "H4"
+  ],
+  "rationale": "LogMergePolicy's log2-size levels; the trait/NoMergePolicy method shares the name, and the updater only drives the policy.",
+  "review": "ok"
+ },
+ {
+  "id": "ht12",
+  "kind": "hard",
+  "question": "When combining several chunks of an index that is kept presorted on a numeric key, I want the chunks put in order of their smallest key (respecting ascending or descending order) so non-overlapping chunks can simply be concatenated, but left as-is for text keys whose per-chunk ordinals can't be compared. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/indexer/merger.rs",
+    "symbol": "sort_readers_by_min_sort_field"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/indexer/merger.rs",
+    "symbol": "is_disjunct_and_sorted_on_sort_property"
+   },
+   {
+    "path": "src/indexer/merger.rs",
+    "symbol": "get_numeric_accessor"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Presorts segment readers by min sort value, skipping Str/Bytes; the disjointness check and accessor helper are look-alikes in the same merger.",
+  "review": "ok"
+ },
+ {
+  "id": "ht13",
+  "kind": "hard",
+  "question": "I have a shared append-only log whose current tail node is held only weakly; I need get-or-create for that tail that first tries under a shared read lock and only takes the exclusive lock, re-checking, if the tail was dropped. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/indexer/delete_queue.rs",
+    "symbol": "get_last_block"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/indexer/delete_queue.rs",
+    "symbol": "next_block"
+   },
+   {
+    "path": "src/indexer/delete_queue.rs",
+    "symbol": "DeleteQueue"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3"
+  ],
+  "rationale": "Weak-ref double-checked locking for the delete queue tail; next_block uses the same read-then-write pattern for a different purpose.",
+  "review": "ok"
+ },
+ {
+  "id": "ht14",
+  "kind": "hard",
+  "question": "Each compressed chunk of the stored-documents file ends with a table of 32-bit start offsets plus a count; given a document's position inside the chunk I need its byte span, with the last document ending where the table begins and an error if the position is out of bounds. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/store/reader.rs",
+    "symbol": "block_read_index"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/store/reader.rs",
+    "symbol": "get_document_bytes"
+   },
+   {
+    "path": "src/store/index/skip_index.rs",
+    "symbol": "cursor_at_offset"
+   },
+   {
+    "path": "src/store/footer.rs",
+    "symbol": "extract_footer"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3"
+  ],
+  "rationale": "Reads the in-block offset table; get_document_bytes and the skip index locate blocks/docs at a coarser level.",
+  "review": "ok"
+ },
+ {
+  "id": "ht15",
+  "kind": "hard",
+  "question": "I have, per dictionary id, a target group number where equal targets are adjacent; I want them renumbered into dense consecutive slots plus the list of distinct targets, so per-group counters can live in a small array. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/collector/facet_collector.rs",
+    "symbol": "compress_mapping"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/collector/facet_collector.rs",
+    "symbol": "compute_collapse_mapping"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "Dense renumbering of facet collapse ordinals; the question avoids facet/collapse vocabulary.",
+  "review": "ok"
+ },
+ {
+  "id": "ht16",
+  "kind": "hard",
+  "question": "I need to read an unsigned number of up to 56 bits that starts at an arbitrary bit position inside a byte slice, without reading past the end of the slice when the value sits near its tail. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/termdict/fst_termdict/term_info_store.rs",
+    "symbol": "extract_bits"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/aggregation/bucket/multi_terms/mod.rs",
+    "symbol": "unpack_value"
+   },
+   {
+    "path": "src/aggregation/bucket/multi_terms/mod.rs",
+    "symbol": "shift_packed_bits"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3"
+  ],
+  "rationale": "Bit-addressed little-endian read with zero-padded tail; multi-terms key packing also shifts/masks packed bits, but within a u64.",
+  "review": "ok"
+ },
+ {
+  "id": "ht17",
+  "kind": "hard",
+  "question": "Before downloading many byte spans from remote object storage, I want spans that are close together joined into one request whenever the gap between them is small enough that fetching the gap costs less than another round trip, with the result pushed onto a channel. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/index/inverted_index_reader.rs",
+    "symbol": "send_coalesced_posting_ranges"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/index/inverted_index_reader.rs",
+    "symbol": "download_posting_ranges"
+   },
+   {
+    "path": "src/snippet/mod.rs",
+    "symbol": "collapse_overlapped_ranges"
+   },
+   {
+    "path": "src/snippet/mod.rs",
+    "symbol": "merge_overlapping_ranges"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Coalesces posting ranges with a TTFB-derived hole threshold; snippet helpers merge only overlapping ranges, and the downloader doesn't coalesce.",
+  "review": "ok"
+ },
+ {
+  "id": "ht18",
+  "kind": "hard",
+  "question": "For relevance scoring after combining chunks, I need the overall word count of a text column within one chunk counting only documents that haven't been removed: summed from the per-document length codes when available, otherwise prorated by the share of surviving documents. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/index/inverted_index_plugin.rs",
+    "symbol": "estimate_total_num_tokens_in_single_segment"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/index/inverted_index_plugin.rs",
+    "symbol": "estimate_total_num_tokens"
+   },
+   {
+    "path": "src/index/inverted_index_reader.rs",
+    "symbol": "total_num_tokens"
+   },
+   {
+    "path": "src/query/bm25.rs",
+    "symbol": "total_num_tokens"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Uses fieldnorm histogram over alive docs or alive ratio; the multi-segment wrapper and raw token-count accessors are look-alikes.",
+  "review": "ok"
+ },
+ {
+  "id": "ht19",
+  "kind": "hard",
+  "question": "I have entries already sorted by column id and need, for each column, the contiguous span of positions its entries occupy in that list. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/postings/postings_writer.rs",
+    "symbol": "make_field_partition"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "Groups sorted term offsets into per-field index ranges; phrased without field/partition vocabulary.",
+  "review": "ok"
+ },
+ {
+  "id": "ht20",
+  "kind": "hard",
+  "question": "A filter on an IPv6 address column comes with open, closed, or missing limits; I need them turned into a closed start-to-end interval, stepping one address inward for open limits and using the column's smallest or largest address when a limit is missing. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/query/range_query/range_query_fastfield.rs",
+    "symbol": "bound_range_inclusive_ip"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/query/range_query/range_query_fastfield.rs",
+    "symbol": "bound_to_value_range"
+   },
+   {
+    "path": "src/query/range_query/range_query_fastfield.rs",
+    "symbol": "transform_from_f64_bounds"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3"
+  ],
+  "rationale": "IP-specific Bound->RangeInclusive conversion; the generic u64 version and f64 transformer sit in the same file.",
+  "review": "ok"
+ },
+ {
+  "id": "ht21",
+  "kind": "hard",
+  "question": "When replaying pending removal requests against a chunk, a document may only be dropped by requests issued after it was added (going by sequence numbers); process requests up to a target sequence number and tell me whether anything changed. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/indexer/index_writer.rs",
+    "symbol": "compute_deleted_bitset"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/indexer/index_writer.rs",
+    "symbol": "advance_deletes"
+   },
+   {
+    "path": "src/indexer/doc_opstamp_mapping.rs",
+    "symbol": "is_deleted"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Applies delete ops up to target opstamp using doc opstamps; advance_deletes wraps it without the per-doc ordering, is_deleted is just the predicate.",
+  "review": "ok"
+ },
+ {
+  "id": "ht22",
+  "kind": "hard",
+  "question": "After parsing a user's search string I need to detect when every clause is an exclusion (like `-draft -spam`), including inside nested and boosted groups, so I can add an implicit match-everything clause. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/query/query_parser/query_parser.rs",
+    "symbol": "all_negative"
+   },
+   {
+    "path": "src/query/query_parser/query_parser.rs",
+    "symbol": "compute_logical_ast_lenient"
+   },
+   {
+    "path": "src/query/query_parser/query_parser.rs",
+    "symbol": "make_non_negative"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Recursive MustNot check on the logical AST; make_non_negative is the companion fix-up, and the question says exclusion rather than negative/MustNot.",
+  "review": "answers added: the caller does detect+fix, make_non_negative adds the match-all clause"
+ },
+ {
+  "id": "ht23",
+  "kind": "hard",
+  "question": "For in-RAM files I want each writer to report how many bytes it holds to a shared atomic counter, but only every ~10KB to limit contention, and give all of it back when the writer is dropped. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/directory/ram_directory.rs",
+    "symbol": "MemoryUsageTracker"
+   },
+   {
+    "path": "src/directory/ram_directory.rs",
+    "symbol": "add"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "Batched atomic byte accounting released on Drop; no doc comment and the question avoids memory/usage/tracker.",
+  "review": "answers added: MemoryUsageTracker::add holds the batching logic"
+ },
+ {
+  "id": "ht24",
+  "kind": "hard",
+  "question": "I want a sequence adapter that expands each item into zero or more outputs, where the expansion callback appends into one scratch Vec kept between items instead of returning a fresh collection each time. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/indexer/flat_map_with_buffer.rs",
+    "symbol": "FlatMapWithBuffer"
+   },
+   {
+    "path": "src/indexer/flat_map_with_buffer.rs",
+    "symbol": "FlatMapWithBufferIter"
+   },
+   {
+    "path": "src/indexer/flat_map_with_buffer.rs",
+    "symbol": "flat_map_with_buffer"
+   },
+   {
+    "path": "src/indexer/flat_map_with_buffer.rs",
+    "symbol": "next"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "Allocation-free flat_map variant; struct and trait lack docs (the trait method has a short one).",
+  "review": "answers added: FlatMapWithBuffer::next is the adapter's core"
+ },
+ {
+  "id": "ht25",
+  "kind": "hard",
+  "question": "I need a set of integer ids up to a known maximum that only allocates storage for the regions of the id space actually touched, with a constant-time member count and ascending iteration. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/aggregation/metric/cardinality/term_ord_accumulator.rs",
+    "symbol": "PagedBitset"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/aggregation/metric/cardinality/term_ord_accumulator.rs",
+    "symbol": "TermOrdSet"
+   },
+   {
+    "path": "src/aggregation/bucket/term_agg/mod.rs",
+    "symbol": "PagedTermMap"
+   },
+   {
+    "path": "src/aggregation/metric/cardinality/str_collector.rs",
+    "symbol": "CouponCache"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Lazily-paged bitset; TermOrdSet is the adaptive wrapper and PagedTermMap the paged map with the same geometry.",
+  "review": "ok"
+ },
+ {
+  "id": "ht26",
+  "kind": "hard",
+  "question": "For a 'documents that have any value at this JSON path, nested keys included' filter, when the path expands into many dynamically-typed columns I want the matching documents precomputed into one set up front rather than merging per-column cursors on the fly. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/query/exist_query.rs",
+    "symbol": "scorer"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/query/exist_query.rs",
+    "symbol": "exists_scorer"
+   },
+   {
+    "path": "src/query/exist_query.rs",
+    "symbol": "ExistsQuery"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "FastFieldExistsWeight::scorer switches to a BitSet past 4 columns, ~54 lines into a 73-line body.",
+  "review": "ok"
+ },
+ {
+  "id": "ht27",
+  "kind": "hard",
+  "question": "Loading an index folder fails on Windows when it lives on a mapped share or an in-memory disk because resolving the absolute path errors out; I want that case to fall back to the given path, while missing paths and non-folder paths are still reported distinctly. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/directory/mmap_directory/mod.rs",
+    "symbol": "open_impl_to_avoid_monomorphization"
+   },
+   {
+    "path": "src/directory/mmap_directory/mod.rs",
+    "symbol": "open"
+   },
+   {
+    "path": "src/directory/mmap_directory/mod.rs",
+    "symbol": "open_with_madvice"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "Windows canonicalize error-code-1 fallback; comment words (virtual/network drives, ramdisk) are avoided.",
+  "review": "answers added: open_with_madvice wraps the same open impl"
+ },
+ {
+  "id": "ht28",
+  "kind": "hard",
+  "question": "For a user-typed range like `title:[apple TO banana]`, each endpoint must go through the column's text analyzer and yield exactly one word or the query is rejected, and endpoints on binary columns are decoded from base64. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/query/query_parser/query_parser.rs",
+    "symbol": "compute_boundary_term"
+   },
+   {
+    "path": "src/query/query_parser/query_parser.rs",
+    "symbol": "resolve_bound"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/query/query_parser/query_parser.rs",
+    "symbol": "generate_literals_for_str"
+   },
+   {
+    "path": "src/query/query_parser/query_parser.rs",
+    "symbol": "convert_literal_to_query"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "Single-token check and base64 decoding sit 45-90 lines into a 105-line method; resolve_bound only wraps it.",
+  "review": "answers added: resolve_bound just wraps compute_boundary_term"
+ },
+ {
+  "id": "ht29",
+  "kind": "hard",
+  "question": "When combining chunks, I want stored-document data copied over as already-compressed blocks without re-encoding, but only when the source has no removed documents, uses the same codec and has enough blocks to avoid leaving lots of tiny ones; otherwise re-encode document by document. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/store/plugin.rs",
+    "symbol": "merge"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/store/writer.rs",
+    "symbol": "stack"
+   },
+   {
+    "path": "src/store/store_compressor.rs",
+    "symbol": "stack"
+   },
+   {
+    "path": "src/store/store_compressor.rs",
+    "symbol": "stack_reader"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "StorePlugin::merge decides when to stack (past line 45 of 65); the stack helpers do the copying but not the decision.",
+  "review": "ok"
+ },
+ {
+  "id": "ht30",
+  "kind": "hard",
+  "question": "When deciding which chunks to combine in the background, I want committed and not-yet-committed chunks planned separately since they can't be mixed, a lone chunk with no removed documents skipped, and every resulting plan launched without failing if one can't start. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/indexer/segment_updater.rs",
+    "symbol": "consider_merge_options"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/indexer/log_merge_policy.rs",
+    "symbol": "compute_merge_candidates"
+   },
+   {
+    "path": "src/indexer/segment_manager.rs",
+    "symbol": "get_mergeable_segments"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Driver that runs the policy on two segment sets; the policy itself and the segment listing are look-alikes.",
+  "review": "ok"
+ },
+ {
+  "id": "ht31",
+  "kind": "hard",
+  "question": "Given two sorted lists of word positions, I just need a yes/no on whether some position from one list is within N of some position from the other, in either order. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/query/phrase_query/phrase_scorer.rs",
+    "symbol": "intersection_exists_with_slop"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/query/phrase_query/phrase_scorer.rs",
+    "symbol": "intersection_exists"
+   },
+   {
+    "path": "src/query/phrase_query/phrase_scorer.rs",
+    "symbol": "intersection_count_with_slop"
+   },
+   {
+    "path": "src/query/phrase_query/phrase_scorer.rs",
+    "symbol": "intersection_count_with_carrying_slop"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Boolean abs-diff proximity check; siblings count matches, require exact equality, or carry slop directionally.",
+  "review": "ok"
+ },
+ {
+  "id": "ht32",
+  "kind": "hard",
+  "question": "When a user's query text targets a path inside a JSON column, I want it tried both as a typed number or date match and as analyzed text, and a prefix phrase rejected unless it has at least two words. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "src/query/query_parser/query_parser.rs",
+    "symbol": "generate_literals_for_json_object"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "src/query/query_parser/query_parser.rs",
+    "symbol": "generate_literals_for_str"
+   },
+   {
+    "path": "src/core/json_utils.rs",
+    "symbol": "convert_to_fast_value_and_append_to_json_term"
+   },
+   {
+    "path": "src/query/query_parser/query_parser.rs",
+    "symbol": "compute_logical_ast_for_leaf"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "JSON-path literal generation; the two-word prefix rule is ~44 lines into 66, and the str variant/fast-value helper are look-alikes.",
+  "review": "ok"
+ }
+]

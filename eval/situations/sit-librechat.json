@@ -1,0 +1,255 @@
+[
+ {
+  "id": "lw1",
+  "situation": "write",
+  "kind": "positive",
+  "prompt": "We want the browser read-aloud in the client to start speaking while a reply is still streaming, but only ever whole sentences. In a new file `client/src/hooks/Audio/speakableSplit.ts`, add `export function splitSpeakable(streamed: string): { ready: string; pending: string }`. `ready` is the streamed text up to the most recent sentence or line ending seen so far (a period, question or exclamation mark including the inverted Spanish ones, a semicolon, the Chinese/Japanese or Urdu full stop, a line break, or a code fence), and `pending` is everything after it, to be held back until more text arrives. If no such ending has arrived yet, `ready` is empty and `pending` is the whole input.\n\nReply with the complete code in one fenced block (include the import or require lines it needs). Do not edit any files.",
+  "answers": [
+   {
+    "path": "packages/data-provider/src/parsers.ts",
+    "symbol": "findLastSeparatorIndex"
+   }
+  ],
+  "accept": "\\bfindLastSeparatorIndex\\b",
+  "criteria": [
+   "a",
+   "b",
+   "c"
+  ],
+  "note": "librechat-data-provider exports findLastSeparatorIndex (with SEPARATORS = exactly this mark list), already used by the server TTS streamer; undocumented, 'last separator index' shares no words with 'sentence/line ending', and streamAudio.js::splitTextIntoChunks re-implements the same loop inline as a look-alike. Likely grep path: `lastIndexOf` (4 files incl. parsers.ts) or pasting the CJK full stop, which hits SEPARATORS next to the target.",
+  "review": "ok (doubt: the glyphs the spec names, e.g. the CJK full stop or the inverted marks, grep straight to parsers.ts if the agent searches for them; the spec already names them in words only)"
+ },
+ {
+  "id": "lw2",
+  "situation": "write",
+  "kind": "positive",
+  "prompt": "We're adding a reachability check for self-hosted model servers that admins configure as custom endpoints in librechat.yaml. In a new file `api/server/services/Config/probeEndpoint.js`, write and export `serverRootOf(configured)`: given the address string from the YAML (for example `https://svc:secret@llm.internal.example:8443/v1/chat/completions?api-version=2`) it returns just the part that identifies the server (`https://llm.internal.example:8443`): no credentials, path, query or fragment, and no port unless one was given. If the string can't be parsed, log the problem and return the input unchanged.\n\nReply with the complete code in one fenced block (include the import or require lines it needs). Do not edit any files.",
+  "answers": [
+   {
+    "path": "api/utils/deriveBaseURL.js",
+    "symbol": "deriveBaseURL"
+   }
+  ],
+  "accept": "\\bderiveBaseURL\\b",
+  "criteria": [
+   "b",
+   "c"
+  ],
+  "note": "deriveBaseURL (exported from ~/utils, used by OllamaClient) does exactly protocol//hostname[:port] with log-and-return-input on failure; its JSDoc ('Extracts the base URL') and name echo the look-alike extractBaseURL (which keeps /v1 paths), and domains.js::normalizeDomain / parse.js basename helpers also parse URLs. Prompt never says 'base URL', 'host' or 'scheme'. Residual risk: `new URL(` (6 api files, 12 overall) or `hostname` (2 api files) lists deriveBaseURL.js; `ls api/utils` shows it by name; `new URL(x).origin` is a one-line alternative an agent may write instead.",
+  "review": "fixed: 'scheme, host and port' pointed at `grep hostname`, which lists only 2 api files incl. the target; spec now describes the result by example without 'host'/'scheme'."
+ },
+ {
+  "id": "lw3",
+  "situation": "write",
+  "kind": "positive",
+  "prompt": "In `packages/data-provider/src/api-endpoints.ts`, add `export const conversationsWithFilters = (params: Record<string, string | number | boolean | null | undefined>) => string` that returns `/api/convos` followed by a query string built from `params`. Parameters that are `null` or `undefined` must be left out entirely, and so must parameters set to an empty string; everything else is included, stringified. If nothing is left, return the bare path with no `?`.\n\nReply with the complete code in one fenced block (include the import or require lines it needs). Do not edit any files.",
+  "answers": [
+   {
+    "path": "packages/data-provider/src/schemas.ts",
+    "symbol": "removeNullishValues"
+   }
+  ],
+  "accept": "\\bremoveNullishValues\\b",
+  "criteria": [
+   "a",
+   "b"
+  ],
+  "note": "removeNullishValues(obj, true) (removeEmptyStrings is optional, off by default) in the same package drops exactly null/undefined and '' keys and is used ~20 times (schemas transforms, bedrock, api build options); undocumented, and look-alikes include TTSService/STTService.removeUndefined and the neighbouring getPromptsWithFilters which passes filters straight to URLSearchParams. Residual risk: an agent that greps `nullish`/`removeNull`/`removeEmpty` lands on it (the second parameter is literally removeEmptyStrings).",
+  "review": "ok (doubt: a filter over Object.entries is a natural 2-line inline alternative, so reuse is less compelling than in other write tasks)"
+ },
+ {
+  "id": "lv1",
+  "situation": "review",
+  "kind": "positive",
+  "prompt": "Please review this PR before it is merged. Do not edit any files.\n\n```diff\ndiff --git a/client/src/components/Messages/Content/CodeBlock.tsx b/client/src/components/Messages/Content/CodeBlock.tsx\n--- a/client/src/components/Messages/Content/CodeBlock.tsx\n+++ b/client/src/components/Messages/Content/CodeBlock.tsx\n@@ -12,6 +12,22 @@ import CheckMark from '~/components/svg/CheckMark';\n import useLocalize from '~/hooks/useLocalize';\n import cn from '~/utils/cn';\n \n+const MAX_EXPANDED_LINES = 40;\n+\n+/** Highlighted code arrives as nested spans, not a string, so walk the tree for its text. */\n+const getCodeText = (node: React.ReactNode): string => {\n+  if (typeof node === 'string' || typeof node === 'number') {\n+    return String(node);\n+  }\n+  if (Array.isArray(node)) {\n+    return node.map(getCodeText).join('');\n+  }\n+  if (node != null && typeof node === 'object' && 'props' in node) {\n+    return getCodeText((node.props as { children?: React.ReactNode }).children);\n+  }\n+  return '';\n+};\n+\n type CodeBlockProps = Pick<\n   CodeBarProps,\n   'lang' | 'plugin' | 'error' | 'allowExecution' | 'blockIndex'\n@@ -117,6 +133,10 @@ const CodeBlock: React.FC<CodeBlockProps> = ({\n \n   const isNonCode = !!(plugin === true || error === true);\n   const language = isNonCode ? 'json' : lang;\n+  const isLong = useMemo(\n+    () => getCodeText(codeChildren).split('\\n').length > MAX_EXPANDED_LINES,\n+    [codeChildren],\n+  );\n \n   return (\n     <div className=\"w-full rounded-md bg-gray-900 text-xs text-white/80\">\n@@ -128,7 +148,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({\n         plugin={plugin === true}\n         allowExecution={allowExecution}\n       />\n-      <div className={cn(classProp, 'overflow-y-auto p-4')}>\n+      <div className={cn(classProp, 'overflow-y-auto p-4', isLong && 'max-h-[36rem]')}>\n         <code\n           ref={codeRef}\n           className={cn(\n```",
+  "answers": [
+   {
+    "path": "client/src/utils/index.ts",
+    "symbol": "extractContent"
+   }
+  ],
+  "criteria": [
+   "a",
+   "b",
+   "c"
+  ],
+  "note": "getCodeText re-implements extractContent (client/src/utils/index.ts, exported via ~/utils, used by Artifacts/Artifact.tsx on props.children): string -> itself, array -> map+join, element -> recurse into props.children, else ''. Undocumented; 'extract content' shares no words with 'text of a React node/children'; look-alikes: CodeBar's codeRef.textContent copy, Markdown.tsx's `typeof children === 'string'` single-line checks, ToolCall/Artifact handling. CodeBlock.tsx imports only `~/utils/cn`, so the diff does not point at utils/index.ts. Grep paths: `isValidElement` (1 file, the target) only if the reviewer thinks of it (the diff avoids it); `props.children` -> Artifact.tsx, which calls extractContent.",
+  "review": "replaced: the isDark diff imported ThemeContext from the very module that defines isDark, and the '(prefers-color-scheme: dark)' literal it must contain greps to 4 files incl. the target; new diff re-implements extractContent (undocumented, used, generic name) from a file that does not import ~/utils' index."
+ },
+ {
+  "id": "lv2",
+  "situation": "review",
+  "kind": "positive",
+  "prompt": "Please review this PR before it is merged. Do not edit any files.\n\n```diff\ndiff --git a/api/models/schema/key.js b/api/models/schema/key.js\n--- a/api/models/schema/key.js\n+++ b/api/models/schema/key.js\n@@ -14,6 +14,9 @@ const keySchema = mongoose.Schema({\n     type: String,\n     required: true,\n   },\n+  fingerprint: {\n+    type: String,\n+  },\n   expiresAt: {\n     type: Date,\n   },\ndiff --git a/api/server/services/UserService.js b/api/server/services/UserService.js\n--- a/api/server/services/UserService.js\n+++ b/api/server/services/UserService.js\n@@ -1,8 +1,19 @@\n+const crypto = require('crypto');\n const { ErrorTypes } = require('librechat-data-provider');\n const { encrypt, decrypt } = require('~/server/utils');\n const { updateUser, Key } = require('~/models');\n const { logger } = require('~/config');\n \n+/**\n+ * Stable, non-reversible identifier for a stored secret, so admins can tell which\n+ * key a user saved without the key itself ever reaching the database in clear or the logs.\n+ * @param {string} secret\n+ * @returns {string} lowercase hex\n+ */\n+function secretFingerprint(secret) {\n+  return crypto.createHash('sha256').update(String(secret), 'utf8').digest('hex');\n+}\n+\n /**\n  * Updates the plugins for a user based on the action specified (install/uninstall).\n  * @async\n@@ -111,10 +122,13 @@ const getUserKeyExpiry = async ({ userId, name }) => {\n const updateUserKey = async ({ userId, name, value, expiresAt = null }) => {\n   const encryptedValue = await encrypt(value);\n+  const fingerprint = secretFingerprint(value).slice(0, 16);\n   let updateObject = {\n     userId,\n     name,\n     value: encryptedValue,\n+    fingerprint,\n   };\n+  logger.info(`[updateUserKey] user ${userId} saved key \"${name}\" (fingerprint ${fingerprint})`);\n   const updateQuery = { $set: updateObject };\n   // add expiresAt to the update object if it's not null\n   if (expiresAt) {\n```",
+  "answers": [
+   {
+    "path": "api/server/utils/crypto.js",
+    "symbol": "hashToken"
+   },
+   {
+    "path": "api/server/utils/crypto.js",
+    "symbol": "hashBackupCode"
+   }
+  ],
+  "criteria": [
+   "a",
+   "b",
+   "c"
+  ],
+  "note": "secretFingerprint is SHA-256 hex of a string, which crypto.js::hashToken already provides (used for refresh tokens, invites, OpenID avatars; exported through ~/server/utils, the module the diff already imports encrypt/decrypt from) and hashBackupCode duplicates. hashToken is undocumented, 'token' differs from 'fingerprint/secret', and no createHash exists anywhere in api to grep. Grep paths: `SHA-256` or `digest` -> crypto.js among 2-4 files (lowercase `sha256` in the diff hits nothing); opening crypto.js to check the context line's encrypt/decrypt import also reveals it.",
+  "review": "fixed: dropped 'digest' from the added JSDoc (a ready grep term for crypto.js) and corrected the first UserService hunk header (8/19 lines). Doubt: the unchanged context line importing encrypt/decrypt from ~/server/utils leads a diligent reviewer into crypto.js."
+ },
+ {
+  "id": "lv3",
+  "situation": "review",
+  "kind": "positive",
+  "prompt": "Please review this PR before it is merged. Do not edit any files.\n\n```diff\ndiff --git a/packages/mcp/src/connection.ts b/packages/mcp/src/connection.ts\n--- a/packages/mcp/src/connection.ts\n+++ b/packages/mcp/src/connection.ts\n@@ -8,6 +8,26 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';\n import type { Logger } from 'winston';\n import type * as t from './types/mcp.js';\n \n+const PLACEHOLDER = /^\\$\\{([^}]+)\\}$/;\n+\n+/**\n+ * Lets librechat.yaml reference secrets for stdio servers as `${NAME}` instead of\n+ * inlining them. Entries that aren't a placeholder, or whose variable is unset, pass through.\n+ */\n+function expandEnvPlaceholders(\n+  env: Record<string, string> | undefined,\n+): Record<string, string> | undefined {\n+  if (!env) {\n+    return env;\n+  }\n+  const expanded: Record<string, string> = {};\n+  for (const [name, raw] of Object.entries(env)) {\n+    const match = PLACEHOLDER.exec(raw);\n+    expanded[name] = match ? process.env[match[1]] || raw : raw;\n+  }\n+  return expanded;\n+}\n+\n function isStdioOptions(options: t.MCPOptions): options is t.StdioOptions {\n   return 'command' in options;\n }\n@@ -113,7 +133,7 @@ export class MCPConnection extends EventEmitter {\n           return new StdioClientTransport({\n             command: options.command,\n             args: options.args,\n-            env: options.env,\n+            env: expandEnvPlaceholders(options.env),\n           });\n \n         case 'websocket':\n```",
+  "answers": [
+   {
+    "path": "packages/data-provider/src/parsers.ts",
+    "symbol": "resolveHeaders"
+   },
+   {
+    "path": "packages/data-provider/src/parsers.ts",
+    "symbol": "extractEnvVariable"
+   }
+  ],
+  "criteria": [
+   "b",
+   "c"
+  ],
+  "note": "expandEnvPlaceholders is resolveHeaders (map every entry of a string record through extractEnvVariable: `${NAME}` -> process.env[NAME] || raw) from librechat-data-provider, which packages/mcp already depends on; resolveHeaders' name says 'headers' while the diff is about a stdio env block, and envVarRegex/extractEnvVariable/api custom-endpoint config are look-alikes. Both have one-line JSDoc. Grep path: `process.env[` or `\\$\\{` -> parsers.ts.",
+  "review": "fixed: hunk headers corrected (20 added lines, second hunk starts at 133); content ok."
+ },
+ {
+  "id": "lv4",
+  "situation": "review",
+  "kind": "control",
+  "prompt": "Please review this PR before it is merged. Do not edit any files.\n\n```diff\ndiff --git a/api/server/middleware/limiters/messageLimiters.js b/api/server/middleware/limiters/messageLimiters.js\n--- a/api/server/middleware/limiters/messageLimiters.js\n+++ b/api/server/middleware/limiters/messageLimiters.js\n@@ -17,6 +17,21 @@ const userWindowMs = MESSAGE_USER_WINDOW * 60 * 1000;\n const userMax = MESSAGE_USER_MAX;\n const userWindowInMinutes = userWindowMs / 60000;\n \n+/**\n+ * Seconds until the caller's current rate-limit window resets, so the client can say when to retry.\n+ * Falls back to the full window when express-rate-limit didn't attach a reset time.\n+ * @param {ServerRequest} req\n+ * @param {number} windowMs\n+ * @returns {number}\n+ */\n+const getRetryAfterSeconds = (req, windowMs) => {\n+  const resetTime = req.rateLimit?.resetTime;\n+  if (!(resetTime instanceof Date)) {\n+    return Math.ceil(windowMs / 1000);\n+  }\n+  return Math.max(1, Math.ceil((resetTime.getTime() - Date.now()) / 1000));\n+};\n+\n /**\n  * Creates either an IP/User message request rate limiter for excessive requests\n  * that properly logs and denies the violation.\n@@ -35,6 +50,9 @@ const createHandler = (ip = true) => {\n       windowInMinutes: ip ? ipWindowInMinutes : userWindowInMinutes,\n     };\n \n+    const retryAfter = getRetryAfterSeconds(req, ip ? ipWindowMs : userWindowMs);\n+    errorMessage.retryAfter = retryAfter;\n+\n     await logViolation(req, res, type, errorMessage);\n     return await denyRequest(req, res, errorMessage);\n   };\n```",
+  "answers": [],
+  "criteria": [],
+  "note": "Control: nothing in the repo sets Retry-After or reads express-rate-limit's req.rateLimit/resetTime (greps: retry-after|retryAfter, resetTime, rateLimit\\., secondsUntil|timeLeft -> only checkBan's inline ban timeLeft, no helper). A reviewer may mention checkBan's inline ban countdown, which is not a reusable definition. express-rate-limit v7 (api dependency) already sets a Retry-After header before calling the custom handler when legacy/standard headers are on (the default), so the diff only adds the value to the error payload, to avoid a library-redundancy confound.",
+  "review": "fixed: removed the res.set('Retry-After') line, which duplicated express-rate-limit's own header (a library, not repo, equivalent that would muddy hand grading); corrected hunk headers. No repo equivalent found (searched retry-after, retryAfter, resetTime, rateLimit., timeLeft/secondsUntil/remaining, `- Date.now()`)."
+ },
+ {
+  "id": "lr1",
+  "situation": "refactor",
+  "kind": "positive",
+  "prompt": "We want to move `getConversationById` from `client/src/utils/convos.ts` into packages/data-provider (next to its react-query hooks) so other front-ends built on the package can look a conversation up in the cached, paginated conversation list too. Explain what the move involves and anything we should watch out for. Do not edit any files.",
+  "answers": [
+   {
+    "path": "client/src/utils/collection.ts",
+    "symbol": "getRecordByProperty"
+   }
+  ],
+  "criteria": [
+   "a",
+   "b",
+   "c"
+  ],
+  "note": "getConversationById is getRecordByProperty(data, 'conversations', c => c.conversationId === id) specialised; the generic, undocumented helper in collection.ts is already used for prompt groups and is not imported by convos.ts (which only imports addData/updateData/deleteData/findPage). Look-alikes: findPage, findPageForConversation, findPromptGroup, and the same-named data-service getConversationById HTTP fetcher in data-provider (a move clash to watch). Grep path: reading collection.ts while tracing findPage.",
+  "review": "fixed: 'react-query helpers' -> 'react-query hooks' (avoid the word 'helper'). ok (doubt: getRecordByProperty is itself client-only, so the expected finding is 'move/generalise the collection.ts helper instead of a conversation-specific copy' rather than 'the destination already has it')"
+ },
+ {
+  "id": "lr2",
+  "situation": "refactor",
+  "kind": "positive",
+  "prompt": "We want to move `getAllContentText` from `client/src/utils/messages.ts` into packages/data-provider so the api can use it too. Explain what the move involves and anything we should watch out for. Do not edit any files.",
+  "answers": [
+   {
+    "path": "packages/data-provider/src/parsers.ts",
+    "symbol": "parseTextParts"
+   }
+  ],
+  "criteria": [
+   "a",
+   "b",
+   "c"
+  ],
+  "note": "data-provider already has parseTextParts, which flattens a message's text content parts into one string (used by the client TTS hooks); it differs only in joining with smart spaces instead of '\\n' and not short-circuiting on message.text, which is what the move should reconcile. Undocumented; names share no distinctive word; look-alikes getLatestText (same file), useCopyToClipboard's inline reduce, api findMessageContent/formatContentStrings and mongoMeili's inline join. Grep path: `ContentTypes.TEXT` within packages/data-provider/src -> 3 files incl. parsers.ts.",
+  "review": "ok"
+ },
+ {
+  "id": "lr3",
+  "situation": "refactor",
+  "kind": "positive",
+  "prompt": "We want to move `formatText` (defined inside the `ToolPopover` component in `client/src/components/Chat/Messages/Content/ToolPopover.tsx`) into packages/data-provider so the api can pretty-print tool-call input and output in its debug logs the same way. Explain what the move involves and anything we should watch out for. Do not edit any files.",
+  "answers": [
+   {
+    "path": "client/src/utils/json.ts",
+    "symbol": "formatJSON"
+   }
+  ],
+  "criteria": [
+   "a",
+   "b"
+  ],
+  "note": "ToolPopover's local formatText (JSON.parse then JSON.stringify(..., null, 2), returning the input on parse failure) is exactly client/src/utils/json.ts::formatJSON, which Plugin.tsx and Error.tsx already use; the move should consolidate on (and relocate) formatJSON rather than add a second copy. formatJSON is undocumented; look-alikes: isJson/extractJson in the same file, ToolCall.tsx's inline JSON.stringify(args, null, 2), RouteErrorBoundary's inline pretty-printing, useExportConversation's unrelated formatText. Grep path: the body line `JSON.stringify(JSON.parse` -> exactly 2 files (source and target); `null, 2)` -> 21 hits.",
+  "review": "replaced: delayBeforeRetry's twin sleep is imported by AnthropicClient.js itself and documented as 'Delays the execution', and sleep is not in the destination package; new pair is an exact, used, undocumented duplicate in the client. Doubt: grepping the body line reaches the target in one step."
+ },
+ {
+  "id": "lr4",
+  "situation": "refactor",
+  "kind": "control",
+  "prompt": "We want to move `decodeBase32` from `api/server/services/twoFactorService.js` into packages/data-provider so the client can validate a TOTP secret a user pastes in. Explain what the move involves and anything we should watch out for. Do not edit any files.",
+  "answers": [],
+  "criteria": [],
+  "note": "Control: no other base32 code exists (greps base32, 234567 alphabet, rfc4648, base-32, bit-shift loops `<< 5`/`>>> (bits` only hit twoFactorService.js; no otp/base32 npm dependency in api). Only its own encodeBase32 counterpart is related. Watch-out an agent may raise: decodeBase32 uses Node's Buffer, which the browser bundle lacks.",
+  "review": "ok"
+ },
+ {
+  "id": "ll1",
+  "situation": "locate",
+  "kind": "positive",
+  "prompt": "Finance wants per-snapshot cost reporting, but our balance ledger records spends on every dated snapshot of OpenAI's 128k-context GPT-4 line, including the image-input preview, under one shared per-token rate entry. Before we add separate entries we need to know where the server collapses a model name into the rate entry a spend transaction is charged against. Where is that decided?\n\nFind the code responsible and answer briefly. Do not edit any files. End your reply with one final line in exactly this form: `ANSWER: <repo-relative path>::<function name>`.",
+  "answers": [
+   {
+    "path": "api/models/tx.js",
+    "symbol": "getValueKey"
+   }
+  ],
+  "criteria": [
+   "b",
+   "c"
+  ],
+  "note": "getValueKey's if-chain maps gpt-4-vision/-1106/-0125/-turbo all to the 'gpt-4-1106' tokenValues entry; 'value key' shares no words with 'rate entry'. Look-alikes: getMultiplier/getCacheMultiplier (callers in tx.js), matchModelName/findMatchingPattern/getModelTokenValue in api/utils/tokens.js (same substring matching, but for context limits), spendTokens/Transaction. Checked greps: spend (10 files), transaction (8), ledger/per-token/128k (0), GPT-4 (22) do not single out tx.js; risk: `gpt-4-turbo` (4 files) or `pric` (5 files) do.",
+  "review": "ok (getValueKey has a JSDoc, but 'key associated with a given model name' does not bridge to 'rate entry'; meets b+c)"
+ },
+ {
+  "id": "ll2",
+  "situation": "locate",
+  "kind": "positive",
+  "prompt": "Users who drag the divider between the chat and the right-hand side panel report that after a reload the panes come back at slightly different widths than they left them. Our reading is that whenever the remembered pane sizes don't add up to exactly a whole (for example after the artifacts pane has been open), they get scaled proportionally and rounded, and whatever is left over is dumped onto the last pane. Where is that rescaling done?\n\nFind the code responsible and answer briefly. Do not edit any files. End your reply with one final line in exactly this form: `ANSWER: <repo-relative path>::<function name>`.",
+  "answers": [
+   {
+    "path": "client/src/utils/index.ts",
+    "symbol": "normalizeLayout"
+   }
+  ],
+  "criteria": [
+   "a",
+   "b",
+   "c"
+  ],
+  "note": "normalizeLayout (client/src/utils/index.ts, undocumented) rescales to 100, toFixed(2), and gives the last element 100 minus the rest; it is called from SidePanelGroup's currentLayout and throttledSaveLayout. Look-alikes: SidePanelGroup's calculateLayout (also splits 'remainingSpace'), Presentation's stored-layout parsing, react-resizable-panels. Prompt avoids 'layout'/'normalize' (layout greps 18 files incl. index.ts); divider/panel/resiz/width/rescal/remainder/leftover/drift do not hit index.ts; likely path is panel -> SidePanelGroup.tsx -> import.",
+  "review": "ok"
+ },
+ {
+  "id": "ll3",
+  "situation": "locate",
+  "kind": "positive",
+  "prompt": "In the provider picker, every provider we define in librechat.yaml shows up as one block after the built-in providers, and nothing we put in the YAML moves that block. A colleague thinks the block's position is inherited from wherever the generic placeholder for YAML-defined providers sits in the server's allow-list of providers, that it falls to the very end when that placeholder isn't in the list, and that built-in providers missing from the list are dropped at the same point. Where is each provider's position assigned?\n\nFind the code responsible and answer briefly. Do not edit any files. End your reply with one final line in exactly this form: `ANSWER: <repo-relative path>::<function name>`.",
+  "answers": [
+   {
+    "path": "packages/data-provider/src/parsers.ts",
+    "symbol": "orderEndpointsConfig"
+   }
+  ],
+  "criteria": [
+   "b",
+   "c"
+  ],
+  "note": "orderEndpointsConfig gives every non-EModelEndpoint key order = index of 'custom' in getEnabledEndpoints() (or 9999) and drops disabled built-ins; called by api getEndpointsConfig. Look-alikes: client mapEndpoints (sorts by .order but doesn't assign it), getAvailableEndpoints/getEndpointsFilter, getEnabledEndpoints, loadConfigEndpoints. Has a one-line JSDoc. Prompt avoids order/endpoint/config/enabled (`enabledEndpoints` greps to 2 files incl. parsers.ts). Risk: an agent who knows the ENDPOINTS env var greps `env.ENDPOINTS` (2 files, incl. parsers.ts).",
+  "review": "ok (doubt: an agent who knows the ENDPOINTS env var greps straight to parsers.ts)"
+ }
+]

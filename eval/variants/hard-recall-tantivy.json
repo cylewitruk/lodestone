@@ -1,0 +1,130 @@
+{
+ "ht01": {
+  "task": "I'm comparing an i64 against an f64 and need an exact ordering without casting the integer to float and losing precision at the extremes. NaN should produce an error rather than a silent answer. I'd like to reuse an existing mixed-numeric comparison helper rather than write my own.",
+  "identifier": "compare_i64_f64 cmp_i64_f64 NumericComparator partial_cmp_mixed exact i64 f64 NaN Ordering"
+ },
+ "ht02": {
+  "task": "I'm sorting hits by a fast field whose values may be missing or of different numeric types. I need an infallible comparator where the caller chooses whether missing values sort first or last, negative i64 sorts below any u64, and values of different kinds are ordered by type. Is there an existing sort-value comparison helper I can reuse?",
+  "identifier": "compare_owned_values cmp_sort_values OwnedValue ComparatorEnum NullsOrder Ordering missing first last"
+ },
+ "ht03": {
+  "task": "I'm building a range query on an integer fast field where users give float bounds like > 2.5 or <= 7.9. I need the lower bound rounded up and the upper bound rounded down, with out-of-range bounds becoming unbounded or an empty match. I'd like to reuse an existing bound-conversion helper rather than write my own.",
+  "identifier": "convert_f64_bounds_to_i64 map_bound_float_to_int BoundsRange ceil floor Bound Unbounded empty range"
+ },
+ "ht04": {
+  "task": "I'm creating an index with sort-by-field settings and need validation that rejects the config if the sort field isn't a fast field, has an unsortable type like bool or IP, or is combined with explicit doc id assignment. Is there an existing index settings validator I can reuse?",
+  "identifier": "validate_index_settings check_sort_by_field IndexSortByField IndexSettings fast field sort_by doc_id validation"
+ },
+ "ht05": {
+  "task": "I'm opening the doc store file and need to split off its fixed-size footer from the body, returning a corruption error if the file is too short. Is there an existing doc store footer reader I can reuse?",
+  "identifier": "DocStoreFooter split_footer StoreReader::open read_footer FileSlice footer DataCorruption"
+ },
+ "ht06": {
+  "task": "I need to detect when another process commits to an on-disk index by polling the meta.json file in a background thread, hashing it and notifying subscribers only on change. The watcher should be started at most once. Is there an existing file watcher I can reuse?",
+  "identifier": "FileWatcher MetaFileWatcher spawn_watcher_thread compute_checksum WatchCallbackList meta.json watch crc32 callback"
+ },
+ "ht07": {
+  "task": "I'm implementing cardinality aggregation over string columns and precompute a hash per term ordinal. The ordinal-to-hash lookup should be a Vec when ordinals are dense and a HashMap when sparse, with a fallback for documents missing the value. Is there an existing term-ordinal hash cache I can reuse?",
+  "identifier": "TermOrdinalHashes CardinalityCollector OrdinalToHash compute_term_ord_hashes HyperLogLog cardinality term_ord dense sparse"
+ },
+ "ht08": {
+  "task": "I'm indexing hierarchical facet paths like /electronics/phones/android and need each document also indexed under every ancestor path so broader facet searches match. Is there an existing facet tokenizer I can reuse?",
+  "identifier": "FacetTokenizer FacetTokenStream Facet ancestors prefix path facet hierarchy token"
+ },
+ "ht09": {
+  "task": "I'm writing an n-gram tokenizer and need to generate every (start, end) window between min and max characters from a stream of char boundary offsets. It should be lazy using a small ring buffer instead of collecting all offsets. Is there an existing helper I can reuse?",
+  "identifier": "StutteringIterator NgramTokenizer CodepointFrontiers ngram_window min_gram max_gram ring buffer char offsets"
+ },
+ "ht10": {
+  "task": "I'm parsing the doc store compressor setting from a string like zstd(compression_level=5), rejecting unknown options and logging a warning when the level is high enough to slow indexing. Is there an existing compressor parser I can reuse?",
+  "identifier": "Compressor::from_str ZstdCompressor parse_compression_level deserialize_compressor docstore_compression zstd level warn"
+ },
+ "ht11": {
+  "task": "I'm writing a merge policy that groups segments into log-sized tiers, merging a tier once it has enough segments or sooner if one has many deleted docs, while ignoring very large segments. Is there an existing merge policy I can reuse?",
+  "identifier": "LogMergePolicy compute_merge_candidates MergeCandidate min_num_segments max_docs_before_merge del_docs_ratio level log segments"
+ },
+ "ht12": {
+  "task": "I'm merging segments of an index sorted by a numeric fast field and want segments ordered by their min value (respecting asc/desc) so non-overlapping ones can be stacked. Text sort fields should be left unordered since term ordinals aren't comparable across segments. Is there an existing helper I can reuse?",
+  "identifier": "sort_segments_by_min_value is_stacking_possible IndexMerger get_sort_field_accessor sort_by_field Order stack segments"
+ },
+ "ht13": {
+  "task": "I have an append-only delete queue whose tail block is held via a Weak pointer. I need get-or-create for the tail that first tries under a read lock and only takes the write lock with a recheck if the weak ref was dropped. Is there an existing helper I can reuse?",
+  "identifier": "DeleteQueue get_last_block InnerDeleteQueue NextBlock Weak upgrade RwLock write lock"
+ },
+ "ht14": {
+  "task": "I'm reading a decompressed doc store block whose tail is a table of u32 offsets plus a count. Given a doc's position in the block I need its byte range, with the last doc ending at the offset table and an error when out of bounds. Is there an existing helper I can reuse?",
+  "identifier": "block_read_index read_doc_range StoreReader get_document_bytes_from_block u32 offsets doc_pos block range"
+ },
+ "ht15": {
+  "task": "I have per-term-ordinal target bucket ids where equal targets are adjacent, and I need them remapped into dense consecutive slots plus the list of distinct targets so per-bucket counters fit in a small Vec. Is there an existing remapping helper I can reuse?",
+  "identifier": "compact_term_ords build_dense_mapping TermOrdRemapping remap_buckets term_ord bucket dense mapping aggregation"
+ },
+ "ht16": {
+  "task": "I need to read an unsigned value of up to 56 bits starting at an arbitrary bit offset in a byte slice without reading past the end of the slice near its tail. Is there an existing bit unpacking helper I can reuse?",
+  "identifier": "BitUnpacker get get_slow_path read_u64_le bit_unpacker num_bits bit offset mask"
+ },
+ "ht17": {
+  "task": "Before fetching many byte ranges from remote object storage, I want nearby ranges merged into one request when the gap is cheaper to fetch than another round trip, sending the merged ranges to a channel. Is there an existing range coalescing helper I can reuse?",
+  "identifier": "coalesce_byte_ranges merge_ranges ByteRangeCoalescer prefetch_ranges byte range gap channel"
+ },
+ "ht18": {
+  "task": "For BM25 after merging, I need the total number of tokens of a text field in a segment counting only alive docs. It should sum fieldnorm codes when available, otherwise prorate the total by the fraction of alive documents. Is there an existing helper I can reuse?",
+  "identifier": "compute_total_num_tokens total_num_tokens FieldNormReader id_to_fieldnorm alive_bitset num_docs fieldnorm alive tokens"
+ },
+ "ht19": {
+  "task": "I have entries sorted by column id and need, for each column, the contiguous index range its entries occupy. Is there an existing helper that groups a sorted list into per-column ranges I can reuse?",
+  "identifier": "compute_column_ranges group_by_column_id column_ranges ColumnIndex Range sorted column_id range"
+ },
+ "ht20": {
+  "task": "A range filter on an IPv6 fast field arrives with included, excluded or unbounded bounds, and I need a closed inclusive interval: step one address inward for excluded bounds and use the column's min or max for unbounded ones. Is there an existing bound conversion helper I can reuse?",
+  "identifier": "bound_to_value_range_ip map_bound_ipv6 IpRangeQuery Ipv6Addr Bound Included Excluded min_value max_value"
+ },
+ "ht21": {
+  "task": "When applying pending delete operations to a segment, a document may only be deleted by operations with an opstamp later than the doc's own. I need to process deletes up to a target opstamp and report whether anything was deleted. Is there an existing helper I can reuse?",
+  "identifier": "compute_deleted_bitset advance_deletes DeleteCursor SegmentEntry opstamp delete_bitset doc_opstamps"
+ },
+ "ht22": {
+  "task": "After parsing a query string I need to detect when every clause is a must-not (like -draft -spam), including within nested and boosted groups, so I can add an implicit AllQuery. Is there an existing helper I can reuse?",
+  "identifier": "all_negative is_all_must_not UserInputAst LogicalAst Occur::MustNot add_all_query negative clauses boost"
+ },
+ "ht23": {
+  "task": "For the RAM directory, each file writer should report its byte size to a shared AtomicUsize but only every ~10KB to reduce contention, and give it all back on drop. Is there an existing memory tracking writer I can reuse?",
+  "identifier": "RamDirectory VecWriter TrackedWriter MemoryTracker AtomicUsize fetch_add Drop bytes counter"
+ },
+ "ht24": {
+  "task": "I want an iterator adapter that expands each item into zero or more outputs where the callback appends into a reusable scratch Vec kept between items, instead of returning a new collection each time. Is there an existing flat-map-with-buffer helper I can reuse?",
+  "identifier": "FlatMapWithBuffer flat_map_with_buffer BufferedFlatMap FlatMapWithBufferIter iterator buffer Vec extend"
+ },
+ "ht25": {
+  "task": "I need a set of integer ids up to a known max that only allocates storage for touched regions of the id space, with O(1) len and ascending iteration. Is there an existing sparse bitset I can reuse?",
+  "identifier": "TinySet BitSet SparseBitSet BlockedBitset DocSet bitset len iter sparse"
+ },
+ "ht26": {
+  "task": "For an exists query on a JSON path including nested subpaths, when the path expands into many dynamic columns I want matching docs precomputed into one bitset upfront rather than unioning per-column iterators. Is there an existing helper I can reuse?",
+  "identifier": "ExistsQuery ExistsWeight BitSetDocSet dynamic_column_handles json_subpaths exists union bitset"
+ },
+ "ht27": {
+  "task": "Opening an MmapDirectory fails on Windows when the path is a mapped network drive or RAM disk because canonicalize errors out. I want that to fall back to the given path, while still reporting nonexistent and non-directory paths distinctly. Is there an existing helper I can reuse?",
+  "identifier": "MmapDirectory::open canonicalize OpenDirectoryError DoesNotExist NotADirectory root_path Windows fallback"
+ },
+ "ht28": {
+  "task": "For a query like title:[apple TO banana], each bound must be run through the field's tokenizer and yield exactly one token or the query is rejected, and bytes field bounds must be base64-decoded. Is there an existing helper in the query parser I can reuse?",
+  "identifier": "resolve_bound compute_boundary_term QueryParser QueryParserError RangeQuery tokenizer single token base64"
+ },
+ "ht29": {
+  "task": "When merging segments I want doc store blocks copied as already-compressed bytes via stacking, but only when there are no deletes, the compressor matches, and there are enough blocks; otherwise re-serialize doc by doc. Is there an existing helper I can reuse?",
+  "identifier": "write_storable_fields StoreWriter::stack StoreReader block_checkpoints can_stack_store compressor deletes merger"
+ },
+ "ht30": {
+  "task": "When planning background merges I want committed and uncommitted segments considered separately since they can't be mixed, skip a lone segment with no deletes, and launch every merge candidate without aborting if one fails to start. Is there an existing helper I can reuse?",
+  "identifier": "consider_merge_options SegmentUpdater start_merge MergeCandidate get_mergeable_segments committed uncommitted merge_policy"
+ },
+ "ht31": {
+  "task": "Given two sorted lists of term positions, I need a boolean for whether any position from one is within N of any position from the other, in either order. Is there an existing helper for phrase slop proximity I can reuse?",
+  "identifier": "intersection_exists_with_slop positions_within_distance PhraseScorer intersection_count slop positions sorted"
+ },
+ "ht32": {
+  "task": "When query text targets a JSON field path, I want it tried both as a typed number or date term and as analyzed text, and a phrase prefix query rejected unless it has at least two terms. Is there an existing JSON query-term helper in the query parser I can reuse?",
+  "identifier": "generate_literals_for_json_object convert_to_fast_value_and_append_to_json_term JsonTermWriter QueryParser PhrasePrefixQuery json path"
+ }
+}
