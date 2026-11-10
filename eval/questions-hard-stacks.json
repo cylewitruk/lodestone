@@ -1,0 +1,859 @@
+[
+ {
+  "id": "hs01",
+  "kind": "hard",
+  "question": "Given a list I pass in of signers, each with the earliest Unix time at which it would accept something and its voting power, plus a required amount of power, I need the earliest moment at which the signers willing by then add up to that amount, or a 'never' sentinel if they can't get there. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stacks-node/src/nakamoto_node/stackerdb_listener.rs",
+    "symbol": "find_weighted_timestamp_by_threshold"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "Sorts per-signer times and accumulates weight until the cutoff, returning u64::MAX otherwise; undocumented and described by effect, not by the weight/threshold vocabulary.",
+  "review": "reworded: caller supplies the list and threshold, excluding the 4 state-reading tenure-extend wrappers"
+ },
+ {
+  "id": "hs02",
+  "kind": "hard",
+  "question": "I need to write a file so readers never see a half-written version: write everything to a sibling scratch file through a callback, fsync it, then move it over the destination in one step, optionally deleting the scratch file if my callback fails. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/chainstate/stacks/db/blocks.rs",
+    "symbol": "atomic_file_store"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "Only tmp-file-then-rename writer in the repo; undocumented, lives on StacksChainState, and the question avoids its 'atomic' wording.",
+  "review": "ok"
+ },
+ {
+  "id": "hs03",
+  "kind": "hard",
+  "question": "I keep a per-reward-cycle list of yes/no flags and need to copy out a window of them, given a start index and a count, packed eight per byte with the lowest bit first, and also learn how many flags actually made it in since the window can run past the end. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stacks-common/src/types/chainstate.rs",
+    "symbol": "bit_slice"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/net/codec.rs",
+    "symbol": "compress_bools"
+   },
+   {
+    "path": "stacks-common/src/bitvec.rs",
+    "symbol": "try_from"
+   },
+   {
+    "path": "stacks-common/src/util/uint.rs",
+    "symbol": "bit_slice"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "PoxId::bit_slice packs a sub-range LSB-first and returns the bit count; look-alikes pack a whole slice or slice big integers.",
+  "review": "ok"
+ },
+ {
+  "id": "hs04",
+  "kind": "hard",
+  "question": "I'm feeding bytes into an in-process bounded channel from code that pushes bytes through the standard I/O output trait. When the channel is full I don't want to block or fail: keep the unsent bytes in a local backlog, still report them as accepted, and only error out once the reading side has gone away. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stacks-common/src/util/pipe.rs",
+    "symbol": "write_or_buffer"
+   },
+   {
+    "path": "stacks-common/src/util/pipe.rs",
+    "symbol": "write"
+   },
+   {
+    "path": "stacks-common/src/util/pipe.rs",
+    "symbol": "PipeWrite"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "PipeWrite::write_or_buffer (wrapped by PipeWrite::write) try_sends and keeps leftovers, BrokenPipe on disconnect; no docs, described as a non-blocking writer.",
+  "review": "answers added: the writer type itself (its Write impl is the entry point)"
+ },
+ {
+  "id": "hs05",
+  "kind": "hard",
+  "question": "Users list what a webhook subscriber wants to receive in the node's settings file. Besides keywords like '*' or 'stx', I need to turn an entry like 'SP123.my-contract::my-topic' into a filter on that contract's printed output, and 'SP123.my-contract.my-token' into a filter on movements of that token. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/config/mod.rs",
+    "symbol": "from_string"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H2"
+  ],
+  "rationale": "EventKeyType::from_string: the first ~30 lines are keyword ifs; the contract::topic and address.contract.asset parsing comes after the embedded window.",
+  "review": "ok"
+ },
+ {
+  "id": "hs06",
+  "kind": "hard",
+  "question": "For human-readable log output I want each line to start with a dimmed time, then the severity colour-coded (red for errors and critical, yellow for warnings, blue for info) but only when writing to an interactive terminal, and in verbose mode append the thread id and source file:line after the text. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stacks-common/src/util/log.rs",
+    "symbol": "pretty_print_msg_header"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stacks-common/src/util/log.rs",
+    "symbol": "print_msg_header"
+   },
+   {
+    "path": "stacks-common/src/util/log.rs",
+    "symbol": "format_full"
+   },
+   {
+    "path": "stacks-common/src/util/log.rs",
+    "symbol": "make_logger"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3"
+  ],
+  "rationale": "Plain print_msg_header also writes level, time, file:line and thread; the TTY-gated ANSI colouring is what separates the answer.",
+  "review": "ok"
+ },
+ {
+  "id": "hs07",
+  "kind": "hard",
+  "question": "When a peer sends me its updated bitmap of which reward cycles it knows the anchor for, I fold it into my record for that peer; if any cycle it previously lacked is now set, everything I recorded about its blocks from that cycle onward must be thrown away as stale, and I need the first such cycle back. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/net/inv/epoch2x.rs",
+    "symbol": "merge_pox_inv"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/net/inv/epoch2x.rs",
+    "symbol": "merge_blocks_inv"
+   },
+   {
+    "path": "stackslib/src/net/inv/nakamoto.rs",
+    "symbol": "merge_tenure_inv"
+   },
+   {
+    "path": "stackslib/src/net/inv/epoch2x.rs",
+    "symbol": "truncate_block_inventories"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "Only merge_pox_inv tracks the first newly-set cycle and truncates block inventories, which happens ~40 lines in; sibling merge functions look identical up top.",
+  "review": "ok"
+ },
+ {
+  "id": "hs08",
+  "kind": "hard",
+  "question": "A peer reports, as two packed bitmaps starting at some burn height, which blocks and which microblock streams it holds. I want to fold that into what I already track for it, growing storage as needed, optionally clearing entries it no longer advertises, and get back how many of each were newly learned. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/net/inv/epoch2x.rs",
+    "symbol": "merge_blocks_inv"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/net/inv/epoch2x.rs",
+    "symbol": "merge_pox_inv"
+   },
+   {
+    "path": "stackslib/src/net/inv/nakamoto.rs",
+    "symbol": "merge_tenure_inv"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "Two-bitmap merge with clear_bits and new-bit counts (counted past line 20); merge_pox_inv and merge_tenure_inv share the shape.",
+  "review": "ok"
+ },
+ {
+  "id": "hs09",
+  "kind": "hard",
+  "question": "To smooth the fee-rate guess across blocks, I want to blend the previous low/middle/high values with the newest block's values using a decay factor (an exponential moving average), never letting any of the three drop below 1, and persist the result as a single row. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/cost_estimates/fee_scalar.rs",
+    "symbol": "update_estimate"
+   },
+   {
+    "path": "stackslib/src/cost_estimates/fee_scalar.rs",
+    "symbol": "ScalarFeeRateEstimator"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/cost_estimates/fee_medians.rs",
+    "symbol": "update_estimate"
+   },
+   {
+    "path": "stackslib/src/cost_estimates/fee_rate_fuzzer.rs",
+    "symbol": "fuzz_estimate"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "ScalarFeeRateEstimator::update_estimate does the decay blend, floor at 1 and singleton-row write (persist is past line 40); the median estimator's method has the same name.",
+  "review": "answers added: the estimator type whose sole job is this EMA"
+ },
+ {
+  "id": "hs10",
+  "kind": "hard",
+  "question": "My node pushes JSON notifications to subscriber URLs. If the connection fails I want to keep retrying the POST with a doubling pause plus up to 100 ms of random jitter, capped at three times the call's timeout, unless that subscriber is configured to never be retried. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stacks-node/src/event_dispatcher/worker.rs",
+    "symbol": "make_http_request"
+   },
+   {
+    "path": "stacks-node/src/event_dispatcher/worker.rs",
+    "symbol": "make_http_request_and_delete_from_db"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stacks-signer/src/client/mod.rs",
+    "symbol": "retry_with_exponential_backoff"
+   },
+   {
+    "path": "stackslib/src/net/httpcore.rs",
+    "symbol": "send_http_request"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "Backoff/jitter/cap and disable_retries live in the loop after line 20; generic backoff helper and one-shot HTTP sender look like answers.",
+  "review": "answers added: direct wrapper around the retrying POST"
+ },
+ {
+  "id": "hs11",
+  "kind": "hard",
+  "question": "For a replicated key-value store whose write permissions come from a smart contract, I need to call the contract's read-only function that lists which addresses get how many write positions, and reject the contract if any single address or the sum goes over the allowed maximum, or the sum overflows. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/net/stackerdb/config.rs",
+    "symbol": "eval_signer_slots"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H2"
+  ],
+  "rationale": "StackerDBConfig::eval_signer_slots; the per-address and total cap checks sit 35-70 lines into the 74-line body.",
+  "review": "ok"
+ },
+ {
+  "id": "hs12",
+  "kind": "hard",
+  "question": "While checking or building a block, I need to look at what the stacking boot contract printed during a transaction and catch any successful print whose payout Bitcoin address field can't be decoded into a usable address for this network; output from any other contract should be ignored. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/net/api/postblock_proposal.rs",
+    "symbol": "is_event_pox_addr_valid"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H2",
+   "H4"
+  ],
+  "rationale": "Long chain of early-return filters; the actual PoxAddress::try_from_pox_tuple decode is the last lines of a 49-line fn; phrased without 'event'/'pox-addr'.",
+  "review": "ok"
+ },
+ {
+  "id": "hs13",
+  "kind": "hard",
+  "question": "While assembling a block, a tx blows through the remaining execution budget. I want a three-way decision: reject it as inherently oversized if the block was nearly empty when it started, merely skip it for this block if less than a configurable percentage of the budget has been used so far, otherwise treat the block as full. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/chainstate/nakamoto/miner.rs",
+    "symbol": "parse_process_transaction_error"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/chainstate/stacks/db/transactions.rs",
+    "symbol": "finalize_failed_transaction"
+   },
+   {
+    "path": "stackslib/src/chainstate/stacks/miner.rs",
+    "symbol": "try_mine_tx_with_len"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "finalize_failed_transaction has the same too-big/block-full split but lacks the configurable middle tier, which sits ~35 lines into the answer.",
+  "review": "ok"
+ },
+ {
+  "id": "hs14",
+  "kind": "hard",
+  "question": "A contract prints a tuple announcing an off-chain file it references, carrying a content hash and an index. I need to turn that printed tuple, plus the block and tx it came from, into a record for my file downloader, treating an empty hash buffer as the empty hash and hex-encoding any extra metadata field. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/net/atlas/mod.rs",
+    "symbol": "try_new_from_value"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H2",
+   "H4"
+  ],
+  "rationale": "AttachmentInstance::try_new_from_value; nested tuple matching fills the first 20 lines, metadata hex-encoding and record assembly come after; question avoids the 'attachment' key literal.",
+  "review": "ok"
+ },
+ {
+  "id": "hs15",
+  "kind": "hard",
+  "question": "Given a block id and a chain tip, I need the id of the block that began that block's mining period. Blocks from before the Nakamoto upgrade should simply map to themselves, and when the caller doesn't know the epoch it should work out which kind of block it is from which header table holds it. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/clarity_vm/database/mod.rs",
+    "symbol": "get_first_block_in_tenure"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/chainstate/nakamoto/mod.rs",
+    "symbol": "get_tenure_start_block_id"
+   },
+   {
+    "path": "stackslib/src/chainstate/nakamoto/mod.rs",
+    "symbol": "get_tenure_start_block_header"
+   },
+   {
+    "path": "stackslib/src/clarity_vm/database/mod.rs",
+    "symbol": "get_tenure_block_id"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3"
+  ],
+  "rationale": "Several tenure-start lookups exist but take a consensus hash and only handle Nakamoto blocks; the epoch-2 identity and table-probe fallback is unique to the answer.",
+  "review": "ok"
+ },
+ {
+  "id": "hs16",
+  "kind": "hard",
+  "question": "Operators give seed peers as a hex public key, an '@', then host and port. I need to turn one into a peer entry, resolving the hostname and, when DNS lookup fails, retrying a few times with a doubling delay before giving up. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/config/mod.rs",
+    "symbol": "add_bootstrap_node"
+   },
+   {
+    "path": "stackslib/src/config/mod.rs",
+    "symbol": "set_bootstrap_nodes"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/config/mod.rs",
+    "symbol": "default_neighbor"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "NodeConfig::add_bootstrap_node; undocumented, and the question avoids 'bootstrap'/'neighbor' and the format literal.",
+  "review": "answers added: pass-through wrapper over comma-separated entries"
+ },
+ {
+  "id": "hs17",
+  "kind": "hard",
+  "question": "I need to parse a 'host[:port]' string, e.g. from a Host header or a settings value, into either an IP-plus-port or a DNS-name-plus-port, assuming port 80 when none is given and treating anything that isn't an IP literal as a hostname. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stacks-common/src/types/net.rs",
+    "symbol": "from_str"
+   },
+   {
+    "path": "stacks-common/src/types/net.rs",
+    "symbol": "PeerHost"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stacks-common/src/types/net.rs",
+    "symbol": "from_host_port"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2"
+  ],
+  "rationale": "PeerHost::from_str (67 lines); the DNS-name fallback with last-colon port splitting is lines 20-60.",
+  "review": "answers added: parsing is its FromStr impl; the type is what callers parse into"
+ },
+ {
+  "id": "hs18",
+  "kind": "hard",
+  "question": "For a signature-malleability test I want to take a 65-byte recoverable secp256k1 signature and produce its equally valid twin: replace the second scalar with its complement modulo the curve order and toggle the parity bit of the recovery id. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stacks-common/src/util/secp256k1/native.rs",
+    "symbol": "with_negated_s"
+   },
+   {
+    "path": "stacks-common/src/util/secp256k1/wasm.rs",
+    "symbol": "with_negated_s"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stacks-common/src/util/secp256r1.rs",
+    "symbol": "to_high_s"
+   },
+   {
+    "path": "stacks-codec/src/transaction.rs",
+    "symbol": "with_negated_s_in_signature"
+   },
+   {
+    "path": "stacks-common/src/util/secp256k1/wasm.rs",
+    "symbol": "from_secp256k1_recoverable_low_s"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Native and wasm MessageSignature::with_negated_s; secp256r1 has a high-s converter and the codec has tx-level wrappers.",
+  "review": "ok"
+ },
+ {
+  "id": "hs19",
+  "kind": "hard",
+  "question": "Before building a new block, my miner should refuse if the parent was produced less than a configured number of milliseconds ago, taking the parent's time from the new-style block header or, for older blocks, from the Bitcoin block header time. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stacks-node/src/nakamoto_node/miner.rs",
+    "symbol": "validate_timestamp_info"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "BlockMinerThread::validate_timestamp_info enforces min_time_between_blocks_ms; undocumented and the name says nothing about spacing.",
+  "review": "ok"
+ },
+ {
+  "id": "hs20",
+  "kind": "hard",
+  "question": "To pull pending transactions from other nodes, I want to pick a random connected peer that I dialed out to, that's authenticated, advertises support for the pending-tx query and publishes an HTTP endpoint; prefer one whose endpoint address is already resolved, otherwise start a DNS lookup for it. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/net/mempool/mod.rs",
+    "symbol": "mempool_sync_pick_outbound_peer"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/net/p2p.rs",
+    "symbol": "begin_learn_public_ip"
+   },
+   {
+    "path": "stackslib/src/net/mempool/mod.rs",
+    "symbol": "mempool_sync_begin_resolve_data_url"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "Data-URL filtering and resolved/unresolved branching are past line 20; begin_learn_public_ip uses the same random-outbound-peer loop.",
+  "review": "ok"
+ },
+ {
+  "id": "hs21",
+  "kind": "hard",
+  "question": "I log (unix time, byte count) samples per peer and need a helper that takes such a sample list and a maximum age and returns the receive rate in bytes per second across them, counting only samples younger than that age and coping with the clock having gone backwards between samples. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/net/chat.rs",
+    "symbol": "get_bandwidth"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/net/chat.rs",
+    "symbol": "get_block_push_bandwidth"
+   },
+   {
+    "path": "stackslib/src/net/chat.rs",
+    "symbol": "get_transaction_push_bandwidth"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "NeighborStats::get_bandwidth is the generic computation; the per-message-kind getters are look-alikes bound to one queue and fixed lifetime.",
+  "review": "reworded: caller supplies samples and age, excluding the 5 fixed-lifetime per-message-type wrappers"
+ },
+ {
+  "id": "hs22",
+  "kind": "hard",
+  "question": "I'm reading a reply from an HTTP server and need the status line and headers parsed into a struct: lowercase header names, reject duplicated headers, honour Connection close/keep-alive, and refuse a reply that has both a body length and chunked encoding, or neither. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/net/http/response.rs",
+    "symbol": "consensus_deserialize"
+   },
+   {
+    "path": "stackslib/src/net/httpcore.rs",
+    "symbol": "consensus_deserialize"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/net/http/request.rs",
+    "symbol": "consensus_deserialize"
+   },
+   {
+    "path": "libsigner/src/http.rs",
+    "symbol": "decode_http_response"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "HttpResponsePreamble::consensus_deserialize (136 lines); the request-side parser is a near-twin, and the header rules are 50-120 lines in.",
+  "review": "answers added: StacksHttpPreamble wrapper delegating to the response parser"
+ },
+ {
+  "id": "hs23",
+  "kind": "hard",
+  "question": "I want to build a Clarity tuple value checked against a declared tuple type: error on unknown fields or values of the wrong type, and depending on flags either reject or allow (last one wins) repeated field names, and either reject or allow fields that are left out. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "clarity-types/src/types/mod.rs",
+    "symbol": "from_data_typed"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "clarity-types/src/types/mod.rs",
+    "symbol": "from_data"
+   },
+   {
+    "path": "clarity-types/src/types/mod.rs",
+    "symbol": "new"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "TupleData::from_data_typed; from_data builds an untyped tuple, and the duplicate/missing-field flag handling is past line 20.",
+  "review": "ok"
+ },
+ {
+  "id": "hs24",
+  "kind": "hard",
+  "question": "My miner needs enough spendable Bitcoin outputs for its key to cover an amount, fetched from bitcoind and retried every few seconds on RPC failures. If none show up on a local regtest node, it should register the key with bitcoind's wallet so they become visible and try again, and give up if the total still falls short. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stacks-node/src/burnchains/bitcoin_regtest_controller.rs",
+    "symbol": "get_utxos"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stacks-node/src/burnchains/bitcoin_regtest_controller.rs",
+    "symbol": "retrieve_utxo_set"
+   },
+   {
+    "path": "stacks-node/src/burnchains/rpc/bitcoin_rpc_client/mod.rs",
+    "symbol": "list_unspent"
+   },
+   {
+    "path": "stacks-node/src/burnchains/bitcoin_regtest_controller.rs",
+    "symbol": "import_public_key"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "BitcoinRegtestController::get_utxos; the regtest import-and-retry and shortfall check are 35-90 lines in; documented helpers do single pieces.",
+  "review": "ok"
+ },
+ {
+  "id": "hs25",
+  "kind": "hard",
+  "question": "At the contract storage layer I want to look up which principal currently holds a given unique (non-fungible) asset, type-checking the asset identifier against its declared key type first and failing with a no-such-token error when it was never minted or has since been burned. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "clarity/src/vm/database/clarity_db.rs",
+    "symbol": "get_nft_owner"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "clarity/src/vm/functions/assets.rs",
+    "symbol": "special_get_owner_v200"
+   },
+   {
+    "path": "clarity/src/vm/functions/assets.rs",
+    "symbol": "special_get_owner_v205"
+   },
+   {
+    "path": "clarity/src/vm/database/clarity_db.rs",
+    "symbol": "set_nft_owner"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2",
+   "H3"
+  ],
+  "rationale": "ClarityDatabase::get_nft_owner errors on missing/burned; the Clarity builtins call it but map that error to none; burned-token error path is past line 30.",
+  "review": "ok"
+ },
+ {
+  "id": "hs26",
+  "kind": "hard",
+  "question": "On every new Bitcoin block my signer process should follow whichever burn-chain tip is higher (the node's or the one in the notification), load its signing setup for the current reward cycle if it's missing, and also for the next cycle once we're inside that cycle's preparation window. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stacks-signer/src/runloop.rs",
+    "symbol": "refresh_runloop"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stacks-signer/src/runloop.rs",
+    "symbol": "refresh_signer_config"
+   },
+   {
+    "path": "stacks-signer/src/runloop.rs",
+    "symbol": "initialize_runloop"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H2"
+  ],
+  "rationale": "RunLoop::refresh_runloop; the current/next-cycle config refresh comes after a long info! log, ~45 lines in.",
+  "review": "ok"
+ },
+ {
+  "id": "hs27",
+  "kind": "hard",
+  "question": "When pending transactions get evicted I want to tell subscribers why, using a fixed set of causes: outbid by a higher-fee version, superseded on a different fork, cleaned out for being too old, too costly to ever fit in a block, or flagged as problematic. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/core/mempool.rs",
+    "symbol": "MemPoolDropReason"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/core/mempool.rs",
+    "symbol": "MempoolIterationStopReason"
+   },
+   {
+    "path": "stackslib/src/chainstate/stacks/db/blocks.rs",
+    "symbol": "MemPoolRejection"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Undocumented enum with SCREAMING variants (REPLACE_BY_FEE, STALE_COLLECT...); the iteration-stop and admission-rejection enums look similar.",
+  "review": "ok"
+ },
+ {
+  "id": "hs28",
+  "kind": "hard",
+  "question": "When the sequence number on a tx doesn't line up with the account's state, I want an error value that records the expected and actual numbers, the tx id, the account, whether it was the sender or the fee sponsor, and a flag that keeps the logging quiet. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/chainstate/stacks/db/transactions.rs",
+    "symbol": "TransactionNonceMismatch"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/chainstate/stacks/db/transactions.rs",
+    "symbol": "NonceCheckFailure"
+   },
+   {
+    "path": "stackslib/src/core/nonce_cache.rs",
+    "symbol": "NonceCache"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "Undocumented struct; NonceCheckFailure wraps it with account snapshots and NonceCache is the other nonce type; question avoids 'nonce'/'mismatch'.",
+  "review": "ok"
+ },
+ {
+  "id": "hs29",
+  "kind": "hard",
+  "question": "For test networks operators can override network-upgrade activation heights in the settings file. I need to turn that list into the full upgrade schedule: reject unknown names, entries out of order or skipping an upgrade, a first upgrade not at height 0, and fill each one's end height from the next one's start. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/config/mod.rs",
+    "symbol": "make_epochs"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H2",
+   "H4"
+  ],
+  "rationale": "Config::make_epochs (128 lines); the first 50 lines are an epoch-name if-chain, the ordering/gap/end-height logic is far past the embedded text.",
+  "review": "ok"
+ },
+ {
+  "id": "hs30",
+  "kind": "hard",
+  "question": "I want a SQL helper that returns the single matching row or none, but crashes with a message I build lazily if the select unexpectedly yields more than one row. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/util_lib/db.rs",
+    "symbol": "query_row_panic"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/util_lib/db.rs",
+    "symbol": "query_expect_row"
+   },
+   {
+    "path": "stackslib/src/util_lib/db.rs",
+    "symbol": "query_row"
+   },
+   {
+    "path": "stackslib/src/util_lib/db.rs",
+    "symbol": "query_one_row_column"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3"
+  ],
+  "rationale": "query_expect_row also panics on >1 row but with a fixed message; the caller-supplied lazy message is the separating detail.",
+  "review": "ok"
+ },
+ {
+  "id": "hs31",
+  "kind": "hard",
+  "question": "Before accepting another client connection on the node's REST API, I want to refuse it if inbound clients are already at the configured cap, or if that same remote IP already holds more than the allowed number of connections. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/net/server.rs",
+    "symbol": "can_register_http"
+   }
+  ],
+  "near_misses": [
+   {
+    "path": "stackslib/src/net/p2p.rs",
+    "symbol": "can_register_peer"
+   },
+   {
+    "path": "stackslib/src/net/p2p.rs",
+    "symbol": "can_register_peer_with_pubkey"
+   },
+   {
+    "path": "stackslib/src/net/server.rs",
+    "symbol": "count_inbound_ip_addrs"
+   }
+  ],
+  "criteria": [
+   "H1",
+   "H3",
+   "H4"
+  ],
+  "rationale": "HttpPeer::can_register_http; documented p2p admission checks are the look-alikes.",
+  "review": "ok"
+ },
+ {
+  "id": "hs32",
+  "kind": "hard",
+  "question": "For my socket poller I need a free numeric handle: probe round-robin from a starting counter, skipping handles already registered or in a caller-supplied reserved set, and give up once the whole capacity has been checked. Is there already something in this repo for that?",
+  "answers": [
+   {
+    "path": "stackslib/src/net/poll.rs",
+    "symbol": "make_next_event_id"
+   },
+   {
+    "path": "stackslib/src/net/poll.rs",
+    "symbol": "next_event_id"
+   }
+  ],
+  "near_misses": [],
+  "criteria": [
+   "H1",
+   "H4"
+  ],
+  "rationale": "NetworkState::make_next_event_id; next_event_id wraps it without the reserved set.",
+  "review": "answers added: public wrapper that calls the prober"
+ }
+]

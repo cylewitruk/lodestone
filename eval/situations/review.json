@@ -1,0 +1,150 @@
+[
+ {
+  "id": "rv01",
+  "kind": "duplicate",
+  "diff": "diff --git a/stackslib/src/net/api/getneighbors.rs b/stackslib/src/net/api/getneighbors.rs\n--- a/stackslib/src/net/api/getneighbors.rs\n+++ b/stackslib/src/net/api/getneighbors.rs\n@@ -15,5 +15,7 @@\n // along with this program.  If not, see <http://www.gnu.org/licenses/>.\n \n+use std::net::IpAddr;\n+\n use clarity::vm::types::QualifiedContractIdentifier;\n use regex::{Captures, Regex};\n use stacks_common::types::net::{PeerAddress, PeerHost};\n@@ -108,6 +110,23 @@ impl RPCNeighbor {\n     }\n }\n \n+/// True if `addr` is only reachable from inside a LAN: the RFC 1918 IPv4 blocks,\n+/// IPv4/IPv6 loopback, or an IPv6 unique-local address (fc00::/7).\n+fn is_lan_only_address(addr: &PeerAddress) -> bool {\n+    match addr.to_ipaddr() {\n+        IpAddr::V4(v4) => {\n+            let [a, b, _, _] = v4.octets();\n+            match a {\n+                10 | 127 => true,\n+                172 => (16..=31).contains(&b),\n+                192 => b == 168,\n+                _ => false,\n+            }\n+        }\n+        IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00,\n+    }\n+}\n+\n /// Struct given back from a call to `/v2/neighbors`.\n #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\n pub struct RPCNeighborsInfo {\n@@ -158,6 +177,8 @@ impl RPCNeighborsInfo {\n \n         let sample: Vec<RPCNeighbor> = neighbor_sample\n             .into_iter()\n+            // don't hand out LAN-only peers to remote RPC clients\n+            .filter(|n| !is_lan_only_address(&n.addr.addrbytes))\n             .map(|n| {\n                 let stackerdb_contract_ids =\n                     PeerDB::static_get_peer_stacker_dbs(peerdb_conn, &n).unwrap_or_default();\n",
+  "answers": [
+   {
+    "path": "stacks-common/src/types/net.rs",
+    "symbol": "is_in_private_range"
+   }
+  ],
+  "note": "is_lan_only_address re-implements PeerAddress::is_in_private_range (10/8, 172.16/12, 192.168/16, 127/8, fc00::/7, ::1) on the same PeerAddress type."
+ },
+ {
+  "id": "rv02",
+  "kind": "duplicate",
+  "diff": "diff --git a/stacks-node/src/run_loop/boot_nakamoto.rs b/stacks-node/src/run_loop/boot_nakamoto.rs\n--- a/stacks-node/src/run_loop/boot_nakamoto.rs\n+++ b/stacks-node/src/run_loop/boot_nakamoto.rs\n@@ -23,6 +23,6 @@\n use stacks::chainstate::burn::db::sortdb::SortitionDB;\n use stacks::chainstate::coordinator::comm::CoordinatorChannels;\n use stacks::net::p2p::PeerNetwork;\n-use stacks_common::types::StacksEpochId;\n+use stacks_common::types::{StacksEpoch, StacksEpochId};\n \n use crate::event_dispatcher::EventDispatcher;\n@@ -234,13 +234,30 @@ impl BootRunLoop {\n     fn reached_epoch_30_transition(config: &Config) -> Result<bool, String> {\n         let burn_height = Self::get_burn_height(config);\n         let epochs = config.burnchain.get_epoch_list();\n         let epoch_3 = epochs\n             .get(StacksEpochId::Epoch30)\n             .ok_or(\"No Epoch-3.0 defined\")?;\n \n+        if let Some(current) = Self::epoch_containing(&epochs, u64::from(burn_height)) {\n+            debug!(\n+                \"Waiting for Epoch-3.0 transition\";\n+                \"burn_height\" => burn_height,\n+                \"current_epoch\" => %current,\n+                \"epoch_3_start\" => epoch_3.start_height,\n+            );\n+        }\n+\n         Ok(u64::from(burn_height) >= epoch_3.start_height - 1)\n     }\n \n+    /// Which of the configured epochs covers `burn_height` (start inclusive, end exclusive).\n+    fn epoch_containing<L>(epochs: &[StacksEpoch<L>], burn_height: u64) -> Option<StacksEpochId> {\n+        epochs\n+            .iter()\n+            .find(|e| e.start_height <= burn_height && burn_height < e.end_height)\n+            .map(|e| e.epoch_id)\n+    }\n+\n     fn get_burn_height(config: &Config) -> u32 {\n         let burnchain = config.get_burnchain();\n         let sortdb_path = config.get_burn_db_file_path();\n",
+  "answers": [
+   {
+    "path": "stacks-common/src/types/mod.rs",
+    "symbol": "epoch_id_at_height"
+   },
+   {
+    "path": "stacks-common/src/types/mod.rs",
+    "symbol": "find_epoch"
+   },
+   {
+    "path": "stacks-common/src/types/mod.rs",
+    "symbol": "epoch_at_height"
+   }
+  ],
+  "note": "epoch_containing scans the epoch list for start<=h<end and returns the id: exactly EpochList::epoch_id_at_height (built on StacksEpoch::find_epoch); `epochs` is already an EpochList."
+ },
+ {
+  "id": "rv03",
+  "kind": "control",
+  "diff": "diff --git a/stacks-node/src/nakamoto_node/miner.rs b/stacks-node/src/nakamoto_node/miner.rs\n--- a/stacks-node/src/nakamoto_node/miner.rs\n+++ b/stacks-node/src/nakamoto_node/miner.rs\n@@ -152,7 +152,23 @@\n /// If the miner was interrupted while mining a block, how long should the\n ///  miner thread sleep before trying again?\n const ABORT_TRY_AGAIN_MS: u64 = 200;\n \n+/// Render a byte count with a binary unit suffix for log output, e.g. `1.50 MiB`.\n+fn human_readable_size(bytes: u64) -> String {\n+    const UNITS: [&str; 4] = [\"B\", \"KiB\", \"MiB\", \"GiB\"];\n+    let mut value = bytes as f64;\n+    let mut unit = 0;\n+    while value >= 1024.0 && unit + 1 < UNITS.len() {\n+        value /= 1024.0;\n+        unit += 1;\n+    }\n+    if unit == 0 {\n+        format!(\"{bytes} {}\", UNITS[0])\n+    } else {\n+        format!(\"{value:.2} {}\", UNITS[unit])\n+    }\n+}\n+\n #[allow(clippy::large_enum_variant)]\n #[derive(Debug)]\n pub enum MinerDirective {\n@@ -1942,10 +1958,11 @@ impl BlockMinerThread {\n         info!(\n             \"Miner: Assembled block #{} for signer set proposal: {}, with {} txs\",\n             block_metadata.block.header.chain_length,\n             block_metadata.block.header.block_hash(),\n             block_metadata.block.tx_count();\n             \"signer_signature_hash\" => %block_metadata.block.header.signer_signature_hash(),\n             \"consensus_hash\" => %block_metadata.block.header.consensus_hash,\n             \"parent_block_id\" => %block_metadata.block.header.parent_block_id,\n             \"timestamp\" => block_metadata.block.header.timestamp,\n+            \"tenure_size\" => %human_readable_size(block_metadata.tenure_size),\n         );\n",
+  "answers": [],
+  "note": "Control: no byte-size humanizer (KiB/MiB formatting) exists anywhere in the repo; greps for KiB/MiB/GiB/human_readable/format_size/1024.0 find none."
+ },
+ {
+  "id": "rv04",
+  "kind": "duplicate",
+  "diff": "diff --git a/stacks-signer/src/client/stacks_client.rs b/stacks-signer/src/client/stacks_client.rs\n--- a/stacks-signer/src/client/stacks_client.rs\n+++ b/stacks-signer/src/client/stacks_client.rs\n@@ -26,3 +26,4 @@\n use blockstack_lib::net::api::getaccount::AccountEntryResponse;\n+use blockstack_lib::net::api::getmapentry::MapEntryResponse;\n use blockstack_lib::net::api::getpoxinfo::RPCPoxInfoData;\n use blockstack_lib::net::api::getsortition::{SortitionInfo, RPC_SORTITION_INFO_PATH};\n@@ -699,6 +700,41 @@ impl StacksClient {\n         let hex = call_read_only_response.result.unwrap_or_default();\n         let value = ClarityValue::try_deserialize_hex_untyped(&hex)?;\n         Ok(value)\n     }\n \n+    /// Fetch an entry from a contract's data map. Returns the stored (optional) value.\n+    pub fn get_map_entry(\n+        &self,\n+        contract_addr: &StacksAddress,\n+        contract_name: &ContractName,\n+        map_name: &ClarityName,\n+        key: &ClarityValue,\n+    ) -> Result<ClarityValue, ClientError> {\n+        let body = serde_json::Value::String(Self::encode_clarity_arg(key)?).to_string();\n+        let path = format!(\n+            \"{}/v2/map_entry/{contract_addr}/{contract_name}/{map_name}?proof=0\",\n+            self.http_origin\n+        );\n+        let response = self\n+            .stacks_node_client\n+            .post(path)\n+            .header(\"Content-Type\", \"application/json\")\n+            .body(body)\n+            .send()?;\n+        if !response.status().is_success() {\n+            return Err(ClientError::RequestFailure(response.status()));\n+        }\n+        let entry = response.json::<MapEntryResponse>()?;\n+        Ok(ClarityValue::try_deserialize_hex_untyped(&entry.data)?)\n+    }\n+\n+    /// Consensus-encode a Clarity value as a lowercase hex string for the RPC API.\n+    fn encode_clarity_arg(value: &ClarityValue) -> Result<String, ClientError> {\n+        let mut raw = Vec::new();\n+        value\n+            .serialize_write(&mut raw)\n+            .map_err(|e| ClientError::ReadOnlyFailure(format!(\"Failed to encode value: {e}\")))?;\n+        Ok(raw.iter().map(|b| format!(\"{b:02x}\")).collect())\n+    }\n+\n     fn pox_path(&self) -> String {\n",
+  "answers": [
+   {
+    "path": "clarity-types/src/types/serialization.rs",
+    "symbol": "serialize_to_hex"
+   },
+   {
+    "path": "stacks-common/src/util/hash.rs",
+    "symbol": "to_hex"
+   },
+   {
+    "path": "stacks-common/src/util/hash.rs",
+    "symbol": "bytes_to_hex"
+   }
+  ],
+  "note": "encode_clarity_arg = serialize_write into a Vec + hex-encode, which is exactly Value::serialize_to_hex (already used by read_only_contract_call in the same client)."
+ },
+ {
+  "id": "rv05",
+  "kind": "duplicate",
+  "diff": "diff --git a/stackslib/src/net/db.rs b/stackslib/src/net/db.rs\n--- a/stackslib/src/net/db.rs\n+++ b/stackslib/src/net/db.rs\n@@ -491,7 +491,20 @@ impl PeerDB {\n         Ok(())\n     }\n \n+    /// Check whether a table named `name` has been created in this database.\n+    fn has_table(conn: &Connection, name: &str) -> Result<bool, db_error> {\n+        let matches: i64 = conn.query_row(\n+            \"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1\",\n+            params![name],\n+            |row| row.get(0),\n+        )?;\n+        Ok(matches > 0)\n+    }\n+\n     fn get_schema_version(conn: &Connection) -> Result<String, db_error> {\n+        if !Self::has_table(conn, \"db_config\")? {\n+            return Ok(\"1\".to_string());\n+        }\n         let version = conn\n             .query_row(\"SELECT MAX(version) from db_config\", NO_PARAMS, |row| {\n                 row.get(0)\n@@ -682,5 +695,9 @@ impl PeerDB {\n             }\n         } else {\n+            if !PeerDB::has_table(&db.conn, \"frontier\")? {\n+                error!(\"Peer DB is present but lacks the `frontier` table\");\n+                return Err(db_error::Corruption);\n+            }\n             let peerdb_version = PeerDB::get_schema_version(&db.conn)?;\n             if peerdb_version != PEERDB_VERSION {\n                 let tx = db.tx_begin()?;\n",
+  "answers": [
+   {
+    "path": "stacks-common/src/util/db.rs",
+    "symbol": "table_exists"
+   }
+  ],
+  "note": "has_table queries sqlite_master for a table name: the shared table_exists helper (re-exported via stackslib util_lib::db and used by mempool, burnchain db, signer db)."
+ },
+ {
+  "id": "rv06",
+  "kind": "control",
+  "diff": "diff --git a/stackslib/src/config/mod.rs b/stackslib/src/config/mod.rs\n--- a/stackslib/src/config/mod.rs\n+++ b/stackslib/src/config/mod.rs\n@@ -261,5 +261,10 @@ impl ConfigFile {\n     #[allow(clippy::should_implement_trait)]\n     pub fn from_str(content: &str) -> Result<ConfigFile, String> {\n-        let mut config: ConfigFile =\n-            toml::from_str(content).map_err(|e| format!(\"Invalid toml: {e}\"))?;\n+        let mut config: ConfigFile = toml::from_str(content).map_err(|e| {\n+            let msg = e.to_string();\n+            match suggest_known_key(&msg) {\n+                Some(hint) => format!(\"Invalid toml: {msg}\\nhint: did you mean `{hint}`?\"),\n+                None => format!(\"Invalid toml: {msg}\"),\n+            }\n+        })?;\n         if let Some(mstx_balance) = config.mstx_balance.take() {\n@@ -349,4 +354,33 @@\n }\n \n+/// For serde's \"unknown field `x`, expected one of `a`, `b`\" errors, pick the expected\n+/// key closest to the misspelled one (at most 3 edits away).\n+fn suggest_known_key(err: &str) -> Option<String> {\n+    let rest = err.split(\"unknown field `\").nth(1)?;\n+    let (unknown, rest) = rest.split_once('`')?;\n+    rest.split('`')\n+        .skip(1)\n+        .step_by(2)\n+        .map(|cand| (typo_distance(unknown, cand), cand))\n+        .filter(|(d, _)| *d <= 3)\n+        .min_by_key(|(d, _)| *d)\n+        .map(|(_, cand)| cand.to_string())\n+}\n+\n+/// Number of single-character insertions, deletions or substitutions between `a` and `b`.\n+fn typo_distance(a: &str, b: &str) -> usize {\n+    let b: Vec<char> = b.chars().collect();\n+    let mut prev: Vec<usize> = (0..=b.len()).collect();\n+    for (i, ca) in a.chars().enumerate() {\n+        let mut cur = vec![i + 1; b.len() + 1];\n+        for (j, cb) in b.iter().enumerate() {\n+            let sub = prev[j] + usize::from(ca != *cb);\n+            cur[j + 1] = sub.min(prev[j + 1] + 1).min(cur[j] + 1);\n+        }\n+        prev = cur;\n+    }\n+    prev[b.len()]\n+}\n+\n #[derive(Clone, Debug, PartialEq)]\n pub struct Config {\n",
+  "answers": [],
+  "note": "Control: no edit-distance / closest-match / did-you-mean helper exists (greps for levenshtein, edit_distance, did you mean, closest, jaro, hamming, strsim find nothing)."
+ },
+ {
+  "id": "rv07",
+  "kind": "duplicate",
+  "diff": "diff --git a/stacks-signer/src/cli.rs b/stacks-signer/src/cli.rs\n--- a/stacks-signer/src/cli.rs\n+++ b/stacks-signer/src/cli.rs\n@@ -330,17 +330,40 @@\n-/// Parse the input data\n+/// Parse the input data: base58 by default, or hex when prefixed with `0x`\n fn parse_data(data: &str) -> Result<Vec<u8>, String> {\n     let encoded_data = if data == \"-\" {\n         // Parse the data from stdin\n         let mut data = String::new();\n         io::stdin().read_to_string(&mut data).unwrap();\n         data\n     } else {\n         data.to_string()\n     };\n+    if let Some(digits) = encoded_data.trim().strip_prefix(\"0x\") {\n+        return decode_hex_arg(digits);\n+    }\n     let data =\n         b58::from(&encoded_data).map_err(|e| format!(\"Failed to decode provided data: {e}\"))?;\n     Ok(data)\n }\n \n+/// Decode a string of hex digits (no `0x` prefix) into raw bytes.\n+fn decode_hex_arg(input: &str) -> Result<Vec<u8>, String> {\n+    if input.len() % 2 != 0 {\n+        return Err(format!(\"Hex data has odd length {}\", input.len()));\n+    }\n+    let nibble = |c: u8| -> Result<u8, String> {\n+        match c {\n+            b'0'..=b'9' => Ok(c - b'0'),\n+            b'a'..=b'f' => Ok(c - b'a' + 10),\n+            b'A'..=b'F' => Ok(c - b'A' + 10),\n+            _ => Err(format!(\"Invalid hex character '{}'\", c as char)),\n+        }\n+    };\n+    input\n+        .as_bytes()\n+        .chunks(2)\n+        .map(|pair| Ok((nibble(pair[0])? << 4) | nibble(pair[1])?))\n+        .collect()\n+}\n+\n #[cfg(test)]\n mod tests {\n",
+  "answers": [
+   {
+    "path": "stacks-common/src/util/hash.rs",
+    "symbol": "hex_bytes"
+   }
+  ],
+  "note": "decode_hex_arg hand-rolls hex-string-to-bytes decoding with odd-length and bad-character errors: stacks_common::util::hash::hex_bytes does exactly this."
+ },
+ {
+  "id": "rv08",
+  "kind": "duplicate",
+  "diff": "diff --git a/stacks-node/src/main.rs b/stacks-node/src/main.rs\n--- a/stacks-node/src/main.rs\n+++ b/stacks-node/src/main.rs\n@@ -44,5 +44,7 @@\n \n use std::collections::HashMap;\n+use std::fs::File;\n+use std::io::{BufWriter, Write};\n use std::{env, panic, process};\n \n use backtrace::Backtrace;\n@@ -288,5 +290,12 @@ fn cli_get_miner_spend(\n     spend_amount\n }\n \n+/// Write `value` as JSON to the file at `path`, replacing any previous contents.\n+fn write_json_output<T: serde::Serialize>(path: &str, value: &T) -> std::io::Result<()> {\n+    let mut out = BufWriter::new(File::create(path)?);\n+    serde_json::to_writer(&mut out, value).map_err(std::io::Error::from)?;\n+    out.flush()\n+}\n+\n /// If the previous session was terminated before all the pending events had been sent,\n /// the DB will still contain them. Work through that before doing anything new.\n@@ -417,10 +426,22 @@ fn main() {\n         \"pick-best-tip\" => {\n             let config_path: String = args.value_from_str(\"--config\").unwrap();\n             let at_stacks_height: Option<u64> =\n                 args.opt_value_from_str(\"--at-stacks-height\").unwrap();\n+            let output_path: Option<String> = args.opt_value_from_str(\"--output\").unwrap();\n             args.finish();\n \n             let best_tip = cli_pick_best_tip(&config_path, at_stacks_height);\n             println!(\"Best tip is {best_tip:?}\");\n+            if let Some(output_path) = output_path {\n+                let summary = serde_json::json!({\n+                    \"stacks_height\": best_tip.stacks_height,\n+                    \"burn_height\": best_tip.burn_height,\n+                    \"index_block_hash\": best_tip.id().to_string(),\n+                });\n+                if let Err(e) = write_json_output(&output_path, &summary) {\n+                    eprintln!(\"Failed to write {output_path}: {e}\");\n+                    process::exit(1);\n+                }\n+            }\n             process::exit(0);\n         }\n",
+  "answers": [
+   {
+    "path": "stacks-common/src/util/mod.rs",
+    "symbol": "serialize_json_to_file"
+   }
+  ],
+  "note": "write_json_output = File::create + BufWriter + serde_json::to_writer + flush, identical to stacks_common::util::serialize_json_to_file (stacks_common::util is even re-exported from this crate)."
+ },
+ {
+  "id": "rv09",
+  "kind": "control",
+  "diff": "diff --git a/stacks-signer/src/cli.rs b/stacks-signer/src/cli.rs\n--- a/stacks-signer/src/cli.rs\n+++ b/stacks-signer/src/cli.rs\n@@ -247,10 +247,10 @@\n pub struct MonitorSignersArgs {\n     /// The Stacks node to connect to\n     #[arg(long)]\n     pub host: String,\n-    /// Set the polling interval in seconds.\n-    #[arg(long, short, default_value = \"60\")]\n+    /// Set the polling interval, e.g. `90`, `30s`, `5m` or `1h` (bare numbers are seconds).\n+    #[arg(long, short, default_value = \"60\", value_parser = parse_interval_secs)]\n     pub interval: u64,\n-    /// Max age in seconds before a signer message is considered stale.\n-    #[arg(long, short, default_value = \"1200\")]\n+    /// Max age before a signer message is considered stale (same format as `interval`).\n+    #[arg(long, short, default_value = \"20m\", value_parser = parse_interval_secs)]\n     pub max_age: u64,\n@@ -320,5 +320,27 @@\n /// Parse the vote\n fn parse_vote(vote: &str) -> Result<Vote, String> {\n     vote.try_into()\n }\n \n+/// Parse a span like `45`, `45s`, `10m`, `2h` or `1d` into a number of seconds.\n+fn parse_interval_secs(input: &str) -> Result<u64, String> {\n+    let input = input.trim();\n+    let split_at = input\n+        .find(|c: char| !c.is_ascii_digit())\n+        .unwrap_or(input.len());\n+    let (digits, unit) = input.split_at(split_at);\n+    let amount: u64 = digits\n+        .parse()\n+        .map_err(|_| format!(\"Invalid interval '{input}': expected a number\"))?;\n+    let multiplier = match unit {\n+        \"\" | \"s\" => 1,\n+        \"m\" => 60,\n+        \"h\" => 60 * 60,\n+        \"d\" => 24 * 60 * 60,\n+        other => return Err(format!(\"Invalid interval unit '{other}' in '{input}'\")),\n+    };\n+    amount\n+        .checked_mul(multiplier)\n+        .ok_or_else(|| format!(\"Interval '{input}' is too large\"))\n+}\n+\n",
+  "answers": [],
+  "note": "Control: no parser for human duration strings (30s/5m/1h) exists; no humantime dependency and greps for parse_duration, strip_suffix(\"s\"/\"ms\"), unit match arms find nothing."
+ },
+ {
+  "id": "rv10",
+  "kind": "duplicate",
+  "diff": "diff --git a/stacks-node/src/burnchains/bitcoin_regtest_controller.rs b/stacks-node/src/burnchains/bitcoin_regtest_controller.rs\n--- a/stacks-node/src/burnchains/bitcoin_regtest_controller.rs\n+++ b/stacks-node/src/burnchains/bitcoin_regtest_controller.rs\n@@ -189,5 +189,15 @@\n pub fn get_max_rbf(config: &Config) -> u64 {\n     config.get_burnchain_config().max_rbf\n }\n \n+/// Reward cycle containing `burn_height`, or `None` if it precedes the first burnchain block.\n+fn cycle_for_burn_height(burnchain: &Burnchain, burn_height: u64) -> Option<u64> {\n+    let since_genesis = burn_height.checked_sub(burnchain.first_block_height)?;\n+    let cycle_len = u64::from(burnchain.pox_constants.reward_cycle_length);\n+    if cycle_len == 0 {\n+        return None;\n+    }\n+    Some(since_genesis / cycle_len)\n+}\n+\n impl LeaderBlockCommitFees {\n@@ -571,6 +581,12 @@ impl BitcoinRegtestController {\n                     let burnchain_height = self\n                         .indexer\n                         .get_highest_header_height()\n                         .map_err(BurnchainControllerError::IndexerError)?;\n+                    debug!(\n+                        \"Synced burnchain\";\n+                        \"burnchain_height\" => burnchain_height,\n+                        \"sortition_height\" => sort_tip.block_height,\n+                        \"cycle\" => ?cycle_for_burn_height(&burnchain, sort_tip.block_height),\n+                    );\n                     break (sort_tip, burnchain_height);\n                 }\n",
+  "answers": [
+   {
+    "path": "stackslib/src/burnchains/burnchain.rs",
+    "symbol": "block_height_to_reward_cycle"
+   },
+   {
+    "path": "stackslib/src/burnchains/mod.rs",
+    "symbol": "block_height_to_reward_cycle"
+   },
+   {
+    "path": "stackslib/src/burnchains/mod.rs",
+    "symbol": "static_block_height_to_reward_cycle"
+   }
+  ],
+  "note": "cycle_for_burn_height computes (h - first_block_height) / reward_cycle_length: Burnchain::block_height_to_reward_cycle (delegating to PoxConstants' versions) on the very Burnchain in scope."
+ },
+ {
+  "id": "rv11",
+  "kind": "duplicate",
+  "diff": "diff --git a/stackslib/src/chainstate/stacks/boot/docs.rs b/stackslib/src/chainstate/stacks/boot/docs.rs\n--- a/stackslib/src/chainstate/stacks/boot/docs.rs\n+++ b/stackslib/src/chainstate/stacks/boot/docs.rs\n@@ -18,4 +18,5 @@\n use clarity::vm::docs::contracts::{produce_docs_refs, ContractSupportDocs};\n use clarity::vm::ClarityVersion;\n+use stacks_common::types::StacksEpochId;\n \n use super::STACKS_BOOT_CODE_MAINNET;\n@@ -157,12 +158,31 @@\n pub fn make_json_boot_contracts_reference() -> String {\n+    make_json_boot_contracts_reference_at(StacksEpochId::Epoch2_05)\n+}\n+\n+/// Produce the boot contract reference using the Clarity dialect active in `epoch`.\n+pub fn make_json_boot_contracts_reference_at(epoch: StacksEpochId) -> String {\n     let contract_supporting_docs = make_contract_support_docs();\n     let api_out = produce_docs_refs(\n         &*STACKS_BOOT_CODE_MAINNET,\n         &contract_supporting_docs,\n-        ClarityVersion::Clarity1,\n+        clarity_dialect_in(epoch),\n     );\n     serde_json::to_string(&api_out).expect(\"Failed to serialize documentation\")\n }\n \n+/// Clarity version that newly deployed contracts get in `epoch`.\n+fn clarity_dialect_in(epoch: StacksEpochId) -> ClarityVersion {\n+    use StacksEpochId::*;\n+    match epoch {\n+        Epoch10 | Epoch20 | Epoch2_05 => ClarityVersion::Clarity1,\n+        Epoch21 | Epoch22 | Epoch23 | Epoch24 | Epoch25 => ClarityVersion::Clarity2,\n+        Epoch30 | Epoch31 | Epoch32 => ClarityVersion::Clarity3,\n+        Epoch33 => ClarityVersion::Clarity4,\n+        Epoch34 => ClarityVersion::Clarity5,\n+        Epoch40 => ClarityVersion::Clarity6,\n+        Epoch41 => ClarityVersion::Clarity7,\n+    }\n+}\n+\n #[cfg(test)]\n mod tests {\n",
+  "answers": [
+   {
+    "path": "clarity-types/src/version.rs",
+    "symbol": "default_for_epoch"
+   }
+  ],
+  "note": "clarity_dialect_in maps each StacksEpochId to its Clarity version, re-stating the table in ClarityVersion::default_for_epoch (which will drift when new epochs are added)."
+ },
+ {
+  "id": "rv12",
+  "kind": "control",
+  "diff": "diff --git a/stacks-node/src/run_loop/nakamoto.rs b/stacks-node/src/run_loop/nakamoto.rs\n--- a/stacks-node/src/run_loop/nakamoto.rs\n+++ b/stacks-node/src/run_loop/nakamoto.rs\n@@ -53,5 +53,20 @@\n pub const STDERR: i32 = 2;\n pub type Globals = GenericGlobals<nakamoto_node::relayer::RelayerDirective>;\n \n+/// Format a micro-STX amount as whole STX with six decimals and digit grouping,\n+/// e.g. `12345678901` -> `12,345.678901 STX`.\n+fn format_ustx_as_stx(ustx: u64) -> String {\n+    let whole = (ustx / 1_000_000).to_string();\n+    let frac = ustx % 1_000_000;\n+    let mut grouped = String::with_capacity(whole.len() + whole.len() / 3);\n+    for (i, ch) in whole.chars().enumerate() {\n+        if i > 0 && (whole.len() - i) % 3 == 0 {\n+            grouped.push(',');\n+        }\n+        grouped.push(ch);\n+    }\n+    format!(\"{grouped}.{frac:06} STX\")\n+}\n+\n /// Coordinating a node running in nakamoto mode. This runloop operates very similarly to the neon runloop.\n pub struct RunLoop {\n@@ -226,6 +241,14 @@ impl RunLoop {\n     fn boot_chainstate(&mut self, burnchain_config: &Burnchain) -> StacksChainState {\n         let use_test_genesis_data = use_test_genesis_chainstate(&self.config);\n \n+        for balance in self.config.initial_balances.iter() {\n+            info!(\n+                \"Genesis balance\";\n+                \"address\" => %balance.address,\n+                \"amount\" => %format_ustx_as_stx(balance.amount),\n+            );\n+        }\n+\n         // load up genesis balances\n         let initial_balances = self\n             .config\n",
+  "answers": [],
+  "note": "Control: nothing formats micro-STX as a decimal STX string or groups digits with separators (greps for {:06}, % 1_000_000, commas/thousands/separator, ustx/stx format fns find none)."
+ }
+]

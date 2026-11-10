@@ -1,0 +1,130 @@
+{
+ "hl01": {
+  "task": "I'm sending a user's message with attachments to an OpenAI-style assistant and need to decide which built-in tools each attachment is exposed to. I'd like to reuse an existing helper that routes every file to the code interpreter, adds images as inline image content, and adds file search only for document types retrieval supports.",
+  "identifier": "mapAttachmentsToTools buildAssistantAttachments assignFileTools resolveToolResources code_interpreter file_search image_file mimeType"
+ },
+ "hl02": {
+  "task": "I'm writing the server operation that refreshes a public read-only copy of a chat. I'd like to reuse an existing function that re-snapshots the chat's current messages into the shared copy and assigns it a new public ID so the old URL stops working.",
+  "identifier": "refreshPublicChat regenerateShareId resnapshotSharedChat rotatePublicLink shareId messages nanoid public"
+ },
+ "hl03": {
+  "task": "I'm adding a server startup check that compares chat and message counts in MongoDB against our full-text search engine. I want to reuse existing logic that triggers a background re-import when counts differ and creates the engine's collections shortly after if they don't exist.",
+  "identifier": "syncSearchIndex reconcileSearchCounts startSearchReindex ensureSearchCollections countDocuments index import startup"
+ },
+ "hl04": {
+  "task": "I'm handling errors when the model API fails mid-stream. I'd like to reuse an existing handler that saves the already generated text as an unfinished message when enough text arrived, and otherwise sends the user a friendly error notice.",
+  "identifier": "handleStreamFailure savePartialReply recoverPartialResponse onStreamError partialText unfinished error minLength"
+ },
+ "hl05": {
+  "task": "I'm writing email-and-password sign-in and need older accounts created before mandatory email confirmation to not get locked out when no mail is configured. I want to reuse existing logic that silently marks such accounts as verified during login.",
+  "identifier": "autoVerifyLegacyUser markEmailConfirmed ensureLegacyVerified localLoginVerify emailVerified createdAt mailConfigured"
+ },
+ "hl06": {
+  "task": "I have a list of chat IDs from search and need to load those chats for the current user. I'd like to reuse an existing query that excludes temporary chats with an expiry, paginates the result in memory into fixed-size pages, and builds a map keyed by ID.",
+  "identifier": "loadChatsByIds fetchConversationsForSearch paginateChatsInMemory buildChatLookup expiredAt pageSize convoMap"
+ },
+ "hl07": {
+  "task": "I'm writing the browser-side check run before attachments are sent. I'd like to reuse an existing validator that rejects duplicates already pending (same name and size), enforces count and total-size limits, and fixes empty or wrong MIME types for source-code extensions.",
+  "identifier": "checkAttachmentBatch validateSelectedFiles isDuplicateUpload fixCodeMimeType maxFiles totalSize mimeType extension"
+ },
+ "hl08": {
+  "task": "When a bookmark label is dragged to a new position, I need to update the cached list without refetching. I'd like to reuse an existing cache updater that moves the edited item to its new slot and renumbers the position field of the items it passed.",
+  "identifier": "reorderBookmarkCache moveTagInList updateLabelPositions applyBookmarkReorder setQueryData position order"
+ },
+ "hl09": {
+  "task": "After optimistic inserts and deletes, my infinite-query pages are uneven and contain duplicates. I want to reuse an existing helper that flattens all pages, dedupes by a key, re-chunks to the page size and drops trailing empty pages.",
+  "identifier": "rebalancePages repaginateInfiniteData dedupeAndChunkPages flattenPages pages pageParams pageSize uniqueBy"
+ },
+ "hl10": {
+  "task": "I'm uploading large attachments and want to warn the user when the upload takes unusually long. I'd like to reuse an existing hook that schedules a still-uploading toast with a delay scaled by file size and clears it when the upload finishes.",
+  "identifier": "useSlowUploadWarning scheduleUploadNotice useUploadTimeoutToast getWarningDelay setTimeout clearTimeout fileSize toast"
+ },
+ "hl11": {
+  "task": "I'm building a sidebar list backed by an infinite query. I want to reuse an existing hook that watches a scroll container, throttles fetching the next page when near the bottom, and toggles a loading spinner flag.",
+  "identifier": "useScrollPagination useLoadMoreOnScroll useNearBottomFetch fetchNextPage hasNextPage throttle scrollTop isLoading"
+ },
+ "hl12": {
+  "task": "In the chat view I need a floating jump-to-latest button shown only when the thread end is out of view, without flicker, plus auto-following new output while streaming unless the user disabled it. I'd like to reuse an existing hook that does this.",
+  "identifier": "useJumpToLatest useStickToBottom useChatAutoFollow ScrollToLatestButton IntersectionObserver isStreaming autoScroll debounce"
+ },
+ "hl13": {
+  "task": "I'm loading admin attachment limits from the YAML config per AI provider. I want to reuse an existing merger that applies those overrides to built-in defaults, converts megabytes to bytes, and makes a disabled provider accept zero files of any type.",
+  "identifier": "applyProviderFileLimits mergeAttachmentSettings resolveUploadLimits mbToBytes disabled supportedMimeTypes fileLimit endpoints"
+ },
+ "hl14": {
+  "task": "When the connection to an external tool server drops, I need to reconnect with a limited number of retries and exponential backoff capped at 30 seconds, stopping early on shutdown. I'd like to reuse an existing reconnect routine for that.",
+  "identifier": "reconnectWithBackoff retryToolServerConnection scheduleReconnect ToolServerConnection maxRetries backoff delay shuttingDown"
+ },
+ "hl15": {
+  "task": "Another request such as an OAuth callback will mark a pending record in our shared key-value cache as completed or failed. I want to reuse an existing helper that polls the record every couple of seconds, resolves with its result, deletes it on failure and gives up after its TTL.",
+  "identifier": "awaitPendingRecord pollCacheStatus waitForCompletion PendingStateStore keyv ttl status interval"
+ },
+ "hl16": {
+  "task": "Agents call user-configured third-party HTTP APIs and I need to attach stored credentials as Basic (base64), bearer token or a custom header. I'd like to reuse existing request-building logic that also refuses the call when the user's OAuth access token is missing or expired.",
+  "identifier": "applyApiCredentials buildAuthHeaders prepareExternalApiRequest ensureOAuthToken Authorization Bearer Basic expiresAt"
+ },
+ "hl17": {
+  "task": "I want a user's unsent text and attachments restored when they come back to a chat. I'd like to reuse an existing hook that persists drafts per chat in browser storage with throttled writes while typing.",
+  "identifier": "usePersistedDraft useChatDraft saveComposerDraft restoreDraftFiles localStorage conversationId throttle draft"
+ },
+ "hl18": {
+  "task": "I'm supporting shareable links that pre-fill the chat input from a URL parameter and start a new chat with valid settings from the link. I want to reuse an existing hook that applies those params and then strips them from the address bar so a refresh doesn't reapply them.",
+  "identifier": "useUrlPrefill applyLinkSettings useChatParamsFromUrl parseSharedSettings URLSearchParams history.replaceState prompt newChat"
+ },
+ "hl19": {
+  "task": "Full-text search returns matching messages and chats with matching titles. I need to reuse an existing function that groups them into one entry per chat, sorts by match count and keeps the chat title when it matched.",
+  "identifier": "groupSearchHitsByChat rankChatsByMatches mergeTitleAndMessageHits aggregateSearchResults conversationId count title"
+ },
+ "hl20": {
+  "task": "When several browser API calls fail because the session expired, only one should refresh the token while the others wait. I'd like to reuse an existing interceptor queue that releases parked requests with the new token or rejects them all if refresh fails.",
+  "identifier": "enqueuePendingRequest flushRequestQueue isRefreshingToken retryWithNewToken interceptors 401 refreshToken axios"
+ },
+ "hl21": {
+  "task": "While streaming a reply to text-to-speech I need to cut the buffer only at sentence ends. I'd like to reuse an existing helper that returns the index of the last sentence boundary, including CJK, Arabic and Spanish punctuation, newlines and code fences.",
+  "identifier": "lastSentenceBoundary findSentenceEnd getSpeechCutIndex splitSpeakableText punctuation regex lastIndexOf tts"
+ },
+ "hl22": {
+  "task": "Messages now store content as an array of typed parts. I want to reuse an existing helper that joins only the text parts into one string, adding a space between neighbours only when neither has one, and skips images and tool calls.",
+  "identifier": "joinTextParts flattenMessageContent extractPlainText contentPartsToString ContentType text image_url tool_call"
+ },
+ "hl23": {
+  "task": "I need to check whether a given LLM name supports image input. I'd like to reuse an existing check that matches against built-in vision model names plus admin-added ones, excludes known text-only variants, and fails if the model isn't in the available list.",
+  "identifier": "supportsImageInput isVisionCapableModel checkModelVision visionModelList availableModels includes exclude"
+ },
+ "hl24": {
+  "task": "I'm extending sign-up to accept an optional invitation token. I'd like to reuse existing logic that verifies the token was issued for the submitted email, rejects mismatches, and consumes it so it can't be reused.",
+  "identifier": "redeemInvitation verifyInviteToken consumeInviteToken registerWithInvite token email hash delete"
+ },
+ "hl25": {
+  "task": "Some chat records have no ID because of bad data. I want to reuse an existing maintenance routine that deletes those chats and their associated messages and reports how many of each were removed.",
+  "identifier": "purgeChatsWithoutId cleanupOrphanedChats removeInvalidConversations deleteMany deletedCount conversationId null"
+ },
+ "hl26": {
+  "task": "I'm parsing a LangChain error string that has serialized JSON after some prose. I'd like to reuse an existing helper that extracts and parses the JSON part and recursively finds the text nested in LangChain's serialized constructor kwargs.",
+  "identifier": "extractLangChainErrorText parseSerializedError findNestedKwargsText unwrapLcError JSON.parse kwargs lc_serializable indexOf"
+ },
+ "hl27": {
+  "task": "Users can edit the code of a generated preview block embedded in an assistant reply. I want to reuse an existing helper that finds their original snippet inside that block's fenced code (or body if unfenced) in the stored message text, replaces it with the edit, and returns null if not found.",
+  "identifier": "replacePreviewBlockCode applyEditedSnippet patchEmbeddedBlock findFencedCode codeFence content replace null"
+ },
+ "hl28": {
+  "task": "When the user switches AI provider mid-chat I need to decide whether the current chat can continue (same provider, interchangeable providers when allowed, or same assistants backend). I'd like to reuse existing logic that makes that decision and builds the template for the next conversation state.",
+  "identifier": "canContinueChat resolveProviderSwitch buildNextChatTemplate isCompatibleProvider endpoint interchangeable template newConversation"
+ },
+ "hl29": {
+  "task": "For a suggestions strip on the landing page I need a database query returning a shuffled sample of saved message templates, at most one per category, excluding uncategorized ones, with skip/limit paging. I'd like to reuse an existing aggregation for that.",
+  "identifier": "sampleTemplatesByCategory getFeaturedPromptTemplates randomTemplatePerCategory aggregate $sample $group category skip limit"
+ },
+ "hl30": {
+  "task": "Uploads don't report real byte progress, so I want a simulated percentage driven by a timer: faster for small files, slower and tapering for large ones, capped at 95% until completion then jumping to 100%. I'd like to reuse an existing hook for that.",
+  "identifier": "useSimulatedProgress useFakeUploadProgress estimateUploadPercent setInterval fileSize progress 95 complete"
+ },
+ "hl31": {
+  "task": "I need the display name shown above an AI reply. I want to reuse an existing helper that derives it from provider and model family, prefers the user's custom label, and falls back sensibly for self-hosted OpenAI-compatible providers.",
+  "identifier": "getReplyAuthorLabel resolveAssistantDisplayName deriveModelLabel getSenderName modelLabel endpoint model customName"
+ },
+ "hl32": {
+  "task": "When the user removes several attachments quickly, I want them gone from the local list immediately but a single debounced delete request sent to the server. I'd like to reuse an existing hook that skips files still uploading and keeps files already attached to a sent message.",
+  "identifier": "useBatchedFileRemoval queueAttachmentDeletion useDebouncedFileDelete removeLocalFiles debounce deleteFiles uploading messageId"
+ }
+}

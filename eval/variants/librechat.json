@@ -1,0 +1,206 @@
+{
+  "l01": {
+    "terse": "sanitize uploaded filename",
+    "short": "Where do we sanitize user-supplied filenames before saving uploads to disk?",
+    "task": "I'm writing the upload handler that saves user files to disk under their original names. I'd like to reuse an existing filename sanitizer that strips directory parts, replaces unsafe characters with underscores, avoids leading-dot hidden names and limits the length.",
+    "identifier": "sanitizeFilename sanitizeFileName safeFileName cleanFilename upload path basename"
+  },
+  "l02": {
+    "terse": "parse env var boolean true string",
+    "short": "Is there a helper that converts env var strings like 'TRUE' into booleans?",
+    "task": "I'm adding a new feature flag read from an environment variable. Rather than comparing strings by hand, I want to reuse an existing helper that trims and case-insensitively treats 'true' or a real boolean true as on, and everything else as off.",
+    "identifier": "isEnabled parseBoolean toBoolean isTruthy envBool process.env flag"
+  },
+  "l03": {
+    "terse": "evaluate math expression env string number",
+    "short": "How do we evaluate an arithmetic env string like '1000*60*15' into a number?",
+    "task": "I'm adding a timeout setting to .env that people will write as a multiplication like `1000 * 60 * 15`. I want to reuse whatever safely evaluates such a string to a number, accepting only digits and arithmetic operators, and returns a default if evaluation fails.",
+    "identifier": "math evalMath parseMathExpression evaluateExpression safeEval env expiry"
+  },
+  "l04": {
+    "terse": "truncate text middle ellipsis keep start end",
+    "short": "Is there a function that shortens long text by cutting out the middle?",
+    "task": "I'm logging error stacks that can be huge, and I want to cap them at a max length while keeping both the beginning and the end. I hope there's an existing helper that inserts an ellipsis in the middle and appends a note saying the text was truncated.",
+    "identifier": "truncateMiddle smartTruncate truncateText middleTruncate ellipsis stack length"
+  },
+  "l05": {
+    "terse": "verify TOTP code authenticator 2FA",
+    "short": "Where is the TOTP verification for two-factor login with clock drift tolerance?",
+    "task": "I'm wiring up the second step of 2FA login, where the user enters a six-digit code from their authenticator app. I want to reuse the existing TOTP check against the stored secret that also accepts codes from the adjacent 30-second window.",
+    "identifier": "verifyTOTP verifyTotp generateTOTP twoFactor authenticator otp secret window"
+  },
+  "l06": {
+    "terse": "extract base URL from full API endpoint",
+    "short": "How do we strip a pasted endpoint like /v1/chat/completions down to the base URL?",
+    "task": "I'm configuring a custom provider where users paste a full endpoint URL such as `https://host/v1/chat/completions`, sometimes through a Cloudflare gateway with a provider path segment after the version. I want to reuse the existing logic that reduces that to the base API URL to pass to the SDK client.",
+    "identifier": "extractBaseURL getBaseUrl normalizeBaseURL baseURL v1 chat completions gateway"
+  },
+  "l07": {
+    "terse": "model context window token limit lookup",
+    "short": "How do we look up the max context tokens for a model name?",
+    "task": "I'm computing how much conversation history fits into a request, so I need the context window size for a model identifier like 'gpt-4-0613'. I'd like to reuse the existing lookup that does partial name matching against known models when there's no exact key and respects endpoint-specific overrides.",
+    "identifier": "getModelMaxTokens maxTokensMap modelContextLimits matchModelName context window"
+  },
+  "l08": {
+    "terse": "count tokens tiktoken string",
+    "short": "Is there a helper that counts tokens in a string with tiktoken?",
+    "task": "I need to measure how many tokens a prompt string will use before sending it. I'm hoping there's already a utility that encodes text with tiktoken and returns the token count.",
+    "identifier": "countTokens getTokenCount tokenCounter encoding_for_model tiktoken encode"
+  },
+  "l09": {
+    "terse": "detect file type magic bytes image dimensions",
+    "short": "How do we detect an upload's real file type and image size from its bytes?",
+    "task": "I'm hardening file uploads and don't want to trust the extension or the declared MIME type. I want to reuse something that inspects the buffer's magic bytes to determine the actual format and, for images, reads the width and height.",
+    "identifier": "detectFileType getFileType fileTypeFromBuffer getImageDimensions mime sniff buffer"
+  },
+  "l10": {
+    "terse": "resize image buffer vision detail low high",
+    "short": "Where do we resize images for vision models based on low or high detail?",
+    "task": "I'm attaching user images to a vision model request and need them downscaled first. I'd like to reuse the existing resize logic that fits a small square for 'low' detail and constrains the short and long sides for 'high' detail, preserving aspect ratio without upscaling.",
+    "identifier": "resizeImageBuffer resizeImage resizeForVision sharp detail low high aspect ratio"
+  },
+  "l11": {
+    "terse": "sha256 hex hash token web crypto",
+    "short": "Is there a helper that SHA-256 hashes a string to hex using web crypto?",
+    "task": "I'm storing password-reset tokens and backup codes, and I want to save only a hash rather than the raw value. I'm hoping to reuse an existing function that computes a hex-encoded SHA-256 digest of a string via Node's webcrypto subtle API.",
+    "identifier": "hashToken hashBackupCode sha256 createHash crypto.subtle.digest hex"
+  },
+  "l12": {
+    "terse": "normalize domain hostname strip www lowercase",
+    "short": "How do we normalize allowed-domain entries into a bare lowercase hostname?",
+    "task": "I'm implementing an allowlist check for outbound requests where admins enter domains in mixed forms like 'WWW.Example.com' or 'https://example.com/path'. I want to reuse the existing normalizer that lowercases, strips the scheme, path and www prefix, and returns null for invalid input.",
+    "identifier": "normalizeDomain extractDomain getHostname isDomainAllowed allowedDomains www"
+  },
+  "l13": {
+    "terse": "redact API keys bearer token from logs",
+    "short": "Is there a function that redacts secrets like API keys from log messages?",
+    "task": "I'm adding error logging and need to make sure secrets never end up in the logs. I'd like to reuse an existing sanitizer that masks OpenAI-style sk- keys, Bearer authorization headers and key= query params in a log string, with optional truncation.",
+    "identifier": "redactSecrets sanitizeLog redactMessage maskApiKey Bearer sk- key= logger"
+  },
+  "l14": {
+    "terse": "anonymize ids shared conversation placeholder",
+    "short": "How do we replace internal IDs with consistent random placeholders when sharing chats?",
+    "task": "I'm building the public share link for a conversation and must not expose internal IDs. I want to reuse the existing anonymization that maps each original ID to a random prefixed replacement, reusing the same replacement for repeated values within one pass.",
+    "identifier": "anonymizeConvo anonymizeId anonymizeMessages getAnonymizedId shareLink idMap"
+  },
+  "l15": {
+    "terse": "message thread walk parent ids to root",
+    "short": "How do we get the newest message's thread by walking parent links to the root?",
+    "task": "I'm building the context for the next LLM call from messages stored flat with parentMessageId links. I want to reuse the existing logic that starts at the newest message, follows parents up to the root, returns that single branch oldest-first and can stop early at a message with a summary.",
+    "identifier": "getMessagesForConversation buildMessageThread getMessageChain parentMessageId summary"
+  },
+  "l16": {
+    "terse": "split text chunks sentence boundaries TTS",
+    "short": "Where do we split long text into sentence-aligned chunks for text-to-speech?",
+    "task": "I'm sending assistant responses to a TTS provider that caps input length at a few thousand characters. I'd like to reuse an existing splitter that breaks text into chunks under that limit, preferring boundaries after sentence punctuation or line breaks rather than mid-word.",
+    "identifier": "splitTextIntoChunks chunkText splitForTTS textToSpeech maxChunkSize sentence"
+  },
+  "l17": {
+    "terse": "promise timeout reject after ms",
+    "short": "Is there a helper that rejects a promise if it exceeds a timeout?",
+    "task": "I'm calling an external service that sometimes hangs, and I want the await to fail after a set number of milliseconds. I'm hoping there's already a utility that wraps a promise and rejects on timeout.",
+    "identifier": "withTimeout promiseTimeout timeoutPromise Promise.race setTimeout ms"
+  },
+  "l18": {
+    "terse": "token price multiplier model input output",
+    "short": "How do we get a model's token cost multiplier for prompt versus completion tokens?",
+    "task": "I'm deducting credits from a user's balance after a request and need the per-token rate for the model used. I want to reuse the existing lookup that returns separate prompt and completion multipliers, falls back to a default for unknown models and supports custom endpoint token configs.",
+    "identifier": "getMultiplier tokenValues getValueKey spendTokens balance prompt completion endpointTokenConfig"
+  },
+  "l19": {
+    "terse": "merge sort comparator non-mutating",
+    "short": "Is there a merge sort that takes a comparator and returns a new array?",
+    "task": "I need a stable sort for an array using a custom compare function, and I don't want to mutate the input. I'm hoping a merge sort utility already exists that returns a new sorted array.",
+    "identifier": "mergeSort sortArray stableSort compareFn comparator"
+  },
+  "l20": {
+    "terse": "group conversations by date Today Yesterday sidebar",
+    "short": "How do we group sidebar conversations into date sections like Today and Yesterday?",
+    "task": "I'm reworking the conversation list in the sidebar, which shows chats under headings like Today, Yesterday, Previous 7 days, Previous 30 days, then month names for this year and years for older ones. I want to reuse the existing grouping by updatedAt that also skips duplicate conversations.",
+    "identifier": "groupConversationsByDate dateGroups getDateGroup convoGroups updatedAt sidebar"
+  },
+  "l21": {
+    "terse": "extract JSON object from LLM response text",
+    "short": "How do I extract the first balanced JSON object from an LLM's text response?",
+    "task": "I'm parsing a model reply that wraps an object literal in explanatory prose. I want to reuse an existing helper that finds the first balanced pair of curly braces in the string and returns that substring so I can JSON.parse it.",
+    "identifier": "extractJSON extractJsonObject parseJsonFromText findJsonBlock braces"
+  },
+  "l22": {
+    "terse": "extract template variables double curly braces",
+    "short": "How do we list the unique {{variable}} names in a prompt template?",
+    "task": "I'm building a form that lets users fill in values before using a saved prompt. I want to reuse existing code that scans the prompt text for `{{name}}` placeholders and returns the unique variable names.",
+    "identifier": "extractVariables getTemplateVariables parsePromptVariables variableRegex mustache prompt"
+  },
+  "l23": {
+    "terse": "insert text at cursor textarea undo",
+    "short": "Is there a helper to insert text at the cursor position in a textarea?",
+    "task": "I'm adding a feature that inserts a snippet into the chat input at the current caret, replacing any selected text. I'd like to reuse an existing utility that preserves native undo, for example via execCommand, and dispatches an input event so React state updates.",
+    "identifier": "insertTextAtCursor insertAtCaret setRangeText execCommand insertText selectionStart textarea"
+  },
+  "l24": {
+    "terse": "click outside close popover hook exclude ids",
+    "short": "Is there a hook that closes a popover on outside clicks, ignoring certain element ids?",
+    "task": "I'm building a popover that should dismiss when the user clicks anywhere else on the page. I want to reuse an existing outside-click hook that listens for mousedown and lets me exclude a few elements by id.",
+    "identifier": "useOnClickOutside useClickOutside handleClickOutside mousedown excludeIds popover"
+  },
+  "l25": {
+    "terse": "debounce value hook React search",
+    "short": "Is there a React hook that debounces a value by a delay?",
+    "task": "I'm building a search input that queries the API, and I don't want a request per keystroke. I'm hoping to reuse an existing hook that returns a debounced copy of the value which only updates after the user stops typing for a given delay.",
+    "identifier": "useDebounce useDebouncedValue debounce delay setTimeout search"
+  },
+  "l26": {
+    "terse": "persist state localStorage JSON hook sync tabs",
+    "short": "Is there a hook for state persisted to localStorage and synced across tabs?",
+    "task": "I'm adding a UI preference that should still be set after reloading the page. I'd like to reuse an existing hook or atom that stores state as JSON in localStorage and listens for storage events to stay in sync with other tabs.",
+    "identifier": "useLocalStorage usePersistedState atomWithLocalStorage localStorage storage event"
+  },
+  "l27": {
+    "terse": "build message tree from flat parent ids",
+    "short": "How do we turn a flat message list with parent ids into a nested tree?",
+    "task": "I'm rendering a branching conversation from an API response that gives a flat array of messages, each with a parentMessageId. I want to reuse the existing function that nests them into a tree where every node has its children, depth and sibling index.",
+    "identifier": "buildTree buildMessageTree messageTree parentMessageId children depth siblingIndex"
+  },
+  "l28": {
+    "terse": "check user role permission React hook",
+    "short": "How do I check if the current user's role has a permission in a component?",
+    "task": "I'm adding a share button for prompts that should only show if the logged-in user is allowed to share them. I want to reuse the existing hook or helper that checks the user's role permissions for a given permission type.",
+    "identifier": "useHasAccess hasPermission checkAccess PermissionTypes Permissions SHARE role"
+  },
+  "l29": {
+    "terse": "resolve env variable placeholder config string",
+    "short": "How do we replace ${VAR} placeholders in config values with environment variables?",
+    "task": "I'm adding custom headers to the YAML config where values may be written like `${MY_API_KEY}`. I want to reuse the existing helper that substitutes such placeholders with values from process.env while leaving normal strings untouched, and applies that across a headers object.",
+    "identifier": "extractEnvVariable resolveHeaders envVarRegex replaceEnvVars process.env headers"
+  },
+  "l30": {
+    "terse": "convert JSON schema to zod",
+    "short": "Is there a function that converts a JSON Schema object into a Zod schema?",
+    "task": "I'm registering tool definitions whose parameters come in as JSON Schema objects with type, properties, required, enum and items. I'd like to reuse an existing converter that builds the equivalent Zod schema so I can validate arguments at runtime.",
+    "identifier": "convertJsonSchemaToZod jsonSchemaToZod toZodSchema zod JsonSchemaType properties"
+  },
+  "l31": {
+    "terse": "validate OpenAPI spec JSON YAML servers paths",
+    "short": "How do we validate a pasted OpenAPI spec in JSON or YAML?",
+    "task": "I'm building the form where users add an action by pasting an OpenAPI spec as JSON or YAML. I want to reuse the existing validation that parses it and checks for at least one server URL and defined paths, returning a status and message.",
+    "identifier": "validateAndParseOpenAPISpec validateOpenAPI parseSpec openapi servers paths yaml"
+  },
+  "l32": {
+    "terse": "remove null undefined keys object",
+    "short": "Is there a helper that strips null and undefined values from an object?",
+    "task": "I'm preparing a settings payload for the API and want to drop keys whose values are null or undefined, and sometimes empty strings too. I'm hoping there's an existing utility that returns a cleaned copy of the object.",
+    "identifier": "removeNullishValues removeEmpty compactObject omitNil cleanObject undefined null"
+  },
+  "l33": {
+    "terse": "format MCP tool result content provider images",
+    "short": "How do we convert MCP tool call results into provider-specific message content?",
+    "task": "I'm handling responses from an MCP server's tool call, which return content parts of text, base64 images and embedded resources. I want to reuse the existing formatter that maps those into content blocks for the target LLM provider, returning image parts separately from the text.",
+    "identifier": "formatToolContent parseToolResult formatMcpContent CallToolResult image_url resource provider"
+  },
+  "l34": {
+    "terse": "OAuth flow state manager key-value store TTL",
+    "short": "Is there a flow-state manager that tracks pending OAuth flows in a keyv store?",
+    "task": "I'm implementing an OAuth-style handshake where one request kicks off a flow and waits until a callback request marks it completed or failed. I want to reuse an existing flow manager that keeps the shared state in a key-value cache with a TTL so it works across multiple server instances.",
+    "identifier": "FlowStateManager createFlow completeFlow failFlow waitForFlow Keyv ttl oauth callback"
+  }
+}

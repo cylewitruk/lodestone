@@ -1,0 +1,386 @@
+{
+ "q01": {
+  "terse": "recursive directory tree copy test helper",
+  "short": "Is there a helper that copies a directory tree recursively for tests?",
+  "task": "I'm writing a test that needs a full copy of a directory, including every nested subdirectory and file, at a new path. Before writing my own walker I'd like to reuse any existing recursive directory copy utility.",
+  "identifier": "copy_dir_all copy_directory_recursive clone_dir_tree fn copy folder recursively test"
+ },
+ "q02": {
+  "terse": "retry remote node call exponential backoff timeout",
+  "short": "How do I retry a flaky node request with exponential backoff and a deadline?",
+  "task": "I'm calling a remote node endpoint that fails intermittently. I want to keep retrying with delays that grow exponentially until it succeeds or an overall time budget is used up, and I'd rather reuse an existing backoff retry helper than write one.",
+  "identifier": "retry_with_backoff exponential_backoff RetryPolicy with_retry_deadline retry node request"
+ },
+ "q03": {
+  "terse": "random free local TCP port tests",
+  "short": "Where can I get an unused local TCP port for a parallel integration test?",
+  "task": "My integration test spins up a node and needs a random local port to bind so parallel test runs don't clash. Is there an existing helper that hands out a free TCP port I can reuse?",
+  "identifier": "get_free_port pick_unused_port random_tcp_port alloc_test_port bind port tests"
+ },
+ "q04": {
+  "terse": "u64 to i64 SQLite checked conversion error",
+  "short": "How do I convert a u64 to SQLite's i64 with an overflow error?",
+  "task": "I'm storing a u64 in a SQLite column, which only holds signed 64-bit integers. I want a conversion that returns an error when the value doesn't fit rather than wrapping silently, and I'd like to reuse one if it already exists.",
+  "identifier": "u64_to_i64_checked to_sql_i64 sqlite_int_from_u64 try_into i64 overflow error"
+ },
+ "q05": {
+  "terse": "current unix timestamp seconds u64",
+  "short": "Is there a helper returning the current Unix time in seconds as u64?",
+  "task": "I need the current time as whole seconds since the Unix epoch, typed as u64. Rather than calling SystemTime and unwrapping each time, I'd like to reuse an existing helper for this.",
+  "identifier": "unix_time_now current_unix_secs now_timestamp_secs get_epoch_seconds SystemTime UNIX_EPOCH"
+ },
+ "q06": {
+  "terse": "replayable Read wrapper buffer consumed bytes rewind",
+  "short": "Is there a Read wrapper that records consumed bytes so I can rewind and re-decode?",
+  "task": "I'm decoding from a std::io::Read stream and may need to try a second parser on the same data. I want a wrapper that keeps the bytes already read so I can seek back to an earlier offset and decode them again, and I hope something like that already exists.",
+  "identifier": "RewindableReader ReplayReader BufferedRecorder seek_back read wrapper rewind offset"
+ },
+ "q07": {
+  "terse": "truncated format macro byte limit ellipsis",
+  "short": "How can I format arguments with a byte cap that ends in '...'?",
+  "task": "I'm building error messages from format-style interpolated arguments, but some values can be enormous. I want rendering to stop once a byte budget is reached and append '...', and I'd like to reuse an existing bounded formatting macro or writer.",
+  "identifier": "format_truncated bounded_format LimitedWriter capped_fmt macro max bytes ellipsis"
+ },
+ "q08": {
+  "terse": "macro define validated string newtype length regex TryFrom",
+  "short": "Is there a macro for string newtypes validated by max length and regex?",
+  "task": "I'm adding a new string wrapper type that should reject values over a length limit or not matching a regex in its TryFrom. I'd like to reuse an existing macro that also generates the Deref, Display and as_str boilerplate.",
+  "identifier": "define_validated_string regex_string_newtype BoundedString macro TryFrom max_len regex as_str"
+ },
+ "q09": {
+  "terse": "consensus serialization roundtrip test assert truncated EOF",
+  "short": "Is there a test helper checking consensus serialize, deserialize, and truncated-input EOF?",
+  "task": "In a unit test I want a single call that checks a value consensus-serializes to expected bytes, deserializes back to an equal value, and that dropping the final byte yields an unexpected-EOF error. I'd rather reuse an existing assertion helper for that roundtrip.",
+  "identifier": "assert_consensus_roundtrip check_codec_roundtrip test_serialize_deserialize_eof StacksMessageCodec bytes"
+ },
+ "q10": {
+  "terse": "Clarity versions from version onward list test",
+  "short": "How do I list every Clarity version starting from a given one?",
+  "task": "I'm parameterizing test cases over Clarity language versions and need all versions from, say, Clarity 3 onward. Is there an existing function that returns that range of versions I can reuse?",
+  "identifier": "clarity_versions_since ClarityVersion::all_from versions_at_least iter_versions_after Clarity3"
+ },
+ "q11": {
+  "terse": "check Clarity value matches type signature epoch",
+  "short": "How do I verify a Clarity value admits a type signature for an epoch?",
+  "task": "I have a Clarity value and a declared TypeSignature and need to know whether the value is valid for that type under a specific epoch's rules. I'd like to reuse the existing type-admission check rather than reimplement it.",
+  "identifier": "value_conforms_to_type type_check_value TypeSignature::accepts is_value_of_type epoch Value"
+ },
+ "q12": {
+  "terse": "generate contract JSON ABI after type check",
+  "short": "Where is a type-checked contract's JSON ABI interface generated?",
+  "task": "After type-checking a contract I need to emit its JSON ABI listing public and read-only functions, maps, data vars and tokens. I'm hoping there's existing code that builds this interface description I can call.",
+  "identifier": "build_contract_abi ContractInterface generate_abi_json contract_interface_from_analysis functions maps tokens"
+ },
+ "q13": {
+  "terse": "block execution cost percent of limit max dimension",
+  "short": "What percent of a block cost limit is used, by the fullest dimension?",
+  "task": "I have a block execution cost limit and some consumed cost, and want the percentage used, taken from whichever of the five resource dimensions is nearest its cap. I'd like to reuse an existing calculation for that.",
+  "identifier": "cost_percent_of_limit ExecutionCost::proportion_used max_dimension_fullness block_limit_pct runtime read_count"
+ },
+ "q14": {
+  "terse": "display slice bracketed comma separated without allocation",
+  "short": "How can I log a slice of Display items as '[a, b, c]' without allocating?",
+  "task": "I'm writing a log line and want to print a slice whose elements implement Display as '[a, b, c]'. Instead of joining into a String first, I'd like to reuse an existing wrapper type that formats the slice lazily.",
+  "identifier": "DisplaySlice SliceFmt fmt_list_display JoinedDisplay impl Display for slice wrapper"
+ },
+ "q15": {
+  "terse": "boot contract qualified identifier name mainnet",
+  "short": "How do I get a boot contract's qualified identifier from its name and network?",
+  "task": "Given a system contract name such as 'pox-4' or 'costs' plus a mainnet flag, I need its full QualifiedContractIdentifier with the right deployer address. Is there an existing helper for building this I can reuse?",
+  "identifier": "boot_contract_id_for get_boot_contract_identifier qualified_boot_code_id QualifiedContractIdentifier pox-4 mainnet"
+ },
+ "q16": {
+  "terse": "private key to testnet ST address test",
+  "short": "How do I derive a testnet single-sig ST address from a private key in tests?",
+  "task": "I have a secp256k1 private key in a test and need the testnet single-signature address ('ST...') it controls. I'd like to reuse an existing helper instead of deriving it manually from the public key.",
+  "identifier": "address_from_private_key to_testnet_address StacksAddress::from_secret_key p2pkh_testnet Secp256k1PrivateKey"
+ },
+ "q17": {
+  "terse": "structured data signing hash domain prefix",
+  "short": "How is the structured-data signature digest with domain tuple computed?",
+  "task": "I'm implementing off-chain signing of typed data like a Stacks wallet does: a fixed prefix, then the hash of a (name, version, chain-id) domain tuple, then the hash of the Clarity payload. I'd like to reuse the existing code that builds this digest.",
+  "identifier": "structured_data_hash sign_structured_data_digest make_domain_hash typed_message_hash prefix chain_id"
+ },
+ "q18": {
+  "terse": "filter observed new-block event transactions predicate test",
+  "short": "How do I pull matching transactions from test event observer block payloads?",
+  "task": "In an integration test I have the new-block JSON payloads the event observer collected, and I need every decoded transaction matching a predicate such as contract calls only. I'd like to reuse an existing helper that decodes and filters them.",
+  "identifier": "filter_observed_txs get_txs_matching decode_block_transactions find_txs_in_blocks test_observer predicate"
+ },
+ "q19": {
+  "terse": "transaction payload kind static label string metrics",
+  "short": "Is there a function returning a static name for a transaction's payload type?",
+  "task": "For logs and metrics I want a short &'static str naming what kind of payload a transaction has, like contract call, token transfer, coinbase or tenure change. Is there an existing method that maps payload variants to such labels?",
+  "identifier": "payload_type_str TransactionPayload::name tx_kind_label payload_variant_name &'static str"
+ },
+ "q20": {
+  "terse": "least supertype two Clarity type signatures",
+  "short": "How do I find the common supertype of two Clarity types or error?",
+  "task": "I'm type-checking an expression where two Clarity types must be unified, like list elements or both branches of an if. I need the narrowest type that admits both, or an error when they're incompatible, and I'd like to reuse the existing logic.",
+  "identifier": "unify_types common_supertype TypeSignature::merge join_type_signatures incompatible types error"
+ },
+ "sa01": {
+  "terse": "test timeout run body thread fail after seconds",
+  "short": "How do I make a test fail if its body doesn't finish within N seconds?",
+  "task": "I'm writing a unit test that drives a network loop and might hang. I want to run the test body on a separate thread and fail it if it takes longer than a given number of seconds, and I'd like to reuse an existing timeout helper.",
+  "identifier": "run_with_timeout test_timeout with_deadline spawn_with_timeout thread join seconds"
+ },
+ "sa02": {
+  "terse": "bloom filter bits hash count false positive",
+  "short": "How do I size bloom filter bits and hashes from error rate and count?",
+  "task": "I'm sizing a bloom filter: given an acceptable false-positive probability and the expected number of entries, I need the number of bits and the number of hash functions. Is there an existing calculation for these parameters?",
+  "identifier": "bloom_optimal_params calc_num_bits num_hashes BloomFilterParams false_positive_rate capacity"
+ },
+ "sa03": {
+  "terse": "HTTP status code reason phrase",
+  "short": "How do I get the reason phrase for an HTTP status code?",
+  "task": "I'm building an HTTP error response in the node and need the standard text for a status code, like 404 to 'Not Found' or 503 to 'Service Unavailable'. Is there an existing mapping I can reuse?",
+  "identifier": "http_reason status_text reason_phrase_for_code StatusCode::description 404 Not Found"
+ },
+ "sa04": {
+  "terse": "split request target path query percent decode",
+  "short": "How do I percent-decode the request path and separate the query string?",
+  "task": "My RPC route gets the raw HTTP request target, such as '/v2/accounts/SP%20X?proof=0'. I need the path portion percent-decoded and returned apart from the query parameters, and I'd like to reuse existing parsing.",
+  "identifier": "parse_request_path split_path_query decode_url_path HttpRequestTarget percent_decode query string"
+ },
+ "sa05": {
+  "terse": "blocking HTTP request every resolved address timeout",
+  "short": "How do I make one blocking REST call trying each resolved address with a timeout?",
+  "task": "From an event-observer client I want a single blocking REST request to a host and port with a timeout, decoding the response. It should try every address the hostname resolves to, since 'localhost' may give ::1 first while the server is IPv4-only, without retrying, and I'd like to reuse existing code.",
+  "identifier": "send_http_request_blocking http_call_with_timeout connect_any_addr to_socket_addrs request timeout"
+ },
+ "sa06": {
+  "terse": "peer IP address ASN lookup prefix table",
+  "short": "How do I map a peer's IP address to its ASN from the peer database?",
+  "task": "For peer diversity I need to determine which autonomous system number owns a remote peer's IP, using the prefix table stored in the peer DB. I'd like to reuse an existing ASN lookup rather than write a new one.",
+  "identifier": "lookup_asn asn_for_ip PeerDB::get_asn ip_to_asn prefix table autonomous system"
+ },
+ "sa07": {
+  "terse": "Uint256 prometheus gauge percent of max decimals",
+  "short": "How do I export a 256-bit integer as a 0-100 percent Prometheus gauge?",
+  "task": "I want to publish a 256-bit unsigned value to Prometheus as a gauge showing its fraction of the type's maximum, scaled to 0-100, as a float with configurable decimal precision. Is there an existing helper for that conversion?",
+  "identifier": "uint256_to_percent set_gauge_u256 u256_as_pct_of_max ratio_to_f64 prometheus gauge precision"
+ },
+ "sa08": {
+  "terse": "RPC endpoint metrics wrapper counter latency histogram",
+  "short": "How do I wrap an RPC handler to record call count and latency metrics?",
+  "task": "I'm adding an RPC endpoint and want every invocation to increment the total-calls counter and record latency in a per-path histogram when the metrics feature is on. I'd like to reuse an existing wrapper around the handler closure.",
+  "identifier": "instrument_rpc_handler with_metrics_timer record_endpoint_latency rpc_metrics_wrap histogram counter feature monitoring_prom"
+ },
+ "sa09": {
+  "terse": "parse mempool sync concatenated transactions page cursor",
+  "short": "How do I parse back-to-back transactions plus an optional 32-byte next-page cursor?",
+  "task": "I'm syncing a peer's mempool and the response body is transactions concatenated without a length prefix, possibly ending with a 32-byte cursor for the next page. I'd like to reuse existing code that decodes both the transactions and that cursor.",
+  "identifier": "decode_tx_stream parse_mempool_page read_txs_until_eof next_page_cursor Txid 32 bytes"
+ },
+ "sa10": {
+  "terse": "env var test fault injection bitcoind integration only",
+  "short": "How do I enable a fault path via env var only in bitcoind integration tests?",
+  "task": "I want a misbehaviour code path that turns on when an environment variable equals '1', but only when running in the bitcoind integration-test harness so production can never hit it. Is there an existing guard for that?",
+  "identifier": "test_env_flag_enabled is_fault_injection_on cfg_test_env_var bitcoind_test_only std::env::var"
+ },
+ "sa11": {
+  "terse": "insert raw transaction directly mempool table test",
+  "short": "How can a test insert a raw transaction straight into the mempool SQLite table?",
+  "task": "My test needs a particular pending transaction present without passing validation. I want to write the serialized tx bytes with a chosen origin, nonce and fee directly into the mempool database table, and I'd like to reuse an existing helper.",
+  "identifier": "insert_raw_mempool_tx force_add_tx_to_mempool MemPoolDB::insert_tx_unchecked mempool table origin nonce fee"
+ },
+ "sa12": {
+  "terse": "deterministic pick two distinct indices from seed",
+  "short": "How do I choose two different indices below n from a 32-byte seed deterministically?",
+  "task": "I need every node with the same 32-byte random seed to select the same pair of distinct indices in 0..n. I'd rather reuse an existing deterministic selection function than invent one.",
+  "identifier": "select_pair_from_seed sample_two_indices seeded_index_pair choose_distinct_pair seed rng"
+ },
+ "sa13": {
+  "terse": "reject block duplicate txid validation",
+  "short": "Where does block validation reject a block containing the same txid twice?",
+  "task": "I'm working on block validation and want to fail a block when any txid occurs at more than one position, logging both indices. Is there an existing duplicate-transaction check I can reuse?",
+  "identifier": "check_duplicate_txids has_dup_txs validate_unique_txids find_duplicate_tx block validation txid"
+ },
+ "sa14": {
+  "terse": "BIP-340 tagged hash sha256 Taproot",
+  "short": "Is there a BIP-340 tagged hash implementation for Taproot?",
+  "task": "I'm constructing Taproot outputs and need the BIP-340 tagged hash, which is SHA-256 over the tag's SHA-256 twice followed by the message. I'd like to reuse an existing implementation instead of writing it.",
+  "identifier": "tagged_hash bip340_tagged_hash sha256_tagged TapTweakHash taproot tag message"
+ },
+ "sa15": {
+  "terse": "join path ignore leading slash under base",
+  "short": "How do I join a base dir and a leading-slash path without replacing the base?",
+  "task": "In a test I'm combining a base directory with a file path that may begin with '/'. Unlike Path::join, I want it nested under the base regardless and the result as a String, so I'd like to reuse an existing helper.",
+  "identifier": "join_under_base path_append_relative safe_path_join concat_path strip leading slash String"
+ },
+ "sa16": {
+  "terse": "iterator adapter pair item with previous Option",
+  "short": "Is there a lazy iterator adapter yielding each item with its predecessor?",
+  "task": "I'm iterating over Copy values and want each element alongside the previous one, with None as the predecessor of the first. Is there an existing iterator adapter for that I can reuse?",
+  "identifier": "with_previous PrevIter pairwise_prev iter_with_prior Iterator adapter Option<T> prev"
+ },
+ "sa17": {
+  "terse": "random temp sqlite file path migration test",
+  "short": "How do I get a random temp .sqlite file path for a test?",
+  "task": "For a database migration test I need a randomly named .sqlite path inside the system temp dir; I'll open the connection myself. Is there an existing helper that just produces such a path?",
+  "identifier": "temp_sqlite_path random_db_path tmp_db_file make_test_db_path std::env::temp_dir sqlite"
+ },
+ "sa18": {
+  "terse": "Clarity block closure alternate cost tracker swap",
+  "short": "How do I run a closure in a Clarity block under a different cost tracker?",
+  "task": "Inside an open Clarity block I want to execute a closure metered by a different cost tracker, then restore the original and get back both the closure result and the tracker it used. I'd like to reuse existing support for swapping trackers temporarily.",
+  "identifier": "with_cost_tracker swap_cost_tracker run_with_temp_tracker ClarityBlockConnection LimitedCostTracker closure"
+ },
+ "sa19": {
+  "terse": "fee estimate weighted percentiles block space",
+  "short": "How do I compute 5th/50th/95th weighted fee-rate percentiles from sorted transactions?",
+  "task": "To produce a fee estimate I need low, middle and high (5th, 50th, 95th percentile) per-unit fee rates from a pre-sorted list of recent transactions, weighting each by the block space it used. Is there existing weighted percentile logic I can reuse?",
+  "identifier": "weighted_fee_percentiles compute_fee_rate_estimate FeeRateEstimate percentile_by_weight low middle high"
+ },
+ "sa20": {
+  "terse": "join worker thread result log error panic",
+  "short": "How do I collect a finished worker's Result, logging its error or reporting a panic?",
+  "task": "My background workers return Result<T, E>. When one completes I want a single Result: its value, its error logged as a warning tagged with the worker's name, or a specific error if the thread panicked. I'd like to reuse an existing join helper.",
+  "identifier": "join_worker collect_thread_result handle_join_result JoinHandle join panic warn worker name"
+ },
+ "sa21": {
+  "terse": "miner win probability from block commit spend distribution",
+  "short": "How do I map each miner address to its win probability from commit spends?",
+  "task": "For miner logging I want to convert the current block-commit spend distribution, where each candidate owns a slice of the 256-bit range, into a map from miner sender address to win chance as a float. Is there existing code that does that?",
+  "identifier": "miner_win_probabilities spend_distribution_to_odds compute_win_chances BurnSamplePoint HashMap address f64"
+ },
+ "sa22": {
+  "terse": "take Option connection closure restore panic if missing",
+  "short": "Is there a helper to take an Option handle, use it, and restore it?",
+  "task": "My struct stores a connection handle as an Option. I want a shorthand that takes it, gives it to a closure returning (handle, result), restores it, and panics with a message when it was already None. I'd like to reuse one if it exists.",
+  "identifier": "with_taken_conn take_and_restore borrow_option_handle with_connection Option::take closure panic"
+ },
+ "sb01": {
+  "terse": "bounded Read wrapper byte limit count bytes read",
+  "short": "Is there a Read wrapper that caps total bytes and reports how many were read?",
+  "task": "I'm decoding an untrusted message from a socket and want to wrap the std::io::Read so it yields at most N bytes and then acts like EOF. Afterwards I need the count of bytes actually consumed, and I'd like to reuse an existing wrapper.",
+  "identifier": "LimitedReader BoundReader CappedRead bytes_consumed io::Read take limit count"
+ },
+ "sb02": {
+  "terse": "rusqlite busy handler randomized backoff deadlock warning",
+  "short": "Is there a rusqlite busy handler with growing random sleeps and deadlock logging?",
+  "task": "When SQLite reports the database is locked I want a busy callback that sleeps for a randomized, increasing delay before retrying, and logs loudly with a backtrace once the wait suggests a deadlock. Is there one I can reuse?",
+  "identifier": "sqlite_busy_handler busy_backoff_callback set_busy_handler locked_db_retry backtrace deadlock"
+ },
+ "sb03": {
+  "terse": "check sqlite table exists",
+  "short": "How do I check whether a SQLite table exists?",
+  "task": "Before running a migration I need to know whether a table with a certain name is already present in the SQLite connection. Is there an existing helper that checks this?",
+  "identifier": "table_exists sqlite_has_table check_table_present sqlite_master name connection"
+ },
+ "sb04": {
+  "terse": "iterate pairs tuples odd remainder",
+  "short": "Is there an iterator that yields items two at a time with an odd leftover?",
+  "task": "I want to process any iterator in chunks of two, yielding (a, b), (c, d) tuples, and then get the single remaining element if there was an odd number. Is there an existing adapter for that I can reuse?",
+  "identifier": "PairIter pairs_with_remainder chunk_pairs tuple_pairs remainder Option leftover Iterator"
+ },
+ "sb05": {
+  "terse": "deserialize length prefixed vec max count limit",
+  "short": "How do I read a u32-length-prefixed vector rejecting counts above a limit?",
+  "task": "While deserializing a network message I need to read a sequence prefixed by a u32 count, refusing it when the count exceeds a bound I provide so a peer can't trigger a huge allocation. Is there an existing bounded read helper?",
+  "identifier": "read_vec_bounded deserialize_with_max_len read_len_prefixed_vec max_items u32 length prefix"
+ },
+ "sb06": {
+  "terse": "macro enum string labels FromStr Display all variants",
+  "short": "Is there a macro for enums with string labels, parsing, Display, and variant lists?",
+  "task": "I want to declare a fieldless enum where each variant has a fixed string name, and get string parsing, a &'static str accessor, Display, and constant arrays of all variants and names generated. Is there an existing macro for this?",
+  "identifier": "define_string_enum labeled_enum macro EnumWithNames ALL_VARIANTS ALL_NAMES FromStr Display"
+ },
+ "sb07": {
+  "terse": "weight bounded FIFO cache eviction hit miss stats",
+  "short": "Is there a size-weighted FIFO cache with hit and miss counters?",
+  "task": "I need an in-memory cache bounded by total entry weight, where each insert supplies its size, evicting oldest insertions first without reordering on reads. It should reject entries larger than the whole capacity and track hits and misses, and I'd like to reuse an existing one.",
+  "identifier": "WeightedFifoCache SizeBoundedCache FifoCache capacity weight evict oldest hits misses"
+ },
+ "sb08": {
+  "terse": "flatten call tree depth-first preorder Clarity test",
+  "short": "How do I flatten a recorded Clarity call tree into a depth-first list?",
+  "task": "In a Clarity VM test I've captured the nested tree of function calls made during contract execution. I want them as a flat pre-order list, parent before children, so I can index into it, and I'd like to reuse an existing helper.",
+  "identifier": "flatten_call_tree calls_preorder CallStackNode iter_dfs collect_invocations depth first"
+ },
+ "sb09": {
+  "terse": "assert Clarity result err uint code test",
+  "short": "Is there a test helper checking a Clarity result is (err u<code>)?",
+  "task": "In a Clarity unit test I evaluate code and want a simple boolean saying whether the result is an err response with a particular unsigned code, like (err u101). Is there an existing helper I can reuse?",
+  "identifier": "is_err_code result_is_err_uint matches_err_u128 Value::Response err code check"
+ },
+ "sb10": {
+  "terse": "strip extra tuple fields Clarity value epoch",
+  "short": "How do I recursively remove surplus tuple fields from a Clarity value for an epoch?",
+  "task": "Older nodes stored Clarity values that may have tuple fields newer epochs reject. Given the value, its expected type and the current epoch, I want to recursively drop the extra fields through lists, optionals and responses and learn if anything changed. Is there existing code for that?",
+  "identifier": "sanitize_clarity_value strip_extra_tuple_fields normalize_value_to_type TupleData prune epoch changed bool"
+ },
+ "sb11": {
+  "terse": "wait for condition poll closure timeout test",
+  "short": "Is there a test helper polling a closure until true or timeout?",
+  "task": "In an integration test I need to wait for a condition by calling a closure every 500ms until it returns true. It should stop right away on an error and fail after a timeout in seconds, and I'd like to reuse an existing helper.",
+  "identifier": "wait_until poll_condition wait_for_condition retry_until_true timeout_secs Result<bool>"
+ },
+ "sb12": {
+  "terse": "spawn regtest bitcoind test wait ready kill",
+  "short": "Is there a test harness that runs a regtest bitcoind and stops it on drop?",
+  "task": "My integration test needs an actual regtest Bitcoin daemon: launch it with extra CLI args, wait until its log shows startup has completed, and stop or kill it cleanly when the test drops it. Is there an existing controller for this?",
+  "identifier": "BitcoindProcess RegtestBitcoind spawn_bitcoind BitcoinCoreController start_bitcoind kill Drop"
+ },
+ "sb13": {
+  "terse": "JSON-RPC HTTP client basic auth timeout",
+  "short": "Is there a JSON-RPC client posting method and params with auth and timeout?",
+  "task": "I need a small client that sends a JSON envelope of method, params and id via HTTP POST to a node, supports optional basic auth and a timeout, and decodes the result field into my type or returns the server error. Is there one already?",
+  "identifier": "JsonRpcClient RpcClient send_json_rpc call_method rpc_request result error basic auth timeout"
+ },
+ "sb14": {
+  "terse": "interruptible sleep stop flag atomic thread",
+  "short": "How can a thread sleep several seconds but wake early when the node shuts down?",
+  "task": "A background thread in the node must wait several seconds but return early if the node is stopped, probably by checking a shared atomic flag roughly once per second. Is there an existing interruptible sleep helper I can reuse?",
+  "identifier": "sleep_unless_stopped interruptible_sleep sleep_while_running wait_or_shutdown AtomicBool keep_running"
+ },
+ "sb15": {
+  "terse": "signer config display log redact private key",
+  "short": "How is the signer's config printed to the log without the secret key?",
+  "task": "At signer startup I want to log its configuration readably across lines: node host, endpoint, network, chain id as hex, db path and metrics endpoint, showing the public key but hiding the private key. Is there an existing formatter for this?",
+  "identifier": "SignerConfig Display impl fmt_config_for_log config_summary redacted private key chain_id hex"
+ },
+ "sb16": {
+  "terse": "parse signers contract name reward cycle slot numbers",
+  "short": "How do I extract the two numbers from a 'signers-X-Y' contract name?",
+  "task": "I'm handling a StackerDB event with a signer message boot contract name like 'signers-1-12'. I need the two numbers, which reward-set half and which message slot, or None if the name doesn't match. Is there an existing parser?",
+  "identifier": "parse_signers_contract_name split_signer_db_name signers_contract_parts reward_cycle_parity msg_id Option"
+ },
+ "sb17": {
+  "terse": "thread CPU time nanoseconds cross-platform",
+  "short": "How do I get the current thread's CPU time in nanoseconds cross-platform?",
+  "task": "For profiling I need the CPU time consumed by just the current thread, in nanoseconds, not wall time or whole-process time, on Linux, macOS and Windows. Is there an existing helper for that?",
+  "identifier": "thread_cpu_time_ns get_thread_cputime clock_gettime CLOCK_THREAD_CPUTIME_ID GetThreadTimes cpu_nanos"
+ },
+ "sb18": {
+  "terse": "format integer thousands separators commas",
+  "short": "Is there a helper that formats integers with comma thousands separators?",
+  "task": "I'm printing statistics and want large numbers grouped with commas every three digits, so 1234567 shows as \"1,234,567\". Is there an existing formatting helper I can reuse?",
+  "identifier": "format_with_commas thousands_separator group_digits fmt_number_pretty 1,234,567"
+ },
+ "sb19": {
+  "terse": "unix seconds to ISO 8601 UTC string",
+  "short": "How do I format i64 Unix seconds as an ISO 8601 UTC string?",
+  "task": "I'm writing a JSON manifest and need to turn an i64 count of Unix seconds into a UTC timestamp like 2024-05-01T12:00:00Z. I'd prefer not to add chrono or time, so I want to reuse any existing hand-rolled conversion.",
+  "identifier": "unix_to_iso8601 format_utc_timestamp epoch_secs_to_rfc3339 civil_from_days datetime string"
+ },
+ "sb20": {
+  "terse": "read file or stdin dash CLI argument",
+  "short": "How does the CLI read a file's text, or stdin when given '-'?",
+  "task": "My CLI subcommand accepts a path and must read that file as text, falling back to stdin if the argument is '-'. Is there an existing helper that handles both cases I can reuse?",
+  "identifier": "read_file_or_stdin load_input_text read_path_or_stdin input_from_arg \"-\" stdin"
+ },
+ "sb21": {
+  "terse": "fast-check model command run counts tree summary",
+  "short": "How do I print per-command run counts as a grouped tree after a fast-check run?",
+  "task": "After a fast-check stateful property test finishes I want to report how often each model command executed, sorted by name and shown as an indented tree grouped by the prefix before the first underscore. Is there existing reporting code for this?",
+  "identifier": "reportCommandRuns printStatistics logCommandTree commandCounts groupByPrefix fast-check model"
+ },
+ "sb22": {
+  "terse": "pox-4 burn height to reward cycle TypeScript simnet",
+  "short": "How do I convert burn block height to pox-4 reward cycle in simnet?",
+  "task": "I'm writing TypeScript simnet tests for pox-4 and need to turn a burn block height into a reward cycle, using the contract's first burnchain block height and reward cycle length. Is there an existing helper I can reuse?",
+  "identifier": "burnHeightToCycle getRewardCycle burnBlockToRewardCycle calculateCycle firstBurnchainBlockHeight rewardCycleLength"
+ }
+}

@@ -1,0 +1,172 @@
+[
+ {
+  "id": "rf01",
+  "kind": "duplicate",
+  "target": {
+   "path": "stacks-node/src/tests/neon_integrations.rs",
+   "symbol": "copy_dir_all",
+   "line": 8744
+  },
+  "answers": [
+   {
+    "path": "stackslib/src/chainstate/stacks/tests/mod.rs",
+    "symbol": "copy_dir"
+   }
+  ],
+  "note": "Both recursively copy a directory tree (create_dir_all + fs::copy per file); copy_dir is iterative with &str paths and logs, same result."
+ },
+ {
+  "id": "rf02",
+  "kind": "duplicate",
+  "target": {
+   "path": "stackslib/src/core/test_util.rs",
+   "symbol": "to_addr",
+   "line": 299
+  },
+  "answers": [
+   {
+    "path": "stackslib/src/chainstate/coordinator/tests.rs",
+    "symbol": "p2pkh_from"
+   },
+   {
+    "path": "stackslib/src/chainstate/stacks/boot/mod.rs",
+    "symbol": "key_to_stacks_addr"
+   }
+  ],
+  "note": "All derive the testnet single-sig P2PKH StacksAddress from a StacksPrivateKey (StacksAddress::p2pkh(false, ..) vs from_public_keys(C32_ADDRESS_VERSION_TESTNET_SINGLESIG, P2PKH, 1, [pk]))."
+ },
+ {
+  "id": "rf03",
+  "kind": "duplicate",
+  "target": {
+   "path": "stacks-signer/src/signerdb.rs",
+   "symbol": "tmp_db_path",
+   "line": 4145
+  },
+  "answers": [
+   {
+    "path": "stackslib/src/burnchains/tests/db.rs",
+    "symbol": "tmp_db_path"
+   },
+   {
+    "path": "stackslib/src/chainstate/stacks/db/mod.rs",
+    "symbol": "tmp_db_path"
+   }
+  ],
+  "note": "Each returns temp_dir()/<prefix>-<random u64>.sqlite; only the filename prefix differs."
+ },
+ {
+  "id": "rf04",
+  "kind": "duplicate",
+  "target": {
+   "path": "stx-genesis/build.rs",
+   "symbol": "encode_hex",
+   "line": 133
+  },
+  "answers": [
+   {
+    "path": "stacks-common/src/util/hash.rs",
+    "symbol": "to_hex"
+   },
+   {
+    "path": "stacks-common/src/util/hash.rs",
+    "symbol": "bytes_to_hex"
+   },
+   {
+    "path": "stacks-common/src/util/hash.rs",
+    "symbol": "to_hex_prefixed"
+   }
+  ],
+  "note": "All turn a &[u8] into an unprefixed lowercase hex String (encode_hex via write!(\"{b:02x}\"), to_hex via a lookup table, bytes_to_hex wraps to_hex)."
+ },
+ {
+  "id": "rf05",
+  "kind": "duplicate",
+  "target": {
+   "path": "clarity/src/vm/tests/bitcoin.rs",
+   "symbol": "buff_literal",
+   "line": 48
+  },
+  "answers": [
+   {
+    "path": "clarity/src/vm/tests/crypto.rs",
+    "symbol": "buff_literal"
+   },
+   {
+    "path": "stackslib/src/chainstate/burn/operations/mod.rs",
+    "symbol": "memo_serialize"
+   }
+  ],
+  "note": "All return format!(\"0x{}\", to_hex(bytes)) for a &[u8]."
+ },
+ {
+  "id": "rf06",
+  "kind": "duplicate",
+  "target": {
+   "path": "stackslib/src/chainstate/tests/madhouse/commands/mod.rs",
+   "symbol": "ok_true",
+   "line": 72
+  },
+  "answers": [
+   {
+    "path": "clarity-types/src/types/mod.rs",
+    "symbol": "okay_true"
+   }
+  ],
+  "note": "Both build the Clarity value (ok true): Value::Response { committed: true, data: Bool(true) }."
+ },
+ {
+  "id": "rf07",
+  "kind": "duplicate",
+  "target": {
+   "path": "stackslib/src/net/api/blocksimulate.rs",
+   "symbol": "decode_simulated_block",
+   "line": 340
+  },
+  "answers": [
+   {
+    "path": "stackslib/src/net/api/blockreplay.rs",
+    "symbol": "decode_replayed_block"
+   }
+  ],
+  "note": "Identical StacksHttpResponse methods: take the OK payload as JSON and deserialize it into RPCReplayedBlock."
+ },
+ {
+  "id": "rf08",
+  "kind": "duplicate",
+  "target": {
+   "path": "stacks-node/src/nakamoto_node/miner_db.rs",
+   "symbol": "get_latest_chunk_version",
+   "line": 113
+  },
+  "answers": [
+   {
+    "path": "stacks-signer/src/signerdb.rs",
+    "symbol": "get_latest_chunk_version"
+   }
+  ],
+  "note": "Same query on the same stackerdb_tracking schema (slot_version by public_key hex and slot_id), re-implemented in the signer crate."
+ },
+ {
+  "id": "rf09",
+  "kind": "control",
+  "target": {
+   "path": "stacks-common/src/util/mod.rs",
+   "symbol": "get_epoch_time_nanos",
+   "line": 86
+  },
+  "answers": [],
+  "note": "Only function returning wall-clock time since UNIX epoch in nanoseconds; get_epoch_time_secs/ms differ in unit."
+ },
+ {
+  "id": "rf10",
+  "kind": "control",
+  "target": {
+   "path": "stackslib/src/net/api/tests/mod.rs",
+   "symbol": "bool_list_hex",
+   "line": 188
+  },
+  "answers": [],
+  "note": "Only helper that hand-builds the SIP-005 hex of a list of N `true` values; elsewhere this is done inline via Value::serialize_to_hex."
+ }
+]

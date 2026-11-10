@@ -1,0 +1,130 @@
+{
+ "ht01": {
+  "task": "I'm comparing a signed 64-bit integer against a double and need an exact ordering without casting the integer to float and losing precision at the extremes. A NaN double should produce an error, not a silent answer. I'd like to reuse an existing exact int-vs-float comparison helper.",
+  "identifier": "cmp_signed_to_float exact_int_float_order IntFloatOrdering checked_cmp_int_double i64 f64 NaN precision"
+ },
+ "ht02": {
+  "task": "I'm sorting hits by a document field whose values may be missing or of mixed numeric kinds. I need one infallible ordering function where the caller chooses whether missing values go first or last, negative signed values rank below any unsigned value, and unrelated kinds are ordered by kind. Is there an existing sort-value comparator I can reuse?",
+  "identifier": "cmp_with_missing_policy order_sort_values SortKeyValue MissingPlacement kind_rank Option Ordering u64 i64"
+ },
+ "ht03": {
+  "task": "I'm filtering an integer column with decimal limits like > 2.5 or <= 7.9 and need them converted to whole-number limits, rounding the lower bound up and the upper bound down. Limits outside the integer type's range should become unbounded or match-nothing. Is there an existing float-to-integer range bound converter?",
+  "identifier": "float_bounds_to_int round_range_limits IntegerRangeLimits ceil_lower_floor_upper Bound ceil floor overflow"
+ },
+ "ht04": {
+  "task": "I'm creating an index whose documents are presorted by a chosen column and need the settings validated first. Reject it if the column isn't stored column-wise, is a tie-breaker, has an unorderable type like bool or IP address, or if presorting is combined with caller-assigned document numbering. Is there an existing presort config validator?",
+  "identifier": "validate_presort_config check_sort_column PresortSettings SortConfigError columnar unsupported type bool ip doc numbering"
+ },
+ "ht05": {
+  "task": "I'm opening the file holding stored, retrievable document contents and need its fixed-size trailing metadata record split from the body. If the file is too short to contain it, I need a corruption error. Is there an existing trailer-splitting helper for the stored-data file?",
+  "identifier": "split_trailer read_store_tail StoredDataTrailer TRAILER_LEN corrupted too short footer bytes"
+ },
+ "ht06": {
+  "task": "I need to detect when another process commits changes to an on-disk index. A background thread should periodically hash the index metadata file and notify subscribers only when the hash changes, and it must be started at most once even if requested repeatedly. Is there an existing metadata change poller I can reuse?",
+  "identifier": "MetaHashPoller spawn_change_poller ChangeSubscribers notify_on_hash_change thread hash Once subscribers"
+ },
+ "ht07": {
+  "task": "I'm doing distinct-count estimation over string columns and precompute a hash token per dictionary id. The id-to-token lookup should be a plain array for small or dense ids and a hash map for sparse ones, with a fallback token for documents without an entry. Is there an existing dense-or-sparse lookup for this?",
+  "identifier": "TokenLookup DenseOrSparseTokens build_ordinal_hash_table missing_token cardinality ordinal Vec HashMap"
+ },
+ "ht08": {
+  "task": "I'm indexing hierarchical category paths like /electronics/phones/android and each document must also be indexed under every enclosing category (/electronics, /electronics/phones) so broader searches match. Is there an existing helper that emits all ancestor paths?",
+  "identifier": "emit_ancestor_paths expand_parent_categories CategoryPathSplitter path_prefixes slash separator prefix tokens"
+ },
+ "ht09": {
+  "task": "I have a stream of character-boundary offsets and need every (start, end) window spanning between a minimum and maximum number of characters. It should be produced lazily from a small ring of remembered offsets instead of collecting the whole input. Is there an existing sliding character-window iterator?",
+  "identifier": "CharWindowIter sliding_char_spans OffsetRing min_max_window char_indices gram ring buffer lazy"
+ },
+ "ht10": {
+  "task": "I'm parsing a text setting for the stored-document codec that names the algorithm plus an optional parenthesized level option. Unknown options must be rejected and a warning logged when the level is high enough to slow indexing. Is there an existing codec setting parser?",
+  "identifier": "parse_codec_setting CodecSpec StoreCodecConfig warn_high_level FromStr level parenthesized option"
+ },
+ "ht11": {
+  "task": "I want to keep the number of index chunks bounded by grouping chunks into tiers by order-of-magnitude size. A tier is combined once it has enough members, or sooner if one has a high share of removed documents, and very large chunks are ignored. Is there an existing tiered merge planner?",
+  "identifier": "TieredChunkCombiner group_by_size_tier plan_tier_merges removed_ratio_threshold log2 magnitude min tier size max docs"
+ },
+ "ht12": {
+  "task": "I'm combining several chunks of an index presorted on a numeric key and want them ordered by their smallest key, respecting ascending or descending order, so non-overlapping chunks can be concatenated. Text keys with incomparable per-chunk ordinals should be left as-is. Is there an existing helper that orders merge inputs by min key?",
+  "identifier": "order_chunks_by_min_key sort_inputs_for_presort ChunkKeyRange can_concatenate ascending descending numeric key ordinals"
+ },
+ "ht13": {
+  "task": "I have a shared append-only log whose tail node is held only weakly. I need get-or-create for the tail that first tries under a read lock and only takes the write lock, re-checking, if the tail was dropped. Is there an existing double-checked weak tail accessor?",
+  "identifier": "tail_or_insert upgrade_weak_tail SharedLogTail LogNode Weak RwLock double-checked upgrade"
+ },
+ "ht14": {
+  "task": "Each compressed chunk of the stored-documents file ends with a table of 32-bit start offsets plus a count. Given a document's position in the chunk I need its byte span, with the last document ending where the table starts, and an error if the position is out of bounds. Is there an existing offset-table lookup?",
+  "identifier": "doc_byte_span locate_doc_in_chunk BlockOffsetTable read_offset_entry u32 offsets count out of bounds"
+ },
+ "ht15": {
+  "task": "I have, per dictionary id, a target group number where equal targets are adjacent. I need them renumbered into dense consecutive slots plus the list of distinct targets so per-group counters fit in a small array. Is there an existing remapping helper?",
+  "identifier": "compact_group_ids remap_to_consecutive DenseSlotMap distinct_targets ordinal adjacent dedup counters"
+ },
+ "ht16": {
+  "task": "I need to read an unsigned value of up to 56 bits starting at an arbitrary bit position in a byte slice, without reading past the end when the value is near the tail. Is there an existing bit-level reader I can reuse?",
+  "identifier": "read_bits_at load_u56_at_bit BitSliceReader safe_tail_read bit offset mask little endian bounds"
+ },
+ "ht17": {
+  "task": "Before downloading many byte spans from remote object storage, I want nearby spans joined into one request when the gap is cheaper to fetch than another round trip, with results pushed onto a channel. Is there an existing range-coalescing helper for remote fetches?",
+  "identifier": "coalesce_fetch_ranges merge_nearby_spans RangeCoalescer gap_threshold object storage round trip channel"
+ },
+ "ht18": {
+  "task": "For relevance scoring after combining chunks, I need the total word count of a text column in one chunk counting only non-removed documents. Sum it from per-document length codes when available, otherwise prorate by the surviving-document share. Is there an existing helper for this?",
+  "identifier": "live_word_total estimate_column_token_count sum_surviving_lengths LengthCodeTable length norm alive docs prorate"
+ },
+ "ht19": {
+  "task": "I have entries sorted by column id and need, for each column, the contiguous range of positions its entries occupy. Is there an existing helper that groups sorted entries into per-key ranges?",
+  "identifier": "column_spans group_ranges_by_column partition_by_key ColumnSpanIndex Range sorted contiguous"
+ },
+ "ht20": {
+  "task": "I'm handling a filter on an IPv6 address column with open, closed or missing limits and need a closed start-to-end interval. Open limits step one address inward and missing limits use the column's min or max address. Is there an existing bound normalizer for IPv6 ranges?",
+  "identifier": "ipv6_bounds_to_inclusive close_addr_range Ipv6Interval step_inward Bound Excluded Ipv6Addr u128"
+ },
+ "ht21": {
+  "task": "I'm replaying pending removal requests against a chunk where a document may only be dropped by requests issued after it was added, based on sequence numbers. I need to process requests up to a target sequence number and report whether anything changed. Is there an existing removal replay helper?",
+  "identifier": "apply_pending_removals replay_until_seq RemovalReplayer seq_guard sequence number removal changed"
+ },
+ "ht22": {
+  "task": "After parsing a search string I need to detect when every clause is an exclusion, like -draft -spam, including inside nested and boosted groups, so I can add an implicit match-all clause. Is there an existing all-negative query check?",
+  "identifier": "all_clauses_excluded is_purely_negative insert_match_all ClauseKind exclusion nested group boost"
+ },
+ "ht23": {
+  "task": "For in-RAM files, each writer should report its held bytes to a shared atomic counter, but only every ~10KB to limit contention, and release it all on drop. Is there an existing batched memory accounting helper?",
+  "identifier": "RamUsageTracker MemWriterAccounting report_bytes_in_batches release_on_drop AtomicUsize threshold Drop"
+ },
+ "ht24": {
+  "task": "I want an iterator adapter that expands each item into zero or more outputs, where the callback appends into one scratch Vec reused across items instead of returning a new collection. Is there an existing buffered flat-map adapter?",
+  "identifier": "ScratchExpandIter flat_map_reuse expand_into_scratch ReusableFlatten Iterator adapter buffer closure"
+ },
+ "ht25": {
+  "task": "I need a set of integer ids up to a known maximum that only allocates storage for touched regions of the id space, with constant-time member count and ascending iteration. Is there an existing sparse id set?",
+  "identifier": "SparseIdSet LazyBlockSet PagedBitmap insert_id lazily allocated blocks len ascending iteration"
+ },
+ "ht26": {
+  "task": "I'm implementing a filter for documents with any value at a JSON path, nested keys included. When the path expands into many dynamically-typed columns I want the matching documents precomputed into one set up front rather than merging per-column cursors. Is there an existing helper for this?",
+  "identifier": "JsonPathExistsFilter precompute_path_presence collect_docs_with_any_column DocSetUnion dynamic columns nested subpaths bitmap"
+ },
+ "ht27": {
+  "task": "Loading an index folder fails on Windows on mapped shares or RAM disks because resolving the absolute path errors. I want that case to fall back to the given path while still reporting missing and non-folder paths distinctly. Is there an existing folder resolution helper?",
+  "identifier": "resolve_index_folder absolute_path_or_given FolderOpenError NotAFolder canonicalize Windows network share"
+ },
+ "ht28": {
+  "task": "For a user-typed range like title:[apple TO banana], each endpoint must pass through the column's text analyzer and produce exactly one word or be rejected, and binary column endpoints are base64-decoded. Is there an existing range endpoint parser?",
+  "identifier": "analyze_range_endpoint single_token_endpoint decode_binary_endpoint RangeBoundError tokenizer exactly one token base64"
+ },
+ "ht29": {
+  "task": "When combining chunks I want stored-document data copied as already-compressed blocks without re-encoding, only when the source has no removed documents, uses the same codec and has enough blocks; otherwise re-encode per document. Is there an existing stored-data merge routine?",
+  "identifier": "copy_compressed_blocks can_stack_store StoreMergeStrategy reencode_documents same codec no removals block count"
+ },
+ "ht30": {
+  "task": "When choosing chunks to combine in the background, committed and uncommitted chunks must be planned separately, a lone chunk with no removed documents skipped, and every plan launched without failing if one can't start. Is there an existing background merge scheduler?",
+  "identifier": "plan_background_combines schedule_chunk_merges MergeCandidatePlan launch_plans_best_effort committed uncommitted skip"
+ },
+ "ht31": {
+  "task": "Given two sorted lists of word positions, I need a yes/no on whether any position from one is within N of any position from the other, in either order. Is there an existing proximity check?",
+  "identifier": "within_distance_any has_close_pair positions_near proximity_check sorted positions slop two pointer"
+ },
+ "ht32": {
+  "task": "When query text targets a path inside a JSON column, I want it tried both as a typed number or date match and as analyzed text, and a prefix phrase rejected unless it has at least two words. Is there an existing JSON path query builder?",
+  "identifier": "json_path_query_variants typed_and_text_terms JsonValueQueryBuilder require_two_word_prefix number date analyzer phrase prefix"
+ }
+}
