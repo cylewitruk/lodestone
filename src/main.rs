@@ -163,12 +163,12 @@ fn main() -> anyhow::Result<()> {
     let client = if cli.local {
         None
     } else {
-        Client::connect(config.port)
+        Client::connect(&config.endpoint())
     };
     match cli.cmd {
         Cmd::Serve { port, on_demand } => {
             if let Some(p) = port {
-                config.port = p;
+                config.port = Some(p);
             }
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(lodestone::api::serve(config, on_demand))

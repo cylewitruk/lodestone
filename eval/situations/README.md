@@ -26,8 +26,10 @@ with Grep/Glob/Read alone, across four situations.
 
 `hook` was added after the first situation showed that, with the skill alone, agents searched in
 6% of runs and never loaded the skill; its reminder now ships in the plugin. The shipped hook
-adds the reminder only when the daemon serves the repository (`run.py` passes the daemon's port
-as `LODESTONE_PORT`), which in this setup gives the same context the `hook` runs had.
+adds the reminder only when the daemon serves the repository, which in this setup gives the same
+context the `hook` runs had. The MCP config reaches the daemon over TCP (`--port`, so start it
+with `lode serve --port N`); the hook reaches it over its Unix socket. With several daemons, give
+each its own (`LODESTONE_SOCKET`) and pass it to `run.py --socket`.
 
 No system-prompt rule in any arm: whether an agent searches is what is measured. User settings
 are excluded (`--setting-sources project`) so the user's own skills and CLAUDE.md do not leak in.

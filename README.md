@@ -101,8 +101,8 @@ subtract 1 from both. JSON results carry `line`, `line_end`, `name_line` and `na
 
 ## Daemon
 
-One daemon per machine (port 4600, or `LODESTONE_PORT`) keeps the model loaded and serves every
-repository. It runs in one of two modes:
+One daemon per user keeps the model loaded and serves every repository. It runs in one of two
+modes:
 
 | | On demand (default) | Always on |
 | ---- | ---- | ---- |
@@ -114,8 +114,11 @@ repository. It runs in one of two modes:
   CLI or REST search takes a shorter one.
 - **Catching up:** a repository is re-scanned when a session starts using it, so changes made
   while it wasn't watched are picked up.
-- **Races:** two sessions starting together can't start two daemons. The daemon binds its port
-  before loading the model, so the second one exits.
+- **Socket:** the daemon listens on `~/.lodestone/daemon.sock` (mode `0600`), so only you can
+  reach it. A lock file keeps it to one daemon: a second one, such as from two sessions starting
+  together, exits before loading the model.
+- **TCP:** off unless `port` is set (or `LODESTONE_PORT`, `lode serve --port N`), for HTTP MCP
+  clients and tools that can't use a socket. Windows always uses TCP, on 4600 by default.
 - **Log:** an auto-started daemon logs to `~/.lodestone/daemon.log`.
 
 ## How it works
@@ -135,7 +138,7 @@ repository. It runs in one of two modes:
 
 | Command | Purpose |
 | ---- | ---- |
-| `lode serve [--port N]` | run the daemon in the foreground, always on |
+| `lode serve [--port N]` | run the daemon in the foreground, always on; `--port` adds TCP |
 | `lode mcp` | MCP server over stdio; starts the daemon on demand |
 | `lode register <path>` | add, watch and index a worktree |
 | `lode index <path> [--force]` | re-index a worktree (incremental unless `--force`) |
@@ -147,6 +150,9 @@ repository. It runs in one of two modes:
 | `lode bench <eval-dir>` | retrieval quality, index time and latency |
 
 ## REST
+
+Over the socket (`curl --unix-socket ~/.lodestone/daemon.sock http://localhost/v1/repos`), or on
+`127.0.0.1:<port>` when TCP is on. MCP over HTTP is at `/mcp`.
 
 ```text
 GET  /v1/search?q=&repo=&from_unit=&language=&top_k=&include_tests=&with_body=&format=text|json
@@ -162,7 +168,8 @@ GET  /v1/repos
 `~/.lodestone/config.toml`. Every key is optional, and `LODESTONE_HOME` moves the data directory.
 
 ```toml
-port = 4600
+# socket = "/path/to/daemon.sock"  # default: <data dir>/daemon.sock
+port = 4600                 # also listen on 127.0.0.1:4600; off by default
 idle_timeout_secs = 1800    # on-demand daemon: exit this long after the last session; 0 = never
 model = "jina-code-v2"      # alias into [models]; see `lode models`
 backend = "candle-metal"    # candle-metal | candle-cpu | fastembed | remote

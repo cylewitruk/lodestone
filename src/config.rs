@@ -1,6 +1,7 @@
 //! `~/.lodestone/config.toml` and data-directory layout.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -18,7 +19,7 @@ pub enum Backend {
 }
 
 impl std::fmt::Display for Backend {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::CandleMetal => "candle-metal",
             Self::CandleCpu => "candle-cpu",
@@ -216,8 +217,12 @@ impl Default for RemoteConfig {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
-    /// Daemon port; `LODESTONE_PORT` overrides it.
-    pub port: u16,
+    /// Also serve REST and MCP over TCP on `127.0.0.1:port`; `LODESTONE_PORT` overrides it.
+    /// Without Unix sockets (Windows) the daemon always uses TCP, by default on 4600.
+    pub port: Option<u16>,
+    /// The daemon's Unix socket; by default `<data dir>/daemon.sock`, or a short path in the
+    /// runtime or temp directory when that is too long. `LODESTONE_SOCKET` overrides it.
+    pub socket: Option<PathBuf>,
     /// An auto-started daemon (`lode serve --on-demand`) exits this long after its last agent
     /// session ends; 0 keeps it running.
     pub idle_timeout_secs: u64,
@@ -263,7 +268,8 @@ impl Default for Config {
     fn default() -> Self {
         let (backend, model) = default_engine();
         Self {
-            port: 4600,
+            port: None,
+            socket: None,
             idle_timeout_secs: 1800,
             model: model.into(),
             backend,
@@ -544,9 +550,49 @@ impl Config {
             .ok()
             .and_then(|p| p.parse().ok())
         {
-            cfg.port = port;
+            cfg.port = Some(port);
+        }
+        if let Some(socket) = std::env::var_os("LODESTONE_SOCKET") {
+            cfg.socket = Some(socket.into());
         }
         Ok(cfg)
+    }
+
+    /// Where the CLI, the session hook and `lode mcp` reach the daemon.
+    #[cfg(unix)]
+    pub fn endpoint(&self) -> Endpoint {
+        Endpoint::Unix(self.socket_path())
+    }
+
+    /// Where the CLI, the session hook and `lode mcp` reach the daemon.
+    #[cfg(not(unix))]
+    pub fn endpoint(&self) -> Endpoint {
+        Endpoint::Tcp(self.tcp_port().unwrap_or(DEFAULT_PORT))
+    }
+
+    /// The TCP port the daemon listens on besides its socket, if any.
+    pub fn tcp_port(&self) -> Option<u16> {
+        if cfg!(unix) {
+            self.port
+        } else {
+            Some(self.port.unwrap_or(DEFAULT_PORT))
+        }
+    }
+
+    #[cfg(unix)]
+    pub fn socket_path(&self) -> PathBuf {
+        if let Some(p) = &self.socket {
+            return p.clone();
+        }
+        let path = self.data_dir().join("daemon.sock");
+        if path.as_os_str().len() <= MAX_SOCKET_PATH {
+            return path;
+        }
+        let dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let hash = blake3::hash(self.data_dir().as_os_str().as_encoded_bytes()).to_hex();
+        dir.join(format!("lodestone-{}.sock", &hash[..16]))
     }
 
     pub fn data_dir(&self) -> PathBuf {
@@ -557,6 +603,30 @@ impl Config {
         self.models
             .get(alias)
             .with_context(|| format!("unknown model {alias}; see `lode models`"))
+    }
+}
+
+/// The daemon's TCP port where there are no Unix sockets.
+pub const DEFAULT_PORT: u16 = 4600;
+/// Socket paths are limited to 104 bytes on macOS (108 on Linux), the terminating NUL included.
+#[cfg(unix)]
+const MAX_SOCKET_PATH: usize = 100;
+
+/// Where the daemon listens for its own clients.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Endpoint {
+    #[cfg(unix)]
+    Unix(PathBuf),
+    Tcp(u16),
+}
+
+impl fmt::Display for Endpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            #[cfg(unix)]
+            Endpoint::Unix(p) => write!(f, "unix:{}", p.display()),
+            Endpoint::Tcp(port) => write!(f, "http://127.0.0.1:{port}"),
+        }
     }
 }
 
@@ -609,10 +679,32 @@ enabled = false
 model = "bge-reranker-v2-m3"
 "#;
         let cfg: Config = toml::from_str(text).unwrap();
+        assert_eq!(cfg.port, Some(4600));
         assert_eq!(cfg.backend, Backend::CandleMetal);
         assert_eq!(cfg.languages.extensions["cljc"], "clojure");
         assert_eq!(cfg.models["jina-code-v2"].dim, 768);
         let back: Config = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(back, cfg);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_path_falls_back_to_a_short_one() {
+        let short = Config {
+            data_dir: Some("/home/me/.lodestone".into()),
+            ..Config::default()
+        };
+        assert_eq!(
+            short.socket_path(),
+            PathBuf::from("/home/me/.lodestone/daemon.sock")
+        );
+        let deep = Config {
+            data_dir: Some(PathBuf::from("/").join("d".repeat(120))),
+            ..Config::default()
+        };
+        let p = deep.socket_path();
+        assert!(p.as_os_str().len() < 104, "{}", p.display());
+        assert_eq!(p, deep.socket_path(), "stable across calls");
+        assert_ne!(p, short.socket_path());
     }
 }

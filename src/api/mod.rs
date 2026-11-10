@@ -1,10 +1,11 @@
 //! HTTP surface: the MCP tools at `POST /mcp` and the `/v1` REST API, both over one engine.
 
+mod listen;
 pub mod mcp;
 pub mod sessions;
 pub mod types;
 
-use std::net::SocketAddr;
+use std::future::IntoFuture;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -20,6 +21,7 @@ use crate::config::Config;
 use crate::index::{IndexOptions, WorktreeIndex};
 use crate::registry::{self, Engine};
 use crate::watch::Watchers;
+use listen::Listeners;
 use mcp::LodestoneMcp;
 use sessions::Leases;
 use types::{
@@ -269,10 +271,8 @@ pub fn router(state: AppState) -> Router {
 /// exits `idle_timeout_secs` after the last lease ends; otherwise it watches every registered
 /// worktree and runs until interrupted.
 pub async fn serve(config: Config, on_demand: bool) -> anyhow::Result<()> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(|e| anyhow::anyhow!("cannot listen on {addr}: {e}"))?;
+    // Before the model loads, so a second daemon started at the same time gives up at once.
+    let listeners = Listeners::bind(&config).await?;
     let idle_timeout = Duration::from_secs(config.idle_timeout_secs);
     let engine = Arc::new(tokio::task::spawn_blocking(move || Engine::from_env(config)).await??);
     {
@@ -311,15 +311,43 @@ pub async fn serve(config: Config, on_demand: bool) -> anyhow::Result<()> {
     }
     let app = router(state);
     let mode = if on_demand { ", on demand" } else { "" };
-    eprintln!("lodestone listening on http://{addr} (MCP at /mcp{mode})");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
-                _ = idle.notified() => eprintln!("lodestone: idle, exiting"),
-            }
-        })
-        .await?;
+    eprintln!(
+        "lodestone listening on {} (MCP at /mcp{mode})",
+        listeners.describe()
+    );
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let shutdown = move || {
+        let mut stopped = stopped.clone();
+        async move {
+            let _ = stopped.wait_for(|s| *s).await;
+        }
+    };
+    let mut servers = tokio::task::JoinSet::new();
+    #[cfg(unix)]
+    let (unix, socket) = listeners.unix;
+    #[cfg(unix)]
+    servers.spawn(
+        axum::serve(unix, app.clone())
+            .with_graceful_shutdown(shutdown())
+            .into_future(),
+    );
+    if let Some((tcp, _)) = listeners.tcp {
+        servers.spawn(
+            axum::serve(tcp, app)
+                .with_graceful_shutdown(shutdown())
+                .into_future(),
+        );
+    }
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = idle.notified() => eprintln!("lodestone: idle, exiting"),
+    }
+    let _ = stop.send(true);
+    while let Some(r) = servers.join_next().await {
+        r??;
+    }
+    #[cfg(unix)]
+    drop(socket);
     Ok(())
 }
 

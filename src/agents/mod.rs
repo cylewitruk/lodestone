@@ -32,7 +32,7 @@ pub const REMINDER: &str = "Before writing any new function, type or macro, when
 /// registry decides, and an on-demand daemon is started in the background so the model loads
 /// while the session starts.
 pub fn session_start(dir: &Path, config: &Config, config_path: Option<&Path>) -> Option<String> {
-    let served = match Client::connect(config.port) {
+    let served = match Client::connect(&config.endpoint()) {
         Some(c) => {
             let lease = SessionRequest {
                 id: format!("hook-{}", std::process::id()),

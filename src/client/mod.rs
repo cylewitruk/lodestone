@@ -1,5 +1,8 @@
 //! Blocking HTTP client for the daemon, and starting an on-demand daemon when none runs.
 
+#[cfg(unix)]
+mod unix;
+
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -12,7 +15,7 @@ use crate::api::types::{
     ErrorBody, IndexRequest, IndexResponse, RegisterRequest, RepoInfo, SearchRequest,
     SearchResponse, SessionRequest, SessionResponse, StatusReport, ToolRequest,
 };
-use crate::config::Config;
+use crate::config::{Config, Endpoint};
 
 /// Starts `lode serve --on-demand` in the background, detached from the caller's process group
 /// and logging to `<data dir>/daemon.log`. Losing a race with another starter is harmless: the
@@ -29,7 +32,7 @@ pub fn start_daemon(config: &Config, config_path: Option<&Path>) -> anyhow::Resu
     if let Some(p) = config_path {
         cmd.arg("--config").arg(p);
     }
-    cmd.args(["serve", "--on-demand", "--port", &config.port.to_string()])
+    cmd.args(["serve", "--on-demand"])
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
@@ -45,13 +48,14 @@ pub fn connect_or_start(
     config_path: Option<&Path>,
     wait: Duration,
 ) -> anyhow::Result<Client> {
-    if let Some(c) = Client::connect(config.port) {
+    let endpoint = config.endpoint();
+    if let Some(c) = Client::connect(&endpoint) {
         return Ok(c);
     }
     start_daemon(config, config_path)?;
     let deadline = Instant::now() + wait;
     loop {
-        if let Some(c) = Client::connect(config.port) {
+        if let Some(c) = Client::connect(&endpoint) {
             return Ok(c);
         }
         if Instant::now() >= deadline {
@@ -70,20 +74,33 @@ pub struct Client {
 }
 
 impl Client {
-    /// Returns a client if a daemon answers on `127.0.0.1:port`.
-    pub fn connect(port: u16) -> Option<Self> {
-        let probe: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_millis(300)))
-            .build()
-            .into();
-        let base = format!("http://127.0.0.1:{port}");
+    /// Returns a client if a daemon answers at `endpoint`.
+    pub fn connect(endpoint: &Endpoint) -> Option<Self> {
+        let probe = Self::agent(endpoint, Duration::from_millis(300));
+        let base = match endpoint {
+            #[cfg(unix)]
+            Endpoint::Unix(_) => "http://localhost".to_string(),
+            Endpoint::Tcp(port) => format!("http://127.0.0.1:{port}"),
+        };
         probe.get(format!("{base}/v1/repos")).call().ok()?;
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(24 * 3600)))
-            .http_status_as_error(false)
-            .build()
-            .into();
+        let agent = Self::agent(endpoint, Duration::from_secs(24 * 3600));
         Some(Self { base, agent })
+    }
+
+    fn agent(endpoint: &Endpoint, timeout: Duration) -> ureq::Agent {
+        let config = ureq::Agent::config_builder()
+            .timeout_global(Some(timeout))
+            .http_status_as_error(false)
+            .build();
+        match endpoint {
+            #[cfg(unix)]
+            Endpoint::Unix(path) => ureq::Agent::with_parts(
+                config,
+                unix::UnixConnector(path.clone()),
+                ureq::unversioned::resolver::DefaultResolver::default(),
+            ),
+            Endpoint::Tcp(_) => config.into(),
+        }
     }
 
     fn decode<T: DeserializeOwned>(
