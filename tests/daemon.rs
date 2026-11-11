@@ -6,6 +6,7 @@ use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::slice;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -1065,6 +1066,53 @@ fn a_search_naming_a_new_worktree_indexes_it() {
     assert!(out.status.success(), "{out:?}");
     let registry = fs::read_to_string(home.join("registry.json")).unwrap();
     assert!(registry.contains("\"name\": \"repo:wt\""), "{registry}");
+    assert!(lode(&home).arg("stop").status().unwrap().success());
+}
+
+#[test]
+fn register_and_index_default_to_the_current_checkout() {
+    let root = git_repo(3).canonicalize().unwrap();
+    let home = on_demand_home(3);
+    let run = |dir: &Path, args: &[&str]| {
+        let out = lode(&home).args(args).current_dir(dir).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr);
+        (out.status.success(), text)
+    };
+    let roots = || -> Vec<String> {
+        let reg: Value =
+            serde_json::from_str(&fs::read_to_string(home.join("registry.json")).unwrap()).unwrap();
+        reg["repos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["root"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let core = root.join("core");
+    let root_str = root.to_string_lossy().into_owned();
+
+    // Not registered yet: `index` refuses rather than registering the subdirectory.
+    let (ok, text) = run(&core, &["--local", "index"]);
+    assert!(!ok && text.contains("lode register"), "{text}");
+    assert!(!home.join("registry.json").exists());
+
+    // `register` from a subdirectory takes the checkout.
+    let (ok, text) = run(&core, &["--local", "register"]);
+    assert!(ok, "{text}");
+    assert_eq!(roots(), slice::from_ref(&root_str));
+
+    // `index` from a subdirectory, or naming one, re-indexes the checkout; nothing new registered.
+    let (ok, text) = run(&core.join("src"), &["--local", "index"]);
+    assert!(ok && text.starts_with(&root_str), "{text}");
+    let (ok, text) = run(&root, &["--local", "index", "core"]);
+    assert!(ok && text.starts_with(&root_str), "{text}");
+    assert_eq!(roots(), slice::from_ref(&root_str));
+
+    // The same through the daemon.
+    let (ok, text) = run(&core, &["index"]);
+    assert!(ok && text.starts_with(&root_str), "{text}");
+    assert_eq!(roots(), [root_str]);
     assert!(lode(&home).arg("stop").status().unwrap().success());
 }
 

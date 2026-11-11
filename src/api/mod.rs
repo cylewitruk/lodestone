@@ -198,7 +198,7 @@ async fn index(
     Json(req): Json<IndexRequest>,
 ) -> ApiResult<Json<IndexResponse>> {
     let w = match &req.repo {
-        Some(r) if Path::new(r).is_dir() => s.engine.register(Path::new(r))?,
+        Some(r) if Path::new(r).is_dir() => s.engine.index_target(Path::new(r))?,
         r => s.engine.resolve(r.as_deref())?,
     };
     s.watchers.watch(&s.engine, w.clone());

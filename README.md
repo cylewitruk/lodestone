@@ -185,8 +185,8 @@ modes:
 | `lode serve [--port N]` | run the daemon in the foreground, always on; `--port` adds TCP |
 | `lode stop` | stop the running daemon gracefully |
 | `lode mcp` | MCP server over stdio; starts the daemon on demand |
-| `lode register <path>` | add, watch and index a worktree |
-| `lode index <path> [--force]` | re-index a worktree (incremental unless `--force`) |
+| `lode register [path]` | add, watch and index a worktree (default: the current directory's checkout) |
+| `lode index [path] [--force]` | re-index the registered worktree containing `path` (default: the current directory; incremental unless `--force`) |
 | `lode search <query>` | search a registered worktree |
 | `lode status` | index freshness |
 | `lode install` / `lode uninstall` | wire up Claude Code and Codex |

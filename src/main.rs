@@ -46,11 +46,13 @@ enum Cmd {
     Mcp,
     /// Stop the running daemon: it finishes in-flight requests, then exits.
     Stop,
-    /// Register a worktree: canonicalize, add to the registry, watch, index if needed.
-    Register { path: PathBuf },
-    /// Index a worktree (incremental unless --force).
+    /// Register a worktree: canonicalize, add to the registry, watch, index if needed. Without a
+    /// path, the git checkout of the current directory.
+    Register { path: Option<PathBuf> },
+    /// Index a worktree (incremental unless --force): the registered worktree containing `path`,
+    /// by default the current directory.
     Index {
-        path: PathBuf,
+        path: Option<PathBuf>,
         #[arg(long)]
         force: bool,
     },
@@ -229,7 +231,13 @@ fn main() -> anyhow::Result<()> {
             rt.block_on(agents::run_relay(config, cli.config))
         }
         Cmd::Register { path } => {
-            let path = std::path::absolute(&path)?;
+            let path = match path {
+                Some(p) => std::path::absolute(&p)?,
+                None => {
+                    let cwd = std::env::current_dir()?;
+                    registry::checkout_top(&cwd).unwrap_or(cwd)
+                }
+            };
             if let Some(c) = daemon(true)? {
                 let info = c.register(&RegisterRequest {
                     path: path.to_string_lossy().to_string(),
@@ -247,7 +255,10 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Index { path, force } => {
-            let path = std::path::absolute(&path)?;
+            let path = match path {
+                Some(p) => std::path::absolute(&p)?,
+                None => indexed_here(&config)?,
+            };
             if let Some(c) = daemon(true)? {
                 let resp = c.index(&IndexRequest {
                     repo: Some(path.to_string_lossy().to_string()),
@@ -257,7 +268,7 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             let engine = Engine::from_env(config)?;
-            let w = engine.register(&path)?;
+            let w = engine.index_target(&path)?;
             let progress = spawn_progress(w.clone());
             let report = engine.index_blocking(&w, IndexOptions { force, paths: None });
             progress.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -578,6 +589,19 @@ fn here(config: &Config) -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
     let placement = registry::place(&registry::registered_roots(config), &cwd);
     (placement != registry::Placement::Outside).then(|| cwd.to_string_lossy().into_owned())
+}
+
+/// The current directory, for `lode index` without a path: it must be in a registered worktree
+/// (or a linked worktree of a registered repository, which gets registered).
+fn indexed_here(config: &Config) -> anyhow::Result<PathBuf> {
+    let cwd = std::env::current_dir()?;
+    match registry::place(&registry::registered_roots(config), &cwd) {
+        registry::Placement::Registered(_) | registry::Placement::NewWorktree(_) => Ok(cwd),
+        _ => anyhow::bail!(
+            "{} is not in a registered worktree; run `lode register` here first, or pass a path",
+            cwd.display()
+        ),
+    }
 }
 
 fn session_dir() -> anyhow::Result<PathBuf> {
