@@ -1013,3 +1013,16 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   Only a path outside every registered worktree is registered as given, as before.
 - Checked: a test runs `index` and `register` from subdirectories, in-process and through the
   daemon, and checks that only the checkout is ever registered.
+
+## CI and crates.io
+
+- The crate is published as `lodestone-cli` (`lodestone` and `lode` are taken on crates.io); the
+  library keeps the name `lodestone` and the binary `lode`. `cargo install lodestone-cli`.
+- CI (`.github/workflows/ci.yml`) on pushes to `main` and on pull requests: `fmt --check`,
+  `clippy -D warnings`, `nextest` on Linux and macOS, and `cargo package`.
+- A `v*` tag runs CI and then `cargo publish` with crates.io trusted publishing
+  (`.github/workflows/publish.yml`). `eval/`, `examples/` and `PLAN.md` stay out of the package.
+- `branch_switch_rescans_with_cache_hits` failed consistently in the full suite: a branch switch's
+  file changes and ref change can land in separate debounce windows, so the last pass is a no-op
+  rescan and its report replaced the one the test read. It now checks that switching back adds
+  nothing to the embedding cache. Eight full-suite runs passed in a row (it had failed 3 of 8).

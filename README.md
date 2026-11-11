@@ -15,10 +15,11 @@ does X?" over MCP and HTTP in well under a second.
 
 ## Quick start
 
-Requires a stable Rust toolchain (edition 2024) and a C compiler.
+Requires a stable Rust toolchain (edition 2024) and a C compiler. The crate is `lodestone-cli`; it
+installs the `lode` binary.
 
 ```bash
-cargo install --path .
+cargo install lodestone-cli       # or, from a checkout: cargo install --path .
 lode register ~/src/my-repo       # index a repository
 lode install                      # wire up Claude Code and/or Codex
 lode search "retry an HTTP call with exponential backoff"
@@ -304,3 +305,21 @@ Agent evaluations (headless Claude Code) live in [eval/harness/](eval/harness/RE
 and [eval/situations/](eval/situations/README.md). Question sets and corpora are described in
 [eval/README.md](eval/README.md). Measured results and decisions are in
 [CHANGELOG.md](CHANGELOG.md).
+
+## Releasing
+
+Pushing a `v*` tag runs CI and publishes to crates.io through trusted publishing (no stored
+token). Bump `version` in `Cargo.toml`, then:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The first release has to be published by hand (`cargo publish`), since crates.io only accepts a
+trusted publisher for a crate that exists. After it, add one under the crate's settings on
+crates.io: repository `cylewitruk/lodestone`, workflow `publish.yml`.
+
+## License
+
+MIT or Apache-2.0, at your option. The vendored Clarity grammar is MIT
+([vendor/tree-sitter-clarity/LICENSE](vendor/tree-sitter-clarity/LICENSE)).
