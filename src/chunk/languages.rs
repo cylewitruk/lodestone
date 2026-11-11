@@ -98,6 +98,11 @@ const OVERLAYS: &[(&str, &str, &str)] = &[
         include_str!("../../queries/javascript/tests.scm"),
     ),
     ("go", "tests", include_str!("../../queries/go/tests.scm")),
+    (
+        "clarity",
+        "tags",
+        include_str!("../../queries/clarity/tags.scm"),
+    ),
 ];
 
 #[allow(unused_mut, clippy::vec_init_then_push)]
@@ -166,6 +171,14 @@ fn builtins() -> Vec<Builtin> {
         tags: vec![],
         locals: "",
         extensions: &["md", "markdown"],
+    });
+    #[cfg(feature = "lang-clarity")]
+    v.push(Builtin {
+        name: "clarity",
+        grammar: super::clarity::LANGUAGE.into(),
+        tags: vec![],
+        locals: "",
+        extensions: &["clar"],
     });
     v
 }
