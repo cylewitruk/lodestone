@@ -5,7 +5,7 @@ mod unix;
 
 use std::fs::OpenOptions;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
@@ -17,10 +17,14 @@ use crate::api::types::{
 };
 use crate::config::{Config, Endpoint};
 
+/// How long to wait for a daemon to start: loading the model takes seconds, longer on CPU with a
+/// large model.
+pub const START_WAIT: Duration = Duration::from_secs(120);
+
 /// Starts `lode serve --on-demand` in the background, detached from the caller's process group
 /// and logging to `<data dir>/daemon.log`. Losing a race with another starter is harmless: the
 /// second daemon cannot bind the port and exits.
-pub fn start_daemon(config: &Config, config_path: Option<&Path>) -> anyhow::Result<()> {
+pub fn start_daemon(config: &Config, config_path: Option<&Path>) -> anyhow::Result<Child> {
     let log_path = config.data_dir().join("daemon.log");
     std::fs::create_dir_all(config.data_dir())?;
     let log = OpenOptions::new()
@@ -38,11 +42,23 @@ pub fn start_daemon(config: &Config, config_path: Option<&Path>) -> anyhow::Resu
         .stderr(log);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    cmd.spawn().context("starting the lodestone daemon")?;
-    Ok(())
+    cmd.spawn().context("starting the lodestone daemon")
 }
 
-/// Connects to the daemon, starting one on demand and waiting up to `wait` for it.
+/// Whether some daemon holds the socket's lock, i.e. is running or still loading its model.
+#[cfg(unix)]
+fn daemon_starting(config: &Config) -> bool {
+    std::fs::File::open(config.lock_path())
+        .is_ok_and(|f| matches!(f.try_lock(), Err(std::fs::TryLockError::WouldBlock)))
+}
+
+#[cfg(not(unix))]
+fn daemon_starting(_: &Config) -> bool {
+    true
+}
+
+/// Connects to the daemon, starting one on demand and waiting up to `wait` for it. Fails early
+/// when the started daemon exits and no other daemon is starting (a lost race is not a failure).
 pub fn connect_or_start(
     config: &Config,
     config_path: Option<&Path>,
@@ -52,16 +68,25 @@ pub fn connect_or_start(
     if let Some(c) = Client::connect(&endpoint) {
         return Ok(c);
     }
-    start_daemon(config, config_path)?;
+    let mut child = start_daemon(config, config_path)?;
+    let log = config.data_dir().join("daemon.log");
     let deadline = Instant::now() + wait;
     loop {
         if let Some(c) = Client::connect(&endpoint) {
             return Ok(c);
         }
+        if let Some(status) = child.try_wait()?
+            && !daemon_starting(config)
+        {
+            bail!(
+                "the lodestone daemon exited ({status}); see {}",
+                log.display()
+            );
+        }
         if Instant::now() >= deadline {
             bail!(
                 "the lodestone daemon did not start within {wait:?}; see {}",
-                config.data_dir().join("daemon.log").display()
+                log.display()
             );
         }
         std::thread::sleep(Duration::from_millis(200));

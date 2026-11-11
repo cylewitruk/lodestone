@@ -15,13 +15,11 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 
 use crate::api::mcp::{server_info, tools};
 use crate::api::types::{SessionRequest, ToolRequest};
-use crate::client::{Client, connect_or_start};
+use crate::client::{Client, START_WAIT, connect_or_start};
 use crate::config::Config;
 
 const LEASE: Duration = Duration::from_secs(90);
 const RENEW: Duration = Duration::from_secs(30);
-/// Loading the model on a cold start takes seconds; on CPU with a large model, longer.
-const START_WAIT: Duration = Duration::from_secs(120);
 
 struct Daemon {
     config: Config,

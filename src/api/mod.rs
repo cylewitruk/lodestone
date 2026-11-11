@@ -352,7 +352,7 @@ pub async fn serve(config: Config, on_demand: bool) -> anyhow::Result<()> {
 }
 
 /// Expires leases, stops watching worktrees no lease holds, and signals `idle` once no lease has
-/// been live for `idle_timeout` (never, when it is zero).
+/// been live for `idle_timeout` (never, when it is zero) and no indexing pass is running.
 async fn sweep(s: AppState, idle_timeout: Duration, idle: Arc<tokio::sync::Notify>) {
     loop {
         tokio::time::sleep(SWEEP).await;
@@ -366,7 +366,10 @@ async fn sweep(s: AppState, idle_timeout: Duration, idle: Arc<tokio::sync::Notif
                 s.watchers.unwatch(&s.engine, &root);
             }
         }
-        if !idle_timeout.is_zero() && idle_for.is_some_and(|d| d >= idle_timeout) {
+        if !idle_timeout.is_zero()
+            && idle_for.is_some_and(|d| d >= idle_timeout)
+            && !s.watchers.indexing()
+        {
             idle.notify_one();
             return;
         }

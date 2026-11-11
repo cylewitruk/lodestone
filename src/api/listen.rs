@@ -25,7 +25,7 @@ impl Listeners {
     /// without one, the port).
     pub async fn bind(config: &Config) -> anyhow::Result<Self> {
         #[cfg(unix)]
-        let unix = Socket::bind(config.socket_path())?;
+        let unix = Socket::bind(config.socket_path(), config.lock_path())?;
         let tcp = match config.tcp_port() {
             Some(port) => {
                 let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -63,14 +63,13 @@ pub struct Socket {
 
 #[cfg(unix)]
 impl Socket {
-    fn bind(path: PathBuf) -> anyhow::Result<(tokio::net::UnixListener, Self)> {
+    fn bind(path: PathBuf, lock_path: PathBuf) -> anyhow::Result<(tokio::net::UnixListener, Self)> {
         use std::fs::{OpenOptions, Permissions, TryLockError};
         use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
-        let lock_path = path.with_extension("lock");
         let lock = OpenOptions::new()
             .create(true)
             .write(true)

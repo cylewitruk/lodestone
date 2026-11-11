@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use lodestone::agents::{self, Harness, Scope, Target};
 use lodestone::api::types::{IndexRequest, RegisterRequest, SearchRequest};
 use lodestone::bench::{self, BenchOptions};
-use lodestone::client::Client;
+use lodestone::client::{self, Client};
 use lodestone::config::{Backend, Config};
 use lodestone::embed;
 use lodestone::index::IndexOptions;
@@ -22,7 +22,7 @@ struct Cli {
     /// Config file (default: ~/.lodestone/config.toml).
     #[arg(long, global = true)]
     config: Option<PathBuf>,
-    /// Never talk to a running daemon; run in-process.
+    /// Run in-process: neither use nor start a daemon.
     #[arg(long, global = true)]
     local: bool,
     #[command(subcommand)]
@@ -160,10 +160,18 @@ fn main() -> anyhow::Result<()> {
         .init();
     let cli = Cli::parse();
     let mut config = Config::load(cli.config.as_deref())?;
-    let client = if cli.local {
-        None
-    } else {
-        Client::connect(&config.endpoint())
+    // `search`, `register` and `index` start an on-demand daemon when none runs, like `lode mcp`;
+    // `status` only uses one that is already running.
+    let daemon = |start: bool| -> anyhow::Result<Option<Client>> {
+        Ok(match (cli.local, start) {
+            (true, _) => None,
+            (false, true) => Some(client::connect_or_start(
+                &config,
+                cli.config.as_deref(),
+                client::START_WAIT,
+            )?),
+            (false, false) => Client::connect(&config.endpoint()),
+        })
     };
     match cli.cmd {
         Cmd::Serve { port, on_demand } => {
@@ -179,12 +187,12 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::Register { path } => {
             let path = std::path::absolute(&path)?;
-            if let Some(c) = client {
+            if let Some(c) = daemon(true)? {
                 let info = c.register(&RegisterRequest {
                     path: path.to_string_lossy().to_string(),
                 })?;
                 println!(
-                    "registered {} ({}); indexing in the daemon",
+                    "registered {} ({}); indexing in the daemon (`lode status` shows progress)",
                     info.root, info.name
                 );
                 return Ok(());
@@ -197,7 +205,7 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::Index { path, force } => {
             let path = std::path::absolute(&path)?;
-            if let Some(c) = client {
+            if let Some(c) = daemon(true)? {
                 let resp = c.index(&IndexRequest {
                     repo: Some(path.to_string_lossy().to_string()),
                     force,
@@ -235,7 +243,7 @@ fn main() -> anyhow::Result<()> {
                 kinds: Vec::new(),
                 with_body,
             };
-            let resp = match client {
+            let resp = match daemon(true)? {
                 Some(c) => c.search(&req)?,
                 None => Engine::from_env(config)?.search(&req)?,
             };
@@ -256,7 +264,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Status { repo, json } => {
-            let st = match client {
+            let st = match daemon(false)? {
                 Some(c) => c.status(repo.as_deref())?,
                 None => Engine::from_env(config)?.status(repo.as_deref())?,
             };
