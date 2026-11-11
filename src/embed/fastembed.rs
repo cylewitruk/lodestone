@@ -34,15 +34,17 @@ impl FastembedEmbedder {
             .fastembed
             .as_deref()
             .with_context(|| format!("{} has no fastembed equivalent", config.hf_repo))?;
-        let mut opts = TextInitOptions::new(variant(name)?)
+        let opts = TextInitOptions::new(variant(name)?)
             .with_cache_dir(cache_dir.join("fastembed"))
             .with_max_length(config.max_tokens)
             .with_show_download_progress(false);
         // `LODESTONE_FASTEMBED_EP=coreml` routes ONNX Runtime through CoreML on macOS.
         #[cfg(target_os = "macos")]
-        if std::env::var("LODESTONE_FASTEMBED_EP").as_deref() == Ok("coreml") {
-            opts = opts.with_execution_providers(vec![ort::ep::CoreML::default().build()]);
-        }
+        let opts = if std::env::var("LODESTONE_FASTEMBED_EP").as_deref() == Ok("coreml") {
+            opts.with_execution_providers(vec![ort::ep::CoreML::default().build()])
+        } else {
+            opts
+        };
         Ok(Self {
             model: Mutex::new(TextEmbedding::try_new(opts)?),
             config: config.clone(),
