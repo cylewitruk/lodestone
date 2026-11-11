@@ -1,44 +1,11 @@
 //! Claude Code transcripts: `<projects>/<project>/<session>.jsonl`, plus subagents in
-//! `<session>/subagents/*.jsonl` under their parent's session id. A project directory is named
-//! after its working directory; each line carries its session, working directory and timestamp.
-//! Tool calls are `tool_use` blocks and their results `tool_result` blocks.
-
-use std::fs;
-use std::path::{Path, PathBuf};
+//! `<session>/subagents/*.jsonl` under their parent's session id. Each line carries its session,
+//! working directory and timestamp. Tool calls are `tool_use` blocks and their results
+//! `tool_result` blocks.
 
 use serde_json::Value;
 
-use super::{Call, Event, Kind, jsonl_files, query_of, text_of, time};
-
-/// The transcripts of projects whose working directory may be in or under one of `roots`. Other
-/// projects are not opened.
-pub fn files(dir: &Path, roots: &[PathBuf]) -> Vec<PathBuf> {
-    let prefixes: Vec<String> = roots.iter().map(|r| project_name(r)).collect();
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for e in entries.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        // A prefix match can also be a sibling (`/a/b` and `/a/b-c`); each line's `cwd` decides.
-        if prefixes
-            .iter()
-            .any(|p| name == *p || name.starts_with(&format!("{p}-")))
-        {
-            out.extend(jsonl_files(&e.path()));
-        }
-    }
-    out
-}
-
-/// A working directory's project directory name: every character but ASCII letters and digits
-/// becomes `-`.
-fn project_name(cwd: &Path) -> String {
-    cwd.to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
-}
+use super::{Call, Event, Kind, Target, query_of, text_of, time};
 
 pub fn parse(line: &str) -> Vec<Event> {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
@@ -75,16 +42,18 @@ pub fn parse(line: &str) -> Vec<Event> {
 
 fn call(session: &str, ts: i64, b: &Value) -> Option<Call> {
     let input = &b["input"];
-    let (kind, query, path) = match b["name"].as_str()? {
-        "Grep" => (Kind::Grep, None, None),
-        "Glob" => (Kind::Glob, None, None),
+    let path_of = |key: &str| input[key].as_str().map(|p| Target::Path(p.into()));
+    let (kind, query, path, target) = match b["name"].as_str()? {
+        "Grep" => (Kind::Grep, None, None, path_of("path")),
+        "Glob" => (Kind::Glob, None, None, path_of("path")),
         "Read" => (
             Kind::Read,
             None,
             input["file_path"].as_str().map(String::from),
+            path_of("file_path"),
         ),
         "Bash" if input["command"].as_str().is_some_and(is_shell_search) => {
-            (Kind::Grep, None, None)
+            (Kind::Grep, None, None, None)
         }
         // `mcp__lodestone__…`, or `mcp__plugin_lodestone_lodestone__…` from the plugin.
         name => {
@@ -94,7 +63,8 @@ fn call(session: &str, ts: i64, b: &Value) -> Option<Call> {
                 .rsplit("__")
                 .next()?;
             let kind = Kind::lodestone(tool)?;
-            (kind, Some(query_of(kind, input)), None)
+            let target = input["repo"].as_str().map(|r| Target::Repo(r.into()));
+            (kind, Some(query_of(kind, input)), None, target)
         }
     };
     Some(Call {
@@ -104,6 +74,7 @@ fn call(session: &str, ts: i64, b: &Value) -> Option<Call> {
         ts,
         query,
         path,
+        target,
         done: None,
     })
 }
@@ -125,14 +96,6 @@ fn is_shell_search(cmd: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn project_names_match_claude_code() {
-        assert_eq!(
-            project_name(Path::new("/Users/me/src/lode.stone/.claude/worktrees/x")),
-            "-Users-me-src-lode-stone--claude-worktrees-x"
-        );
-    }
 
     #[test]
     fn shell_searches() {

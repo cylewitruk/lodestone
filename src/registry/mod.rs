@@ -52,6 +52,24 @@ pub fn registered_roots(config: &Config) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Registered worktrees as (name, root), read without starting an engine.
+pub fn registered(config: &Config) -> Vec<(String, PathBuf)> {
+    read_registry(&config.data_dir().join("registry.json"))
+        .repos
+        .into_iter()
+        .map(|r| (r.name, r.root))
+        .collect()
+}
+
+/// The shared git directory of the repository `dir` is in, and whether `dir` is in a linked
+/// worktree (`git worktree add`) rather than the main checkout.
+pub fn git_repository(dir: &Path) -> Option<(PathBuf, bool)> {
+    Checkout::of(dir).map(|c| {
+        let linked = c.is_linked();
+        (c.common, linked)
+    })
+}
+
 /// Which index serves a directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Placement {

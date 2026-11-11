@@ -7,19 +7,20 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{Call, Kind};
 
-/// Bumped when parsing changes, so every transcript is read again.
-const PARSER_VERSION: &str = "1";
+/// Bumped when parsing or the schema changes, so every transcript is read again.
+const PARSER_VERSION: &str = "2";
+
+const META: &str = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);";
 
 const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS files (
     path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
     offset INTEGER NOT NULL, head_len INTEGER NOT NULL, head BLOB NOT NULL,
     session TEXT, cwd TEXT);
 CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY, harness TEXT NOT NULL, repo TEXT NOT NULL, started INTEGER NOT NULL);
+    id TEXT PRIMARY KEY, harness TEXT NOT NULL, repo TEXT, started INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS calls (
-    file TEXT NOT NULL, id TEXT NOT NULL, session TEXT NOT NULL, kind TEXT NOT NULL,
+    file TEXT NOT NULL, id TEXT NOT NULL, session TEXT NOT NULL, repo TEXT, kind TEXT NOT NULL,
     ts INTEGER NOT NULL, query TEXT, path TEXT, done_ts INTEGER, results TEXT,
     is_error INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (file, id));
@@ -41,18 +42,23 @@ pub struct FileState {
 pub struct SessionRow {
     pub id: String,
     pub harness: String,
-    pub repo: String,
+    /// The registered repository its working directory is in, if any.
+    pub repo: Option<String>,
     pub started: i64,
 }
 
 pub struct CallRow {
     pub session: String,
+    /// The repository it worked in; unknown only for some lodestone searches.
+    pub repo: Option<String>,
     pub kind: Kind,
     pub ts: i64,
     pub query: Option<String>,
     pub path: Option<String>,
     pub done_ts: Option<i64>,
     pub results: Vec<String>,
+    /// The search failed (an error, or denied by the harness).
+    pub is_error: bool,
 }
 
 pub struct Store {
@@ -62,20 +68,44 @@ pub struct Store {
 impl Store {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
-        conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(META)?;
         let version: Option<String> = conn
             .query_row("SELECT value FROM meta WHERE key = 'parser'", [], |r| {
                 r.get(0)
             })
             .optional()?;
         if version.as_deref() != Some(PARSER_VERSION) {
-            conn.execute_batch("DELETE FROM files; DELETE FROM sessions; DELETE FROM calls;")?;
+            // Read everything again, into the current schema.
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS calls;",
+            )?;
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('parser', ?1)",
                 [PARSER_VERSION],
             )?;
         }
+        conn.execute_batch(SCHEMA)?;
         Ok(Self { conn })
+    }
+
+    /// Forgets everything read when the registered repositories changed (`repos`), since calls
+    /// in repositories that were not registered were not kept.
+    pub fn reset_unless_registered(&self, repos: &str) -> anyhow::Result<()> {
+        let seen: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'repos'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if seen.as_deref() != Some(repos) {
+            self.conn
+                .execute_batch("DELETE FROM files; DELETE FROM sessions; DELETE FROM calls;")?;
+            self.conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('repos', ?1)",
+                [repos],
+            )?;
+        }
+        Ok(())
     }
 
     pub fn begin(&self) -> anyhow::Result<()> {
@@ -132,17 +162,30 @@ impl Store {
         Ok(())
     }
 
-    /// Records a session; a known session keeps its repository and earliest start.
-    pub fn add_session(&self, id: &str, harness: &str, repo: &str, ts: i64) -> anyhow::Result<()> {
+    /// Records a session; a known session keeps its earliest start and first known repository.
+    pub fn add_session(
+        &self,
+        id: &str,
+        harness: &str,
+        repo: Option<&str>,
+        ts: i64,
+    ) -> anyhow::Result<()> {
         self.conn.execute(
             "INSERT INTO sessions (id, harness, repo, started) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (id) DO UPDATE SET started = min(started, excluded.started)",
+             ON CONFLICT (id) DO UPDATE SET started = min(started, excluded.started),
+                 repo = coalesce(repo, excluded.repo)",
             params![id, harness, repo, ts],
         )?;
         Ok(())
     }
 
-    pub fn add_call(&self, file: &str, session: &str, c: &Call) -> anyhow::Result<()> {
+    pub fn add_call(
+        &self,
+        file: &str,
+        session: &str,
+        repo: Option<&str>,
+        c: &Call,
+    ) -> anyhow::Result<()> {
         let (done_ts, results, is_error) = match &c.done {
             Some((ts, text, err)) if c.kind.is_lodestone() => {
                 (Some(*ts), Some(result_paths(text).join("\n")), *err)
@@ -150,9 +193,22 @@ impl Store {
             _ => (None, None, false),
         };
         self.conn.execute(
-            "INSERT OR IGNORE INTO calls (file, id, session, kind, ts, query, path, done_ts, results, is_error)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![file, c.id, session, c.kind.as_str(), c.ts, c.query, c.path, done_ts, results, is_error],
+            "INSERT OR IGNORE INTO calls
+                 (file, id, session, repo, kind, ts, query, path, done_ts, results, is_error)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                file,
+                c.id,
+                session,
+                repo,
+                c.kind.as_str(),
+                c.ts,
+                c.query,
+                c.path,
+                done_ts,
+                results,
+                is_error
+            ],
         )?;
         Ok(())
     }
@@ -191,33 +247,42 @@ impl Store {
 
     pub fn calls(&self) -> anyhow::Result<Vec<CallRow>> {
         let mut st = self.conn.prepare(
-            "SELECT session, kind, ts, query, path, done_ts, results FROM calls ORDER BY ts",
+            "SELECT session, repo, kind, ts, query, path, done_ts, results, is_error FROM calls ORDER BY ts",
         )?;
         let rows = st.query_map([], |r| {
-            let kind: String = r.get(1)?;
-            let results: Option<String> = r.get(6)?;
+            let kind: String = r.get(2)?;
+            let results: Option<String> = r.get(7)?;
             Ok((
                 kind,
-                CallRow {
-                    session: r.get(0)?,
-                    kind: Kind::Read,
-                    ts: r.get(2)?,
-                    query: r.get(3)?,
-                    path: r.get(4)?,
-                    done_ts: r.get(5)?,
-                    results: results
-                        .map(|s| s.lines().map(String::from).collect())
-                        .unwrap_or_default(),
-                },
+                r.get(0)?,
+                r.get(1)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                results,
+                r.get::<_, bool>(8)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (kind, mut call) = row?;
-            if let Some(k) = Kind::parse(&kind) {
-                call.kind = k;
-                out.push(call);
-            }
+            let (kind, session, repo, ts, query, path, done_ts, results, is_error) = row?;
+            let Some(kind) = Kind::parse(&kind) else {
+                continue;
+            };
+            out.push(CallRow {
+                session,
+                repo,
+                kind,
+                ts,
+                query,
+                path,
+                done_ts,
+                results: results
+                    .map(|s: String| s.lines().map(String::from).collect())
+                    .unwrap_or_default(),
+                is_error,
+            });
         }
         Ok(out)
     }
