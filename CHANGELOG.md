@@ -1013,3 +1013,14 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   Only a path outside every registered worktree is registered as given, as before.
 - Checked: a test runs `index` and `register` from subdirectories, in-process and through the
   daemon, and checks that only the checkout is ever registered.
+
+## Sessions keep the worktrees they search watched
+
+- A session's tool call that names a worktree with `repo` now holds that worktree for as long as
+  the session's lease lives. Before, only the 10-minute request lease did: a Codex session (started
+  in its own directory, so its lease holds no worktree) whose searches were further apart found
+  the worktree unwatched each time, paid a full rescan, and got `stale: pending: full rescan` on
+  nearly every result.
+- Checked: a test searches a worktree from a session outside it, waits past the request lease and
+  several sweeps, and finds it still watched until the session is released. It fails on the
+  previous code.

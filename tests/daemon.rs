@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use lodestone::api::mcp::{SEMANTIC_DESCRIPTION, SIMILAR_DESCRIPTION, STATUS_DESCRIPTION};
 use lodestone::api::types::{
-    RegisterRequest, SearchResponse, SessionRequest, StatusOverview, StatusReport,
+    RegisterRequest, SearchResponse, SessionRequest, StatusOverview, StatusReport, ToolRequest,
 };
 use lodestone::client::Client;
 use lodestone::config::Config;
@@ -651,6 +651,58 @@ fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// A session outside every registered worktree (Codex starts in its own directory) that searches
+/// one by `repo` keeps it watched for as long as the session, not just the request lease.
+#[test]
+fn a_session_keeps_the_worktrees_it_searched_watched() {
+    let root = repo(3);
+    let home = on_demand_home(4);
+    let mut child = lode(&home)
+        .args(["serve", "--on-demand"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until("the daemon", Duration::from_secs(30), || {
+        client(&home).is_some()
+    });
+    let c = client(&home).unwrap();
+    let watcher = || c.status(None).unwrap().watcher;
+    c.register(&RegisterRequest {
+        path: root.to_string_lossy().into_owned(),
+    })
+    .unwrap();
+    let elsewhere = tempdir();
+    c.session(&SessionRequest {
+        id: "s1".into(),
+        cwd: elsewhere.to_string_lossy().into_owned(),
+        ttl_secs: 60,
+    })
+    .unwrap();
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("query".into(), json!("helper that computes a value"));
+    arguments.insert("repo".into(), json!(root.to_string_lossy()));
+    c.tool(&ToolRequest {
+        name: "semantic_code_search".into(),
+        arguments,
+        session: Some("s1".into()),
+    })
+    .unwrap()
+    .unwrap();
+
+    // Past the request lease (capped at the 4 s idle timeout) and a few sweeps: still watched.
+    std::thread::sleep(Duration::from_secs(9));
+    assert!(watcher().starts_with("watching"), "{}", watcher());
+
+    // The session ends: unwatched.
+    c.release("s1").unwrap();
+    wait_until("unwatch", Duration::from_secs(15), || {
+        watcher().starts_with("not watched")
+    });
+    child.kill().unwrap();
+    child.wait().unwrap();
 }
 
 #[test]

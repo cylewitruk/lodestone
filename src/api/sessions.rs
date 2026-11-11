@@ -1,6 +1,7 @@
 //! Agent sessions as leases. A session (the `lode mcp` relay, renewing every 30 s) or a request
-//! that names a repository holds a lease on a worktree root. An on-demand daemon watches only
-//! leased roots and exits once no lease has been live for its idle timeout.
+//! that names a repository holds a lease on a worktree root; a session also keeps every worktree
+//! its tool calls named. An on-demand daemon watches only leased roots and exits once no lease has
+//! been live for its idle timeout.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -8,6 +9,8 @@ use std::time::{Duration, Instant};
 
 struct Lease {
     root: Option<PathBuf>,
+    /// Other worktrees held while the lease lives.
+    held: BTreeSet<PathBuf>,
     expires: Instant,
 }
 
@@ -27,13 +30,20 @@ impl Leases {
 
     /// Takes or renews lease `id` on `root` for `ttl`.
     pub fn renew(&mut self, id: &str, root: Option<PathBuf>, ttl: Duration, now: Instant) {
-        self.leases.insert(
-            id.to_string(),
-            Lease {
-                root,
-                expires: now + ttl,
-            },
-        );
+        let lease = self.leases.entry(id.to_string()).or_insert_with(|| Lease {
+            root: None,
+            held: BTreeSet::new(),
+            expires: now,
+        });
+        lease.root = root;
+        lease.expires = now + ttl;
+    }
+
+    /// Keeps `root` leased for as long as lease `id` lives (nothing, if there is no such lease).
+    pub fn hold(&mut self, id: &str, root: PathBuf) {
+        if let Some(l) = self.leases.get_mut(id) {
+            l.held.insert(root);
+        }
     }
 
     pub fn release(&mut self, id: &str, now: Instant) {
@@ -64,7 +74,7 @@ impl Leases {
         }
         self.leases
             .values()
-            .filter_map(|l| l.root.clone())
+            .flat_map(|l| l.root.iter().chain(&l.held).cloned())
             .collect()
     }
 
@@ -100,6 +110,18 @@ mod tests {
         // The last lease ended at t0 + 2 min, however late the sweep notices.
         assert!(l.sweep(t0 + 5 * MIN).is_empty());
         assert_eq!(l.idle_for(t0 + 5 * MIN), Some(3 * MIN));
+    }
+
+    #[test]
+    fn a_lease_keeps_what_it_holds_across_renewals() {
+        let t0 = Instant::now();
+        let mut l = Leases::new(t0);
+        l.renew("relay-1", None, MIN, t0);
+        l.hold("relay-1", "/a".into());
+        l.hold("unknown", "/b".into());
+        l.renew("relay-1", None, MIN, t0 + MIN / 2);
+        assert_eq!(l.sweep(t0 + MIN), BTreeSet::from([PathBuf::from("/a")]));
+        assert!(l.sweep(t0 + 2 * MIN).is_empty());
     }
 
     #[test]
