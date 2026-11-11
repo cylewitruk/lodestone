@@ -844,3 +844,18 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
 - Checked: integration tests cover a CLI that registers and searches through a daemon it
   started (which then exits when idle), `status` leaving no daemon behind, and a daemon that
   cannot start failing the command in about a second.
+
+## Clarity
+
+- Built-in Clarity support (`lang-clarity`, on by default) for `.clar` files. The grammar,
+  [xlittlerag/tree-sitter-clarity](https://github.com/xlittlerag/tree-sitter-clarity) (MIT,
+  Clarity 6), is not on crates.io, so its generated parser is vendored in
+  `vendor/tree-sitter-clarity/` and compiled by a new `build.rs`.
+- `queries/clarity/tags.scm` makes one item per `define-public`, `define-read-only`,
+  `define-private` (`function`), `define-trait` (`interface`) and its signatures (`method`),
+  `define-constant`, `define-data-var`, `define-map` and token definitions. The `;;` comments
+  directly above a definition are its doc; a file header separated by a blank line is not.
+- Checked on stacks-core `95c6a45eed`: all 1,935 definitions in its 120 indexed `.clar` files
+  became items, plus 20 trait signatures. The only misses are two type-checker fixtures that are
+  deliberately invalid Clarity. (`contrib/.../pox-5.clar` is a symlink; it is indexed once, at
+  its real path.) Existing indexes pick up `.clar` files on their next scan.

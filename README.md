@@ -5,7 +5,7 @@ repositories and worktrees, keeps them fresh from file events, and answers "what
 does X?" over MCP and HTTP in well under a second.
 
 - **Definitions, not chunks:** tree-sitter tags queries for Rust, Python, TypeScript/JavaScript,
-  Go and Markdown; any other grammar through tree-sitter's own config.
+  Go, Clarity and Markdown; any other grammar through tree-sitter's own config.
 - **Embeddings:** jina-embeddings-v2-base-code on GPU (Metal) or CPU. A reranker and BM25 fusion
   are available but off by default.
 - **Shared cache:** a content-addressed embedding cache, so another worktree of the same
@@ -226,7 +226,8 @@ identifier_lexical_weight = 0.0
 **Languages:**
 
 - **Built-in grammars** are Cargo features, all on by default: `lang-rust`, `lang-python`,
-  `lang-typescript`, `lang-go`, `lang-markdown`.
+  `lang-typescript`, `lang-go`, `lang-markdown`, `lang-clarity`. Clarity's grammar isn't on
+  crates.io, so it is vendored as generated C in `vendor/tree-sitter-clarity/`.
 - **Adding one needs no code:** clone a grammar into one of tree-sitter's `parser-directories` and
   its `queries/tags.scm` is used.
 - **Extra queries** (`tags.scm`, `tests.scm`) go in `~/.lodestone/queries/<language>/`.

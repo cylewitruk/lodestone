@@ -1,6 +1,8 @@
 //! Chunking: one item per definition as identified by the grammar's tags query; files without a
 //! grammar (or without any definitions) are chunked into prose paragraphs.
 
+#[cfg(feature = "lang-clarity")]
+mod clarity;
 pub mod languages;
 
 use std::cell::RefCell;
@@ -632,6 +634,80 @@ async fn async_test() {}
         assert_eq!(bar.kind, "method");
         assert_eq!(bar.doc, "Do bar.");
         assert!(items.iter().find(|i| i.name == "test_x").unwrap().is_test);
+    }
+
+    #[cfg(feature = "lang-clarity")]
+    #[test]
+    fn clarity_definitions_with_docs() {
+        let src = br#";; Token contract (file header, not a doc).
+
+;; Raised when the caller is not the owner.
+(define-constant ERR_NOT_OWNER (err u100))
+(define-constant ERR_ALIAS ERR_NOT_OWNER)
+(define-data-var owner principal tx-sender)
+;; Balances by holder.
+(define-map balances principal uint)
+(define-fungible-token stx-token)
+(define-non-fungible-token badge uint)
+
+(define-trait transferable
+  ((transfer (uint principal) (response bool uint))))
+
+;; Move `amount` from the caller to `to`.
+;; Fails unless the caller holds enough.
+(define-public (transfer (amount uint) (to principal))
+  (ok true))
+
+(define-read-only (get-balance (who principal))
+  (default-to u0 (map-get? balances who)))
+
+(define-private (is-owner)
+  (is-eq tx-sender (var-get owner)))
+"#;
+        let items = chunker().chunk("contracts/token.clar", src);
+        let kinds: Vec<_> = items
+            .iter()
+            .filter(|i| i.tagged)
+            .map(|i| (i.kind.as_str(), i.name.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("constant", "ERR_NOT_OWNER"),
+                ("constant", "ERR_ALIAS"),
+                ("variable", "owner"),
+                ("map", "balances"),
+                ("token", "stx-token"),
+                ("token", "badge"),
+                ("interface", "transferable"),
+                ("method", "transfer"),
+                ("function", "transfer"),
+                ("function", "get-balance"),
+                ("function", "is-owner"),
+            ]
+        );
+        let by = |kind: &str, name: &str| {
+            items
+                .iter()
+                .find(|i| i.kind == kind && i.name == name)
+                .unwrap()
+        };
+        assert_eq!(
+            by("constant", "ERR_NOT_OWNER").doc,
+            "Raised when the caller is not the owner."
+        );
+        assert_eq!(by("map", "balances").doc, "Balances by holder.");
+        let transfer = by("function", "transfer");
+        assert_eq!(
+            transfer.doc,
+            "Move `amount` from the caller to `to`.\nFails unless the caller holds enough."
+        );
+        assert_eq!((transfer.line_start, transfer.line_end), (17, 18));
+        assert_eq!(by("function", "get-balance").doc, "");
+        assert_eq!(
+            by("method", "transfer").qualified_name,
+            "transferable::transfer"
+        );
     }
 
     #[test]
