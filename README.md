@@ -141,7 +141,8 @@ modes:
 | Watches | only repositories an agent session is in | every registered repository |
 | Stops | `idle_timeout_secs` (30 min) after the last session or command, once indexing is done, or `lode stop` | `lode stop`, Ctrl-C or SIGTERM |
 
-- **Sessions:** each `lode mcp` holds a lease on its session's repository, renewed every 30 s. A
+- **Sessions:** each `lode mcp` holds a lease on its session's repository, renewed every 30 s,
+  and on every repository its searches name with `repo` (a Codex session started elsewhere). A
   CLI or REST search takes a shorter one.
 - **Catching up:** a repository is re-scanned when a session starts using it, so changes made
   while it wasn't watched are picked up.
