@@ -1021,7 +1021,11 @@ fn mcp_relay_starts_the_daemon_and_searches_the_session_worktree() {
     send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
     send(json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }));
     let tools = rpc_response(&mut lines, 2);
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 3);
+    let tools = tools["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 3);
+    for t in tools {
+        assert_eq!(t["annotations"]["readOnlyHint"], true, "{t}");
+    }
 
     // No `repo`: the relay's session lease supplies the worktree it runs in.
     send(
