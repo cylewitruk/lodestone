@@ -1,4 +1,9 @@
-# lodestone
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/branding/readme-header-dark.svg">
+    <img alt="lodestone: local semantic code search for coding agents" src="assets/branding/readme-header-light.svg" width="100%">
+  </picture>
+</p>
 
 Local semantic code search for coding agents. One daemon per machine indexes any number of
 repositories and worktrees, keeps them fresh from file events, and answers "what in this codebase
