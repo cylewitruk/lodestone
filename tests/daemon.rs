@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::slice;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use lodestone::api::mcp::{SEMANTIC_DESCRIPTION, SIMILAR_DESCRIPTION, STATUS_DESCRIPTION};
@@ -386,7 +386,13 @@ fn branch_switch_rescans_with_cache_hits() {
         }
         assert!(
             t.elapsed() < Duration::from_secs(30),
-            "switch back not fresh in 30s (helper_3 found: {back}): {st:?}"
+            "switch back not fresh in 30s (top results for helper_3: {:?}): {st:?}",
+            d.search("helper_3")
+                .results
+                .iter()
+                .take(3)
+                .map(|r| format!("{} {}:{}", r.name, r.path, r.line))
+                .collect::<Vec<_>>()
         );
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -417,7 +423,7 @@ fn concurrent_clients_during_reindex() {
             }
         })
     };
-    let errors = Arc::new(AtomicUsize::new(0));
+    let errors = Arc::new(std::sync::Mutex::new(Vec::new()));
     let latencies = Arc::new(std::sync::Mutex::new(Vec::new()));
     let threads: Vec<_> = (0..8)
         .map(|t| {
@@ -428,13 +434,20 @@ fn concurrent_clients_during_reindex() {
                     let r = ureq::post(format!("{base}/v1/search")).send_json(
                         json!({ "query": format!("helper {} value", (t * 200 + i) % 300) }),
                     );
-                    match r {
+                    let error = match r {
                         Ok(mut resp) if resp.status() == 200 => {
                             let _: SearchResponse = resp.body_mut().read_json().unwrap();
+                            None
                         }
-                        _ => {
-                            errors.fetch_add(1, Ordering::SeqCst);
-                        }
+                        Ok(mut resp) => Some(format!(
+                            "{}: {}",
+                            resp.status(),
+                            resp.body_mut().read_to_string().unwrap_or_default()
+                        )),
+                        Err(e) => Some(e.to_string()),
+                    };
+                    if let Some(e) = error {
+                        errors.lock().unwrap().push(e);
                     }
                     latencies
                         .lock()
@@ -454,11 +467,17 @@ fn concurrent_clients_during_reindex() {
     println!(
         "concurrent: requests={} errors={} p50_ms={:.1} p99_ms={:.1}",
         l.len(),
-        errors.load(Ordering::SeqCst),
+        errors.lock().unwrap().len(),
         l[l.len() / 2],
         l[l.len() * 99 / 100]
     );
-    assert_eq!(errors.load(Ordering::SeqCst), 0);
+    let errors = errors.lock().unwrap();
+    assert!(
+        errors.is_empty(),
+        "{} failed: {:?}",
+        errors.len(),
+        &errors[..errors.len().min(5)]
+    );
     assert_eq!(l.len(), 1600);
 }
 
