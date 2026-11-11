@@ -4,7 +4,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 use lodestone::agents::{self, Harness, Scope, Target};
-use lodestone::api::types::{IndexRequest, RegisterRequest, SearchRequest};
+use lodestone::api::types::{DEFAULT_TOP_K, IndexRequest, RegisterRequest, SearchRequest};
 use lodestone::bench::{self, BenchOptions};
 use lodestone::client::{self, Client};
 use lodestone::config::{Backend, Config};
@@ -59,7 +59,7 @@ enum Cmd {
         from_unit: Option<String>,
         #[arg(long)]
         language: Option<String>,
-        #[arg(long, default_value_t = 8)]
+        #[arg(long, default_value_t = DEFAULT_TOP_K)]
         top_k: usize,
         #[arg(long)]
         include_tests: bool,
