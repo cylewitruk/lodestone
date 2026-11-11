@@ -124,7 +124,7 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn mtime_nanos(meta: &fs::Metadata) -> i64 {
+pub fn mtime_nanos(meta: &fs::Metadata) -> i64 {
     meta.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())

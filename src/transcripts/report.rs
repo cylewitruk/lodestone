@@ -1,0 +1,289 @@
+//! Statistics over what was recorded from transcripts.
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+
+use serde::Serialize;
+
+use super::store::{CallRow, SessionRow};
+use super::{Kind, time};
+
+#[derive(Clone, Debug, Default)]
+pub struct Filter {
+    /// Harnesses to include (`claude`, `codex`).
+    pub harnesses: Vec<String>,
+    /// A registered repository, by root path or directory name.
+    pub repo: Option<String>,
+    /// Sessions started at or after this time (ms since the epoch).
+    pub since: Option<i64>,
+}
+
+impl Filter {
+    fn accepts(&self, s: &SessionRow) -> bool {
+        let repo_matches = self.repo.as_deref().is_none_or(|r| {
+            let root = Path::new(&s.repo);
+            let wanted = Path::new(r);
+            root == wanted
+                || wanted.canonicalize().is_ok_and(|w| w == root)
+                || root.file_name().is_some_and(|n| n == r)
+        });
+        self.harnesses.contains(&s.harness)
+            && repo_matches
+            && self.since.is_none_or(|t| s.started >= t)
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Report {
+    /// One per repository and harness.
+    pub groups: Vec<Group>,
+    pub searches: Vec<Search>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Group {
+    pub repo: String,
+    pub harness: String,
+    pub sessions: usize,
+    pub sessions_searched: usize,
+    /// Sessions whose first lodestone search came before their first text search, if any.
+    pub searched_before_grep: usize,
+    pub semantic: usize,
+    pub similar: usize,
+    /// The `search` tool, before it was split into semantic and similar.
+    pub search: usize,
+    /// Searches with a result path read later in the same session.
+    pub searches_read: usize,
+    pub searches_empty: usize,
+    pub greps: usize,
+    pub globs: usize,
+    pub reads: usize,
+    pub latency_ms_median: Option<i64>,
+    pub latency_ms_p90: Option<i64>,
+}
+
+impl Group {
+    fn searches(&self) -> usize {
+        self.semantic + self.similar + self.search
+    }
+}
+
+/// One lodestone search.
+#[derive(Clone, Debug, Serialize)]
+pub struct Search {
+    pub ts: i64,
+    pub harness: String,
+    pub repo: String,
+    pub kind: &'static str,
+    pub query: String,
+    pub results: usize,
+    pub read: bool,
+}
+
+pub fn build(sessions: &[SessionRow], calls: &[CallRow], f: &Filter) -> anyhow::Result<Report> {
+    let kept: HashMap<&str, &SessionRow> = sessions
+        .iter()
+        .filter(|s| f.accepts(s))
+        .map(|s| (s.id.as_str(), s))
+        .collect();
+    let mut by_session: HashMap<&str, Vec<&CallRow>> = HashMap::new();
+    for c in calls
+        .iter()
+        .filter(|c| kept.contains_key(c.session.as_str()))
+    {
+        by_session.entry(&c.session).or_default().push(c);
+    }
+    let mut groups: BTreeMap<(&str, &str), (Group, Vec<i64>)> = BTreeMap::new();
+    let mut searches = Vec::new();
+    for s in kept.values() {
+        let (g, latencies) = groups
+            .entry((s.repo.as_str(), s.harness.as_str()))
+            .or_insert_with(|| {
+                let g = Group {
+                    repo: s.repo.clone(),
+                    harness: s.harness.clone(),
+                    ..Group::default()
+                };
+                (g, Vec::new())
+            });
+        let calls = by_session.get(s.id.as_str()).map_or(&[][..], Vec::as_slice);
+        g.sessions += 1;
+        let first = |p: &dyn Fn(Kind) -> bool| calls.iter().find(|c| p(c.kind)).map(|c| c.ts);
+        if let Some(search) = first(&Kind::is_lodestone) {
+            g.sessions_searched += 1;
+            if first(&|k| k == Kind::Grep).is_none_or(|grep| search <= grep) {
+                g.searched_before_grep += 1;
+            }
+        }
+        for c in calls {
+            match c.kind {
+                Kind::Semantic => g.semantic += 1,
+                Kind::Similar => g.similar += 1,
+                Kind::Search => g.search += 1,
+                Kind::Grep => g.greps += 1,
+                Kind::Glob => g.globs += 1,
+                Kind::Read => g.reads += 1,
+            }
+            if !c.kind.is_lodestone() {
+                continue;
+            }
+            if let Some(done) = c.done_ts {
+                latencies.push(done - c.ts);
+                if c.results.is_empty() {
+                    g.searches_empty += 1;
+                }
+            }
+            let read = c.results.iter().any(|r| {
+                calls.iter().any(|o| {
+                    o.kind == Kind::Read
+                        && o.ts >= c.ts
+                        && o.path
+                            .as_deref()
+                            .is_some_and(|p| p == r || p.ends_with(&format!("/{r}")))
+                })
+            });
+            g.searches_read += usize::from(read);
+            searches.push(Search {
+                ts: c.ts,
+                harness: s.harness.clone(),
+                repo: s.repo.clone(),
+                kind: c.kind.as_str(),
+                query: c.query.clone().unwrap_or_default(),
+                results: c.results.len(),
+                read,
+            });
+        }
+    }
+    let groups = groups
+        .into_values()
+        .map(|(mut g, mut lat)| {
+            lat.sort_unstable();
+            // Nearest rank: the smallest value with at least p% of values at or below it.
+            let pct = |p: usize| {
+                (!lat.is_empty()).then(|| lat[(lat.len() * p).div_ceil(100).saturating_sub(1)])
+            };
+            g.latency_ms_median = pct(50);
+            g.latency_ms_p90 = pct(90);
+            g
+        })
+        .collect();
+    searches.sort_by_key(|s| s.ts);
+    Ok(Report { groups, searches })
+}
+
+impl Report {
+    /// One table per repository with a column per harness; with `queries`, every search too.
+    pub fn to_text(&self, queries: bool) -> String {
+        if self.groups.is_empty() {
+            return "no sessions recorded in registered repositories".into();
+        }
+        let mut out = Vec::new();
+        let mut repos: Vec<&str> = self.groups.iter().map(|g| g.repo.as_str()).collect();
+        repos.dedup();
+        for repo in repos {
+            let cols: Vec<&Group> = self.groups.iter().filter(|g| g.repo == repo).collect();
+            let row = |label: &str, cell: &dyn Fn(&Group) -> String| {
+                (
+                    label.to_string(),
+                    cols.iter().map(|g| cell(g)).collect::<Vec<_>>(),
+                )
+            };
+            let searched = |g: &Group| g.sessions_searched;
+            let rows = vec![
+                row("", &|g| g.harness.clone()),
+                row("sessions", &|g| g.sessions.to_string()),
+                row("sessions that searched", &|g| {
+                    share(searched(g), g.sessions)
+                }),
+                row("searched before first grep", &|g| {
+                    ratio(g.searched_before_grep, searched(g))
+                }),
+                row("lodestone searches", &|g| g.searches().to_string()),
+                row("  semantic / similar / search", &|g| {
+                    format!("{} / {} / {}", g.semantic, g.similar, g.search)
+                }),
+                row("  with a result read", &|g| {
+                    share(g.searches_read, g.searches())
+                }),
+                row("  with no results", &|g| {
+                    share(g.searches_empty, g.searches())
+                }),
+                row(
+                    "  latency median / p90",
+                    &|g| match (g.latency_ms_median, g.latency_ms_p90) {
+                        (Some(m), Some(p)) => format!("{} / {}", secs(m), secs(p)),
+                        _ => "-".into(),
+                    },
+                ),
+                row("grep / glob / read calls", &|g| {
+                    format!("{} / {} / {}", g.greps, g.globs, g.reads)
+                }),
+            ];
+            out.push(repo.to_string());
+            out.push(table(&rows));
+        }
+        if queries && !self.searches.is_empty() {
+            out.push("searches:".into());
+            for s in &self.searches {
+                out.push(format!(
+                    "  {}  {:<6} {:<12} {:<8} {:>2} results{}  {}",
+                    time::format(s.ts),
+                    s.harness,
+                    Path::new(&s.repo)
+                        .file_name()
+                        .map_or(s.repo.clone(), |n| n.to_string_lossy().into_owned()),
+                    s.kind,
+                    s.results,
+                    if s.read { ", read" } else { "      " },
+                    s.query
+                ));
+            }
+        }
+        out.join("\n")
+    }
+}
+
+fn table(rows: &[(String, Vec<String>)]) -> String {
+    let label = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+    let cols = rows.first().map_or(0, |(_, c)| c.len());
+    let widths: Vec<usize> = (0..cols)
+        .map(|i| {
+            rows.iter()
+                .map(|(_, c)| c[i].chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    rows.iter()
+        .map(|(l, cells)| {
+            let cells: Vec<String> = cells
+                .iter()
+                .zip(&widths)
+                .map(|(c, w)| format!("{c:>w$}"))
+                .collect();
+            format!("  {l:<label$}  {}", cells.join("  "))
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn share(n: usize, of: usize) -> String {
+    if of == 0 {
+        return "-".into();
+    }
+    format!("{n} ({:.0}%)", 100.0 * n as f64 / of as f64)
+}
+
+fn ratio(n: usize, of: usize) -> String {
+    if of == 0 {
+        "-".into()
+    } else {
+        format!("{n}/{of}")
+    }
+}
+
+fn secs(ms: i64) -> String {
+    format!("{:.1}s", ms as f64 / 1000.0)
+}

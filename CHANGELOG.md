@@ -871,3 +871,23 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   files changed while watched are no longer indexed either.
 - Checked: an integration test writes files excluded each way, plus one indexable file, into a
   watched worktree; only the indexable one is indexed. It fails on the previous code.
+
+## `lode transcript-stats`
+
+- Reports how agents use lodestone from Claude Code (`--claude [DIR]`) and Codex
+  (`--codex [DIR]`) transcripts, per registered repository and harness: sessions that searched,
+  search before the first grep, searches with a result later read, searches with no results,
+  latency, and grep / glob / read calls. `--repo`, `--since`, `--queries`, `--json`.
+- Reads only sessions in registered repositories. Claude project directories are named after
+  their working directory, so others are never opened; a Codex session elsewhere is read up to its
+  first line. Claude subagent transcripts count towards their parent session, as do Codex
+  subagent threads.
+- Incremental: `transcripts.sqlite` records each transcript's read offset (complete lines only),
+  size, mtime and a hash of its first 4 KB. Unchanged files are skipped without opening, grown ones
+  read from the offset, rewritten ones re-read; a session registered later is picked up; a parser
+  version bump re-reads everything. Extracted calls outlive the harnesses' transcript cleanup.
+- `registry::root_of` matches a directory that no longer exists (a removed worktree) as given.
+- Checked: integration tests on synthetic transcripts of both formats cover the statistics,
+  skipping unregistered projects, unchanged files, appended and half-written lines, rewrites and
+  late registration. On this machine's real transcripts (182 files, 57,516 lines) the first run
+  took 2.3 s in a debug build and the second 22 ms, reading nothing.
