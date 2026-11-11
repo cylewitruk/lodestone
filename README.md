@@ -131,7 +131,7 @@ modes:
 | ---- | ---- | ---- |
 | Started by | `lode search`, `register` or `index`, `lode mcp`, or the session hook, like sccache | you: `lode serve` |
 | Watches | only repositories an agent session is in | every registered repository |
-| Stops | `idle_timeout_secs` (30 min) after the last session or command, once indexing is done | when you stop it |
+| Stops | `idle_timeout_secs` (30 min) after the last session or command, once indexing is done, or `lode stop` | `lode stop`, Ctrl-C or SIGTERM |
 
 - **Sessions:** each `lode mcp` holds a lease on its session's repository, renewed every 30 s. A
   CLI or REST search takes a shorter one.
@@ -165,6 +165,7 @@ modes:
 | Command | Purpose |
 | ---- | ---- |
 | `lode serve [--port N]` | run the daemon in the foreground, always on; `--port` adds TCP |
+| `lode stop` | stop the running daemon gracefully |
 | `lode mcp` | MCP server over stdio; starts the daemon on demand |
 | `lode register <path>` | add, watch and index a worktree |
 | `lode index <path> [--force]` | re-index a worktree (incremental unless `--force`) |
@@ -190,11 +191,12 @@ POST /v1/index    {repo, force}
 GET  /v1/repos
 ```
 
-Used by `lode mcp` and the session hook:
+Used by `lode mcp`, the session hook and `lode stop`:
 
 ```text
 POST   /v1/sessions        {id, cwd, ttl_secs}   lease the worktree containing cwd
 DELETE /v1/sessions/{id}                         release it
+POST   /v1/shutdown                              stop gracefully (`lode stop`)
 POST   /v1/tool            {name, arguments, session}   run an MCP tool
 ```
 

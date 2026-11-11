@@ -57,6 +57,25 @@ fn daemon_starting(_: &Config) -> bool {
     true
 }
 
+/// Waits up to `timeout` for the daemon to exit: on Unix until it releases its socket's lock,
+/// elsewhere until it stops answering.
+pub fn wait_until_stopped(config: &Config, timeout: Duration) -> anyhow::Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        #[cfg(unix)]
+        let alive = daemon_starting(config);
+        #[cfg(not(unix))]
+        let alive = Client::connect(&config.endpoint()).is_some();
+        if !alive {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("the lodestone daemon is still running after {timeout:?}");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Connects to the daemon, starting one on demand and waiting up to `wait` for it. Fails early
 /// when the started daemon exits and no other daemon is starting (a lost race is not a failure).
 pub fn connect_or_start(
@@ -184,6 +203,18 @@ impl Client {
                 .post(format!("{}/v1/sessions", self.base))
                 .send_json(req)?,
         )
+    }
+
+    /// Asks the daemon to shut down; see [`wait_until_stopped`].
+    pub fn stop(&self) -> anyhow::Result<()> {
+        let resp = self
+            .agent
+            .post(format!("{}/v1/shutdown", self.base))
+            .send_empty()?;
+        if !resp.status().is_success() {
+            bail!("the daemon refused to stop: {}", resp.status());
+        }
+        Ok(())
     }
 
     pub fn release(&self, id: &str) -> anyhow::Result<()> {
