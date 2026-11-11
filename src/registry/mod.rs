@@ -61,6 +61,11 @@ pub fn registered(config: &Config) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
+/// The top-level directory of the git checkout `dir` is in.
+pub fn checkout_top(dir: &Path) -> Option<PathBuf> {
+    Checkout::of(dir).map(|c| c.top)
+}
+
 /// The shared git directory of the repository `dir` is in, and whether `dir` is in a linked
 /// worktree (`git worktree add`) rather than the main checkout.
 pub fn git_repository(dir: &Path) -> Option<(PathBuf, bool)> {
@@ -384,6 +389,13 @@ impl Engine {
                 dir.display()
             ),
         }
+    }
+
+    /// The worktree `lode index <path>` means: the registered worktree containing `path` (a
+    /// linked worktree of a registered repository is registered first), else `path` itself,
+    /// registered.
+    pub fn index_target(&self, path: &Path) -> anyhow::Result<Arc<WorktreeIndex>> {
+        self.worktree_for(path).or_else(|_| self.register(path))
     }
 
     /// Unregisters automatically registered worktrees whose directory is gone and deletes their

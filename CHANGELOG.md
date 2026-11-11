@@ -1001,3 +1001,15 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   repository, by path and then by its `repo:wt` name; the first answer is never "no matches", the
   worktree gets indexed, and an old-style name is renamed on the next start. It fails on the
   previous code ("no matches", never indexed).
+
+## `lode index` and `lode register` default to the current directory
+
+- `lode index` without a path re-indexes the registered worktree containing the current directory
+  (a linked worktree of a registered repository is registered first); elsewhere it refuses and
+  suggests `lode register`. `lode register` without a path registers the current directory's git
+  checkout, not the subdirectory you are in.
+- A path given to `lode index` (CLI, in-process, or `POST /v1/index`) means the registered
+  worktree containing it: `lode index .` in `core/` used to register `core` as a new repository.
+  Only a path outside every registered worktree is registered as given, as before.
+- Checked: a test runs `index` and `register` from subdirectories, in-process and through the
+  daemon, and checks that only the checkout is ever registered.
