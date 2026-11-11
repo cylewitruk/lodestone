@@ -20,11 +20,11 @@ does X?" over MCP and HTTP in well under a second.
 
 ## Quick start
 
-Requires a stable Rust toolchain (edition 2024) and a C compiler. The crate is `lodestone-cli`; it
-installs the `lode` binary.
+Requires a stable Rust toolchain (edition 2024) and a C compiler. This installs the `lode`
+binary:
 
 ```bash
-cargo install lodestone-cli       # or, from a checkout: cargo install --path .
+cargo install --locked --git https://github.com/cylewitruk/lodestone
 lode register ~/src/my-repo       # index a repository
 lode install                      # wire up Claude Code and/or Codex
 lode search "retry an HTTP call with exponential backoff"

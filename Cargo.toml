@@ -8,7 +8,7 @@ repository = "https://github.com/cylewitruk/lodestone"
 readme = "README.md"
 keywords = ["code-search", "semantic-search", "mcp", "embeddings", "tree-sitter"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = ["/eval", "/examples", "/PLAN.md", "/.github"]
+exclude = ["/eval", "/examples", "/PLAN.md", "/.github", "/assets"]
 
 [lib]
 name = "lodestone"
