@@ -50,7 +50,8 @@ pub fn registered_roots(config: &Config) -> Vec<PathBuf> {
 
 /// The registered worktree containing `dir` (the innermost, for nested worktrees).
 pub fn root_of(roots: &[PathBuf], dir: &Path) -> Option<PathBuf> {
-    let dir = dir.canonicalize().ok()?;
+    // A directory that no longer exists (e.g. a removed worktree) is matched as given.
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     roots
         .iter()
         .filter(|r| dir.starts_with(r))

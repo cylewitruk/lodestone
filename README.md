@@ -99,6 +99,29 @@ stacks-common/src/util/retry.rs:25:12  lines 25-29  pub struct RetryReader<'a, R
 All numbers are 1-based, and columns count characters. Language servers count from 0, so
 subtract 1 from both. JSON results carry `line`, `line_end`, `name_line` and `name_column`.
 
+### Usage statistics
+
+How agents actually use lodestone, from their own transcripts:
+
+```bash
+lode transcript-stats --claude --codex      # ~/.claude/projects and ~/.codex/sessions
+lode transcript-stats --codex ~/elsewhere --repo stacks-core --since 2026-11-01 --queries
+```
+
+- **Sources:** name at least one; a flag without a directory uses the harness's default.
+- **Scope:** only sessions in registered repositories. Claude projects elsewhere are not opened;
+  of a Codex session elsewhere, only its first line (its working directory) is read.
+- **Incremental:** `~/.lodestone/transcripts.sqlite` keeps, per transcript, the byte offset of
+  the last complete line read, its size and mtime, and a hash of its start. Unchanged files are
+  not opened, grown ones are read from the offset, rewritten ones from the start. What was
+  extracted is kept after the harnesses delete old transcripts.
+- **Stored:** call kinds and times, lodestone queries and result paths, and the paths of file
+  reads; no other content.
+- **Reported** per repository and harness: sessions that searched, whether the first search came
+  before the first grep, searches with a result later read, searches with no results, latency,
+  and grep / glob / read calls. Codex shell commands count by Codex's own classification
+  (`read`, `search`, `list_files`). `--queries` lists every search; `--json` for machines.
+
 ## Daemon
 
 One daemon per user keeps the model loaded and serves every repository. It runs in one of two
@@ -148,6 +171,7 @@ modes:
 | `lode search <query>` | search a registered worktree |
 | `lode status` | index freshness |
 | `lode install` / `lode uninstall` | wire up Claude Code and Codex |
+| `lode transcript-stats --claude --codex` | how agents use lodestone, from their transcripts |
 | `lode models` | configured models and available backends |
 | `lode languages` | grammars and the extension map |
 | `lode bench <eval-dir>` | retrieval quality, index time and latency |

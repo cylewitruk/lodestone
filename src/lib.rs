@@ -14,4 +14,5 @@ pub mod registry;
 pub mod search;
 #[doc(hidden)]
 pub mod testutil;
+pub mod transcripts;
 pub mod watch;

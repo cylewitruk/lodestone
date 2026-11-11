@@ -11,6 +11,7 @@ use lodestone::config::{Backend, Config};
 use lodestone::embed;
 use lodestone::index::IndexOptions;
 use lodestone::registry::Engine;
+use lodestone::transcripts;
 
 #[derive(Parser)]
 #[command(
@@ -126,6 +127,28 @@ enum Cmd {
     /// Hooks that agent harnesses run.
     #[command(subcommand)]
     Hook(HookCmd),
+    /// How agents use lodestone, from Claude Code and Codex transcripts. Reads only sessions in
+    /// registered repositories, and records what it read so later runs read only new lines.
+    #[command(group(clap::ArgGroup::new("source").required(true).multiple(true)))]
+    TranscriptStats {
+        /// Read Claude Code transcripts [default dir: ~/.claude/projects]
+        #[arg(long, value_name = "DIR", group = "source")]
+        claude: Option<Option<PathBuf>>,
+        /// Read Codex transcripts [default dir: ~/.codex/sessions]
+        #[arg(long, value_name = "DIR", group = "source")]
+        codex: Option<Option<PathBuf>>,
+        /// Only this repository (root path or directory name).
+        #[arg(long)]
+        repo: Option<String>,
+        /// Only sessions started on or after this date (YYYY-MM-DD, UTC).
+        #[arg(long, value_name = "DATE")]
+        since: Option<String>,
+        /// Also list every search with its query.
+        #[arg(long)]
+        queries: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(clap::Args)]
@@ -256,6 +279,45 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::Install(args) => harness_command(&config, args, true),
         Cmd::Uninstall(args) => harness_command(&config, args, false),
+        Cmd::TranscriptStats {
+            claude,
+            codex,
+            repo,
+            since,
+            queries,
+            json,
+        } => {
+            let sources: Vec<(Harness, PathBuf)> =
+                [(Harness::Claude, claude), (Harness::Codex, codex)]
+                    .into_iter()
+                    .filter_map(|(h, dir)| {
+                        Some((h, dir?.unwrap_or_else(|| transcripts::default_dir(h))))
+                    })
+                    .collect();
+            let since = since
+                .map(|s| transcripts::parse_date(&s).context("--since takes a date: YYYY-MM-DD"))
+                .transpose()?;
+            let read = transcripts::scan(&config, &sources)?;
+            eprintln!(
+                "read {} new lines from {} transcripts ({} unchanged)",
+                read.lines, read.files_read, read.unchanged
+            );
+            let filter = transcripts::Filter {
+                harnesses: sources
+                    .iter()
+                    .map(|(h, _)| h.program().to_string())
+                    .collect(),
+                repo,
+                since,
+            };
+            let report = transcripts::report(&config, &filter)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("{}", report.to_text(queries));
+            }
+            Ok(())
+        }
         Cmd::Hook(HookCmd::SessionStart) => {
             let dir = session_dir()?;
             if let Some(out) = agents::session_start(&dir, &config, cli.config.as_deref()) {
