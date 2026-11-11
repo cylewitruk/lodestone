@@ -839,6 +839,8 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   (a lost race), the command fails at once and points at `daemon.log` instead of waiting 120 s.
 - An on-demand daemon no longer exits mid-index: the idle exit waits for running indexing passes,
   so `lode register` on a large repository finishes even after its lease ends.
+- `lode search` returns 24 results by default (`--top-k`), like MCP and REST; it was 8.
+- README: the missing built-in models, the `remote` backend and the routes `lode mcp` uses.
 - Checked: integration tests cover a CLI that registers and searches through a daemon it
   started (which then exits when idle), `status` leaving no daemon behind, and a daemon that
   cannot start failing the command in about a second.
