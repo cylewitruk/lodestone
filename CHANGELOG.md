@@ -1014,10 +1014,22 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
 - Checked: a test runs `index` and `register` from subdirectories, in-process and through the
   daemon, and checks that only the checkout is ever registered.
 
+## Sessions keep the worktrees they search watched
+
+- A session's tool call that names a worktree with `repo` now holds that worktree for as long as
+  the session's lease lives. Before, only the 10-minute request lease did: a Codex session (started
+  in its own directory, so its lease holds no worktree) whose searches were further apart found
+  the worktree unwatched each time, paid a full rescan, and got `stale: pending: full rescan` on
+  nearly every result.
+- Checked: a test searches a worktree from a session outside it, waits past the request lease and
+  several sweeps, and finds it still watched until the session is released. It fails on the
+  previous code.
+
 ## CI and crates.io
 
 - The crate is published as `lodestone-cli` (`lodestone` and `lode` are taken on crates.io); the
-  library keeps the name `lodestone` and the binary `lode`. `cargo install lodestone-cli`.
+  library keeps the name `lodestone` and the binary `lode`. Until the first release is on
+  crates.io, the README installs from the git repository.
 - CI (`.github/workflows/ci.yml`) on pushes to `main` and on pull requests: `fmt --check`,
   `clippy -D warnings`, `nextest` on Linux and macOS, and `cargo package`.
 - A `v*` tag runs CI and then `cargo publish` with crates.io trusted publishing
