@@ -821,6 +821,152 @@ fn stop_and_sigterm_shut_the_daemon_down_gracefully() {
     assert!(!socket.exists());
 }
 
+/// Calls one MCP tool through a `lode mcp` relay started in `dir`; returns (is_error, text).
+fn relay_call(home: &Path, dir: &Path, tool: &str, arguments: Value) -> (bool, String) {
+    use std::io::{BufRead, BufReader, Write};
+
+    let mut relay = lode(home)
+        .arg("mcp")
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = relay.stdin.take().unwrap();
+    let mut lines = BufReader::new(relay.stdout.take().unwrap()).lines();
+    let mut send = |v: Value| writeln!(stdin, "{v}").unwrap();
+    send(
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": { "name": "test", "version": "0" } } }),
+    );
+    rpc_response(&mut lines, 1);
+    send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    send(
+        json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+        "name": tool, "arguments": arguments } }),
+    );
+    let out = rpc_response(&mut lines, 2);
+    drop(stdin);
+    relay.wait().unwrap();
+    (
+        out["result"]["isError"] == true,
+        out["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    )
+}
+
+fn git_repo(n: usize) -> PathBuf {
+    let root = repo(n);
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-q", "-m", "init"]);
+    root
+}
+
+#[test]
+fn sessions_search_their_own_worktree_never_another_checkouts() {
+    let root = git_repo(3);
+    // A linked worktree inside the checkout, as agents create them, with its own changes.
+    git(
+        &root,
+        &["worktree", "add", "-q", ".worktrees/feat", "-b", "feat"],
+    );
+    let feat = root.join(".worktrees/feat").canonicalize().unwrap();
+    fs::remove_file(feat.join("core/src/m0.rs")).unwrap();
+    write(
+        &feat,
+        "core/src/only_feat.rs",
+        "/// Only on the feature branch.\npub fn only_in_feat() {}\n",
+    );
+    // An unrelated checkout nobody registered.
+    let stray = git_repo(2);
+    let home = on_demand_home(3);
+    let ok = lode(&home)
+        .args(["--local", "register"])
+        .arg(&root)
+        .stdout(Stdio::null())
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+
+    // The session hook counts the worktree as served (and starts the daemon).
+    let mut hook = lode(&home)
+        .args(["hook", "session-start"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        let mut stdin = hook.stdin.take().unwrap();
+        writeln!(stdin, "{}", json!({ "cwd": feat.join("core") })).unwrap();
+    }
+    let out = hook.wait_with_output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("additionalContext"),
+        "{out:?}"
+    );
+
+    // A session in the worktree searches the worktree's own index, registered on first use.
+    let search = |dir: &Path, query: &str| {
+        relay_call(
+            &home,
+            dir,
+            "semantic_code_search",
+            json!({ "query": query }),
+        )
+    };
+    wait_until("the worktree's index", Duration::from_secs(30), || {
+        let (err, text) = search(&feat.join("core"), "only_in_feat");
+        !err && text.contains("core/src/only_feat.rs")
+    });
+    let (_, text) = search(&feat.join("core"), "helper_0");
+    assert!(!text.contains("core/src/m0.rs"), "{text}");
+    let registry = fs::read_to_string(home.join("registry.json")).unwrap();
+    assert!(registry.contains("\"auto\": true"), "{registry}");
+
+    // The main checkout is unaffected by the worktree's changes.
+    let (_, text) = search(&root, "helper_0");
+    assert!(text.contains("core/src/m0.rs"), "{text}");
+    let (_, text) = search(&root, "only_in_feat");
+    assert!(!text.contains("only_feat.rs"), "{text}");
+
+    // An unrelated checkout gets an error, not another checkout's results.
+    let (err, text) = search(&stray, "helper_0");
+    assert!(err && text.contains("lode register"), "{text}");
+    let out = lode(&home)
+        .args(["search", "helper_0"])
+        .current_dir(&stray)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("lode register"),
+        "{out:?}"
+    );
+
+    // Once the worktree is removed, the next daemon drops it and its index.
+    let id = lodestone::index::worktree_id(&feat);
+    assert!(home.join("worktrees").join(&id).exists());
+    git(&root, &["worktree", "remove", "--force", ".worktrees/feat"]);
+    assert!(lode(&home).arg("stop").status().unwrap().success());
+    let out = lode(&home)
+        .args(["search", "helper_1", "--repo"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let registry = fs::read_to_string(home.join("registry.json")).unwrap();
+    assert!(!registry.contains("feat"), "{registry}");
+    assert!(!home.join("worktrees").join(&id).exists());
+    assert!(lode(&home).arg("stop").status().unwrap().success());
+}
+
 /// Reads JSON-RPC responses from the relay until the one with `id`.
 fn rpc_response(lines: &mut impl Iterator<Item = std::io::Result<String>>, id: u64) -> Value {
     for line in lines {

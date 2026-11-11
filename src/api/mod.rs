@@ -6,7 +6,7 @@ pub mod sessions;
 pub mod types;
 
 use std::future::IntoFuture;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use crate::config::Config;
 use crate::index::{IndexOptions, WorktreeIndex};
-use crate::registry::{self, Engine};
+use crate::registry::Engine;
 use crate::watch::Watchers;
 use listen::Listeners;
 use mcp::LodestoneMcp;
@@ -34,6 +34,8 @@ use types::{
 const REQUEST_LEASE: Duration = Duration::from_secs(600);
 /// How often an on-demand daemon expires leases and checks for idleness.
 const SWEEP: Duration = Duration::from_secs(2);
+/// How often automatically registered worktrees that were removed are pruned.
+const PRUNE: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct AppState {
@@ -217,9 +219,13 @@ async fn session_renew(
     State(s): State<AppState>,
     Json(req): Json<SessionRequest>,
 ) -> ApiResult<Json<SessionResponse>> {
+    // A linked git worktree of a registered repository is registered here, on its first session.
+    let root = s
+        .engine
+        .worktree_for(Path::new(&req.cwd))
+        .ok()
+        .map(|w| w.root.clone());
     let repos = s.engine.repos();
-    let roots: Vec<PathBuf> = repos.iter().map(|r| PathBuf::from(&r.root)).collect();
-    let root = registry::root_of(&roots, Path::new(&req.cwd));
     s.leases().renew(
         &req.id,
         root.clone(),
@@ -241,8 +247,18 @@ async fn session_release(State(s): State<AppState>, UrlPath(id): UrlPath<String>
 /// Runs an MCP tool for `lode mcp`; a call without `repo` searches the session's worktree.
 async fn tool(State(s): State<AppState>, Json(mut req): Json<ToolRequest>) -> ApiResult<String> {
     if !req.arguments.contains_key("repo")
-        && let Some(root) = req.session.as_deref().and_then(|id| s.leases().root(id))
+        && let Some(id) = req.session.as_deref()
     {
+        // Never another checkout's index: a session outside every registered worktree must name
+        // one.
+        let root = s.leases().root(id).ok_or_else(|| {
+            ApiError(
+                StatusCode::BAD_REQUEST,
+                "this session's directory is not in a worktree lodestone indexes; run \
+                 `lode register <dir>` for it, or pass `repo`"
+                    .into(),
+            )
+        })?;
         req.arguments
             .insert("repo".into(), root.to_string_lossy().into());
     }
@@ -309,6 +325,16 @@ pub async fn serve(config: Config, on_demand: bool) -> anyhow::Result<()> {
         stop_requested: Arc::new(tokio::sync::Notify::new()),
     };
     let stop_requested = state.stop_requested.clone();
+    prune_removed_worktrees(&state);
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            loop {
+                tokio::time::sleep(PRUNE).await;
+                prune_removed_worktrees(&state);
+            }
+        }
+    });
     let idle = Arc::new(tokio::sync::Notify::new());
     if on_demand {
         tokio::spawn(sweep(state.clone(), idle_timeout, idle.clone()));
@@ -362,6 +388,23 @@ pub async fn serve(config: Config, on_demand: bool) -> anyhow::Result<()> {
     #[cfg(unix)]
     drop(socket);
     Ok(())
+}
+
+/// Drops automatically registered worktrees whose directory is gone (see
+/// [`Engine::prune_removed_worktrees`]).
+fn prune_removed_worktrees(s: &AppState) {
+    match s.engine.prune_removed_worktrees() {
+        Ok(gone) => {
+            for root in gone {
+                s.watchers.unwatch(&s.engine, &root);
+                eprintln!(
+                    "lodestone: {} was removed; dropped its index",
+                    root.display()
+                );
+            }
+        }
+        Err(e) => tracing::warn!("pruning removed worktrees: {e:#}"),
+    }
 }
 
 /// Resolves on SIGTERM (Unix only; never elsewhere).

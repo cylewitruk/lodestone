@@ -50,7 +50,10 @@ pub fn session_start(dir: &Path, config: &Config, config_path: Option<&Path>) ->
             }
         }
         None => {
-            let served = registry::root_of(&registry::registered_roots(config), dir).is_some();
+            let served = matches!(
+                registry::place(&registry::registered_roots(config), dir),
+                registry::Placement::Registered(_) | registry::Placement::NewWorktree(_)
+            );
             if served && let Err(e) = start_daemon(config, config_path) {
                 tracing::warn!("{e:#}");
             }
