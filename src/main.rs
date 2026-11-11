@@ -5,7 +5,9 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 use lodestone::agents::{self, Harness, Scope, Target};
-use lodestone::api::types::{DEFAULT_TOP_K, IndexRequest, RegisterRequest, SearchRequest};
+use lodestone::api::types::{
+    DEFAULT_TOP_K, IndexRequest, RegisterRequest, SearchRequest, StatusOverview, StatusReport,
+};
 use lodestone::bench::{self, BenchOptions};
 use lodestone::client::{self, Client};
 use lodestone::config::{Backend, Config};
@@ -76,7 +78,8 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Index freshness for a worktree.
+    /// Index freshness for a worktree: the one named by --repo, else the current one, else a
+    /// summary of every registered repository.
     Status {
         #[arg(long)]
         repo: Option<String>,
@@ -357,17 +360,15 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Status { repo, json } => {
-            let repo = repo.or_else(|| here(&config));
-            let st = match daemon(false)? {
-                Some(c) => c.status(repo.as_deref())?,
-                None => Engine::from_env(config)?.status(repo.as_deref())?,
+            let view = match (repo.or_else(|| here(&config)), daemon(false)?) {
+                (Some(r), Some(c)) => StatusView::Repo(Box::new(c.status(Some(&r))?)),
+                (Some(r), None) => {
+                    StatusView::Repo(Box::new(Engine::from_env(config)?.status(Some(&r))?))
+                }
+                (None, Some(c)) => c.status_all()?.into(),
+                (None, None) => Engine::from_env(config)?.status_all().into(),
             };
-            if json {
-                println!("{}", serde_json::to_string_pretty(&st)?);
-            } else {
-                println!("{}", st.to_text());
-            }
-            Ok(())
+            view.print(json)
         }
         Cmd::Bench {
             eval_dir,
@@ -472,6 +473,36 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+/// What `lode status` prints: one repository in detail, or a summary of all of them.
+enum StatusView {
+    Repo(Box<StatusReport>),
+    All(StatusOverview),
+}
+
+impl From<StatusOverview> for StatusView {
+    /// A lone registered repository is shown in detail, as if it were named.
+    fn from(mut overview: StatusOverview) -> Self {
+        if overview.repos.len() == 1 && overview.failed.is_empty() {
+            Self::Repo(Box::new(overview.repos.remove(0)))
+        } else {
+            Self::All(overview)
+        }
+    }
+}
+
+impl StatusView {
+    fn print(&self, json: bool) -> anyhow::Result<()> {
+        let out = match (self, json) {
+            (Self::Repo(st), true) => serde_json::to_string_pretty(st)?,
+            (Self::All(overview), true) => serde_json::to_string_pretty(overview)?,
+            (Self::Repo(st), false) => st.to_text(),
+            (Self::All(overview), false) => overview.to_text(),
+        };
+        println!("{out}");
+        Ok(())
     }
 }
 

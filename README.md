@@ -188,7 +188,7 @@ modes:
 | `lode register [path]` | add, watch and index a worktree (default: the current directory's checkout) |
 | `lode index [path] [--force]` | re-index the registered worktree containing `path` (default: the current directory; incremental unless `--force`) |
 | `lode search <query>` | search a registered worktree |
-| `lode status` | index freshness |
+| `lode status [--repo name\|path] [--json]` | index freshness of the named or current worktree; elsewhere, a summary of every registered repository |
 | `lode install` / `lode uninstall` | wire up Claude Code and Codex |
 | `lode transcript-stats --claude --codex` | how agents use lodestone, from their transcripts |
 | `lode models` | configured models and available backends |
@@ -204,6 +204,7 @@ Over the socket (`curl --unix-socket ~/.lodestone/daemon.sock http://localhost/v
 GET  /v1/search?q=&repo=&from_unit=&language=&top_k=&include_tests=&with_body=&format=text|json
 POST /v1/search   {query, repo, from_unit, language, top_k, include_tests, path_prefix, kinds, with_body}
 GET  /v1/status?repo=&format=text|json
+GET  /v1/status/all?format=text|json
 POST /v1/register {path}
 POST /v1/index    {repo, force}
 GET  /v1/repos

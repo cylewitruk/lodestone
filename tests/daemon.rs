@@ -12,7 +12,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use lodestone::api::mcp::{SEMANTIC_DESCRIPTION, SIMILAR_DESCRIPTION, STATUS_DESCRIPTION};
-use lodestone::api::types::{RegisterRequest, SearchResponse, SessionRequest, StatusReport};
+use lodestone::api::types::{
+    RegisterRequest, SearchResponse, SessionRequest, StatusOverview, StatusReport,
+};
 use lodestone::client::Client;
 use lodestone::config::Config;
 use lodestone::index::{ItemStore, Lexical, Manifest, TokenizerKind, VectorIndex, worktree_id};
@@ -280,11 +282,11 @@ fn daemon_rest_mcp_and_freshness() {
         "{text}"
     );
     let out = mcp.request("tools/call", json!({ "name": "status", "arguments": {} }));
+    let text = out["content"][0]["text"].as_str().unwrap();
     assert!(
-        out["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("files_indexed: 20")
+        text.lines()
+            .any(|l| l.split_whitespace().eq(["files", "20"])),
+        "{text}"
     );
 
     // Edit → searchable within 2 s.
@@ -1114,6 +1116,72 @@ fn register_and_index_default_to_the_current_checkout() {
     assert!(ok && text.starts_with(&root_str), "{text}");
     assert_eq!(roots(), [root_str]);
     assert!(lode(&home).arg("stop").status().unwrap().success());
+}
+
+#[test]
+fn status_outside_a_repository_summarises_every_registered_one() {
+    let home = on_demand_home(60);
+    let elsewhere = tempdir();
+    let run = |args: &[&str]| {
+        let out = lode(&home)
+            .args(args)
+            .current_dir(&elsewhere)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let overview = |args: &[&str]| -> StatusOverview {
+        serde_json::from_str(&run(&[args, &["status", "--json"]].concat())).unwrap()
+    };
+
+    assert!(run(&["--local", "status"]).contains("no repositories registered"));
+
+    // A lone repository is shown in detail, as when it is named.
+    run(&["--local", "register", &repo(3).to_string_lossy()]);
+    let text = run(&["--local", "status"]);
+    assert!(text.starts_with("repository\n  name "), "{text}");
+    let st: StatusReport = serde_json::from_str(&run(&["--local", "status", "--json"])).unwrap();
+    assert_eq!(st.name, "repo");
+
+    run(&["--local", "register", &repo(2).to_string_lossy()]);
+    let all = overview(&["--local"]);
+    let names: Vec<&str> = all.repos.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["repo", "repo-2"]);
+    assert_eq!(all.totals.repos, 2);
+    assert_eq!(
+        all.totals.files_indexed,
+        all.repos.iter().map(|r| r.files_indexed).sum::<usize>()
+    );
+    assert_eq!(
+        all.totals.items,
+        all.repos.iter().map(|r| r.items).sum::<usize>()
+    );
+    let text = run(&["--local", "status"]);
+    for row in ["repository", "repo ", "repo-2 ", "total "] {
+        assert!(
+            text.lines().any(|l| l.trim_start().starts_with(row)),
+            "{text}"
+        );
+    }
+
+    // A name still shows that repository in detail.
+    let text = run(&["--local", "status", "--repo", "repo-2"]);
+    assert!(text.contains("\n  name          repo-2\n"), "{text}");
+
+    // The same through the daemon.
+    let mut daemon = lode(&home)
+        .args(["serve", "--on-demand"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until("the daemon", Duration::from_secs(30), || {
+        client(&home).is_some()
+    });
+    assert_eq!(overview(&[]).totals, all.totals);
+    assert!(run(&["stop"]).contains("stopped"));
+    assert!(daemon.wait().unwrap().success());
 }
 
 /// Reads JSON-RPC responses from the relay until the one with `id`.
