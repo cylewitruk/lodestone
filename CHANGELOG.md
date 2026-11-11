@@ -828,3 +828,17 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
     connected in 0.5 s. The first search returned 2.8 s after the session started, model load
     included.
 
+## CLI starts the daemon
+
+- `lode search`, `register` and `index` start an on-demand daemon when none runs, as `lode mcp`
+  does, instead of running in-process: a search no longer loads the model each time, and
+  `register` returns while the daemon indexes. Each call renews the repository's lease, so the
+  daemon stays up while the CLI is in use. `status` never starts one; `--local` keeps
+  everything in-process.
+- Starting fails fast: if the started daemon exits and no other daemon holds the socket's lock
+  (a lost race), the command fails at once and points at `daemon.log` instead of waiting 120 s.
+- An on-demand daemon no longer exits mid-index: the idle exit waits for running indexing passes,
+  so `lode register` on a large repository finishes even after its lease ends.
+- Checked: integration tests cover a CLI that registers and searches through a daemon it
+  started (which then exits when idle), `status` leaving no daemon behind, and a daemon that
+  cannot start failing the command in about a second.

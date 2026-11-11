@@ -579,6 +579,12 @@ impl Config {
         }
     }
 
+    /// The lock a daemon holds while it owns the socket.
+    #[cfg(unix)]
+    pub fn lock_path(&self) -> PathBuf {
+        self.socket_path().with_extension("lock")
+    }
+
     #[cfg(unix)]
     pub fn socket_path(&self) -> PathBuf {
         if let Some(p) = &self.socket {

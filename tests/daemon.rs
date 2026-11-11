@@ -639,6 +639,63 @@ fn one_daemon_per_socket_and_stale_sockets_are_replaced() {
     first.wait().unwrap();
 }
 
+#[test]
+fn cli_starts_the_daemon_on_demand_but_status_does_not() {
+    let root = repo(3);
+    let home = on_demand_home(3);
+    let run = |args: &[&str]| {
+        let out = lode(&home).args(args).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr);
+        (out.status.success(), text)
+    };
+
+    run(&["status"]);
+    assert!(client(&home).is_none(), "status started a daemon");
+
+    let (ok, text) = run(&["register", &root.to_string_lossy()]);
+    assert!(ok, "{text}");
+    assert!(text.contains("indexing in the daemon"), "{text}");
+    assert!(client(&home).is_some());
+
+    wait_until("a search to find helper_1", Duration::from_secs(30), || {
+        let (ok, text) = run(&["search", "helper_1", "--repo", &root.to_string_lossy()]);
+        ok && text.contains("pub fn helper_1")
+    });
+
+    // The CLI's leases are capped at the idle timeout, so the daemon exits soon after.
+    wait_until("the idle daemon to exit", Duration::from_secs(30), || {
+        client(&home).is_none()
+    });
+}
+
+#[test]
+fn cli_fails_fast_when_the_daemon_cannot_start() {
+    let home = on_demand_home(3);
+    // The socket's directory cannot be created, so the daemon exits at once.
+    write(&home, "blocker", "");
+    let socket = home.join("blocker").join("daemon.sock");
+    write(
+        &home,
+        "config.toml",
+        &format!(
+            "idle_timeout_secs = 3\nsocket = {:?}\n",
+            socket.to_string_lossy()
+        ),
+    );
+    let started = Instant::now();
+    let out = lode(&home).args(["search", "anything"]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(err.contains("daemon exited"), "{err}");
+    assert!(err.contains("daemon.log"), "{err}");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
 /// Reads JSON-RPC responses from the relay until the one with `id`.
 fn rpc_response(lines: &mut impl Iterator<Item = std::io::Result<String>>, id: u64) -> Value {
     for line in lines {

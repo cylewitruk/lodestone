@@ -24,8 +24,8 @@ lode install                      # wire up Claude Code and/or Codex
 lode search "retry an HTTP call with exponential backoff"
 ```
 
-There is nothing to start: agent sessions start the daemon on demand, and it exits when they are
-done (see [Daemon](#daemon)). Models download on first use into `~/.lodestone/models`.
+There is nothing to start: `lode` and agent sessions start the daemon on demand, and it exits
+when they are done (see [Daemon](#daemon)). Models download on first use into `~/.lodestone/models`.
 
 ## Writing queries
 
@@ -106,9 +106,9 @@ modes:
 
 | | On demand (default) | Always on |
 | ---- | ---- | ---- |
-| Started by | `lode mcp` or the session hook, like sccache | you: `lode serve` |
+| Started by | `lode search`, `register` or `index`, `lode mcp`, or the session hook, like sccache | you: `lode serve` |
 | Watches | only repositories an agent session is in | every registered repository |
-| Stops | `idle_timeout_secs` (30 min) after the last session ends | when you stop it |
+| Stops | `idle_timeout_secs` (30 min) after the last session or command, once indexing is done | when you stop it |
 
 - **Sessions:** each `lode mcp` holds a lease on its session's repository, renewed every 30 s. A
   CLI or REST search takes a shorter one.
@@ -125,8 +125,9 @@ modes:
 
 - **Registering:** `lode register` canonicalizes the path, adds it to
   `~/.lodestone/registry.json`, then starts watching and indexing it.
-- **CLI:** every subcommand uses the daemon when it is running and runs in-process otherwise
-  (`--local` forces in-process).
+- **CLI:** `search`, `register` and `index` use the daemon, starting it if needed. `status` uses
+  a running daemon and otherwise reads the indexes in-process, so it never starts one. `--local`
+  runs everything in-process.
 - **Stale indexes:** searches never index. A stale index answers from what it has, and
   `lode status` says why it is stale.
 - **Ignored files:** files are walked with `.gitignore` and `.lodestoneignore` rules. Directories

@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -44,6 +45,8 @@ impl Drop for Handle {
 #[derive(Default)]
 pub struct Watchers {
     handles: Mutex<HashMap<PathBuf, Handle>>,
+    /// Indexing passes running now, including those of worktrees no longer watched.
+    busy: Arc<AtomicUsize>,
 }
 
 /// The git directory of a worktree: `.git/` or the `gitdir:` target of a `.git` file.
@@ -216,7 +219,7 @@ impl Watchers {
                 None
             }
         };
-        tokio::spawn(worker(engine.clone(), w.clone(), rx));
+        tokio::spawn(worker(engine.clone(), w.clone(), rx, self.busy.clone()));
         handles.insert(
             w.root.clone(),
             Handle {
@@ -244,6 +247,11 @@ impl Watchers {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains_key(root)
+    }
+
+    /// Whether an indexing pass is running.
+    pub fn indexing(&self) -> bool {
+        self.busy.load(Ordering::SeqCst) > 0
     }
 
     pub fn watched(&self) -> Vec<PathBuf> {
@@ -274,6 +282,7 @@ async fn worker(
     engine: Arc<Engine>,
     w: Arc<WorktreeIndex>,
     mut rx: mpsc::UnboundedReceiver<Change>,
+    busy: Arc<AtomicUsize>,
 ) {
     while let Some(first) = rx.recv().await {
         let mut rescan = first == Change::Rescan;
@@ -297,10 +306,12 @@ async fn worker(
             force: false,
             paths: (!rescan).then(|| paths.into_iter().collect()),
         };
+        busy.fetch_add(1, Ordering::SeqCst);
         let result = match engine.index_context() {
             Ok(ctx) => w.index(Arc::new(ctx), opts).await,
             Err(e) => Err(e),
         };
+        busy.fetch_sub(1, Ordering::SeqCst);
         match result {
             Ok(r) => tracing::info!(
                 "{}: indexed {} files ({} embedded) in {:.2}s",
