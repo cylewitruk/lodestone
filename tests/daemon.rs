@@ -79,12 +79,17 @@ struct Daemon {
 
 impl Daemon {
     fn start(home: &Path, delay_ms: u64) -> Self {
+        Self::start_with_env(home, delay_ms, &[])
+    }
+
+    fn start_with_env(home: &Path, delay_ms: u64, env: &[(&str, &Path)]) -> Self {
         let port = free_port();
         let child = Command::new(BIN)
             .args(["serve", "--port", &port.to_string()])
             .env("LODESTONE_HOME", home)
             .env("LODESTONE_TEST_EMBEDDER", "hash")
             .env("LODESTONE_TEST_EMBED_DELAY_MS", delay_ms.to_string())
+            .envs(env.iter().copied())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -515,6 +520,69 @@ fn kill_mid_index_leaves_consistent_index() {
         partial.files.len(),
         rows.len()
     );
+}
+
+#[test]
+fn watcher_indexes_only_files_a_full_scan_would() {
+    let root = repo(2);
+    let home = tempdir();
+    // The global excludes file, set explicitly so the machine's git config cannot interfere.
+    write(&home, "global-ignore", "scratch/\n");
+    write(
+        &home,
+        "gitconfig",
+        &format!(
+            "[core]\n\texcludesFile = {}\n",
+            home.join("global-ignore").display()
+        ),
+    );
+    let d = Daemon::start_with_env(&home, 0, &[("GIT_CONFIG_GLOBAL", &home.join("gitconfig"))]);
+    d.post("/v1/register", json!({ "path": root.to_string_lossy() }));
+    d.wait_fresh(Duration::from_secs(30));
+    let before = d.status().files_indexed;
+
+    // Excluded by a nested .gitignore, by being hidden, and by the global excludes file; only
+    // the last file is indexable.
+    write(&root, "core/nested/.gitignore", "ignored/\n");
+    write(
+        &root,
+        "core/nested/ignored/n.rs",
+        "pub fn nested_ignored() {}\n",
+    );
+    write(&root, "core/.hidden/h.rs", "pub fn in_hidden_dir() {}\n");
+    write(&root, "scratch/g.rs", "pub fn globally_ignored() {}\n");
+    write(&root, "core/src/fresh.rs", "pub fn freshly_added() {}\n");
+
+    wait_until(
+        "the new file to be indexed",
+        Duration::from_secs(30),
+        || d.status().files_indexed > before,
+    );
+    // Let any later batch of events land before checking nothing else came in.
+    std::thread::sleep(Duration::from_secs(2));
+    d.wait_fresh(Duration::from_secs(30));
+    assert_eq!(d.status().files_indexed, before + 1);
+    let paths: Vec<String> = [
+        "nested_ignored",
+        "in_hidden_dir",
+        "globally_ignored",
+        "freshly_added",
+    ]
+    .iter()
+    .flat_map(|q| d.search(q).results)
+    .map(|r| r.path)
+    .collect();
+    assert!(paths.iter().any(|p| p == "core/src/fresh.rs"), "{paths:?}");
+    for excluded in [
+        "core/nested/ignored/n.rs",
+        "core/.hidden/h.rs",
+        "scratch/g.rs",
+    ] {
+        assert!(
+            !paths.iter().any(|p| p == excluded),
+            "{excluded} indexed: {paths:?}"
+        );
+    }
 }
 
 /// A home whose config sets a short idle timeout for on-demand daemons, which listen only on the
