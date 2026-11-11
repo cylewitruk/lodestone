@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -47,8 +47,10 @@ fn search_properties(first: Value) -> Value {
 }
 
 /// The three tool definitions.
+/// The MCP tools. All of them only read the index, which harnesses may use to approve them.
 pub fn tools() -> Vec<Tool> {
-    vec![
+    let read_only = ToolAnnotations::default().read_only(true).open_world(false);
+    [
         Tool::new(
             "semantic_code_search",
             SEMANTIC_DESCRIPTION,
@@ -81,6 +83,9 @@ pub fn tools() -> Vec<Tool> {
             })),
         ),
     ]
+    .into_iter()
+    .map(|t| t.annotate(read_only.clone()))
+    .collect()
 }
 
 #[derive(Deserialize)]

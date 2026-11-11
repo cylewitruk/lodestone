@@ -91,6 +91,10 @@ impl Target {
         }
     }
 
+    fn codex_config(&self) -> PathBuf {
+        self.base().join(Harness::Codex.dir()).join("config.toml")
+    }
+
     fn hooks_file(&self, h: Harness) -> PathBuf {
         let file = match h {
             Harness::Claude => "settings.json",
@@ -197,19 +201,13 @@ fn mcp_steps(h: Harness, t: &Target, add: bool) -> Vec<Step> {
             }
             steps
         }
-        (Harness::Codex, Scope::User) => {
-            let mut steps = vec![run(&["mcp", "remove", NAME], true)];
-            if add {
-                steps.push(run(&["mcp", "add", NAME, "--", &program, "mcp"], false));
-            }
-            steps
-        }
         (Harness::Claude, Scope::Project) => vec![Step::McpJson {
             path: t.project.join(".mcp.json"),
             program: add.then_some(program),
         }],
-        (Harness::Codex, Scope::Project) => vec![Step::CodexToml {
-            path: t.project.join(".codex/config.toml"),
+        // Written directly at both scopes: `codex mcp add` cannot set the approval mode.
+        (Harness::Codex, _) => vec![Step::CodexToml {
+            path: t.codex_config(),
             program: add.then_some(program),
         }],
     }
@@ -300,9 +298,13 @@ pub fn apply(step: &Step) -> anyhow::Result<()> {
         }
         Step::CodexToml { path, program } => {
             let text = read_or_empty(path)?;
-            let table = program
-                .as_ref()
-                .map(|p| format!("command = {}\nargs = [\"mcp\"]\n", Value::from(p.as_str())));
+            // The tools only read the index (and say so), so Codex need not ask before each call.
+            let table = program.as_ref().map(|p| {
+                format!(
+                    "command = {}\nargs = [\"mcp\"]\ndefault_tools_approval_mode = \"approve\"\n",
+                    Value::from(p.as_str())
+                )
+            });
             write_if_changed(
                 path,
                 &text,
@@ -491,6 +493,16 @@ mod tests {
     fn user_install_shares_the_skill_and_runs_each_cli() {
         let root = tempdir();
         let t = target(Scope::User, &root);
+        let home = root.join("home");
+        // An entry from an older install (`codex mcp add`), next to the user's own settings.
+        let codex = home.join(".codex/config.toml");
+        fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        fs::write(
+            &codex,
+            "model = \"x\"\n\n[mcp_servers.lodestone]\ncommand = \"/old/lode\"\nargs = [\"mcp\"]\n\n\
+             [mcp_servers.other]\ncommand = \"o\"\n",
+        )
+        .unwrap();
         let steps = install(&Harness::ALL, &t);
         let runs: Vec<String> = steps
             .iter()
@@ -502,12 +514,14 @@ mod tests {
             [
                 "run claude mcp remove --scope user lodestone",
                 "run claude mcp add --scope user lodestone -- /opt/bin/lode mcp",
-                "run codex mcp remove lodestone",
-                "run codex mcp add lodestone -- /opt/bin/lode mcp",
             ]
         );
         run_all(&steps);
-        let home = root.join("home");
+        assert_eq!(
+            fs::read_to_string(&codex).unwrap(),
+            "model = \"x\"\n\n[mcp_servers.other]\ncommand = \"o\"\n\n[mcp_servers.lodestone]\n\
+             command = \"/opt/bin/lode\"\nargs = [\"mcp\"]\ndefault_tools_approval_mode = \"approve\"\n"
+        );
         let skill = home.join(".agents/skills/lodestone/SKILL.md");
         assert_eq!(fs::read_to_string(&skill).unwrap(), SKILL);
         assert_eq!(
@@ -528,6 +542,10 @@ mod tests {
         assert_eq!(read_json(&home.join(".claude/settings.json")), json!({}));
         run_all(&uninstall(&[Harness::Codex, Harness::Claude], &t));
         assert!(!skill.exists());
+        assert_eq!(
+            fs::read_to_string(&codex).unwrap(),
+            "model = \"x\"\n\n[mcp_servers.other]\ncommand = \"o\"\n"
+        );
     }
 
     #[test]
@@ -556,7 +574,8 @@ mod tests {
         assert_eq!(
             fs::read_to_string(repo.join(".codex/config.toml")).unwrap(),
             "# mine\nmodel = \"x\"\n\n[mcp_servers.other]\nurl = \"http://o\"\n\n\
-             [mcp_servers.lodestone]\ncommand = \"lode\"\nargs = [\"mcp\"]\n"
+             [mcp_servers.lodestone]\ncommand = \"lode\"\nargs = [\"mcp\"]\n\
+             default_tools_approval_mode = \"approve\"\n"
         );
         assert_eq!(
             read_json(&repo.join(".codex/hooks.json"))["hooks"]["SessionStart"][0]["hooks"][0]["command"],

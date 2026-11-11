@@ -48,13 +48,16 @@ lode uninstall                    # same flags; --dry-run prints the steps only
 | Part | User scope | Project scope |
 | ---- | ---- | ---- |
 | Skill | `~/.agents/skills/lodestone/`, linked from `~/.claude/skills/` | `.agents/skills/lodestone/`, linked from `.claude/skills/` |
-| MCP server (`lode mcp`) | `claude mcp add` / `codex mcp add` | `.mcp.json` / `.codex/config.toml` |
+| MCP server (`lode mcp`) | `claude mcp add` / `~/.codex/config.toml` | `.mcp.json` / `.codex/config.toml` |
 | SessionStart reminder | `~/.claude/settings.json` / `~/.codex/hooks.json` | `.claude/settings.json` / `.codex/hooks.json` |
 
 - **Skill location:** the shared `.agents/skills/`. Claude Code doesn't read a repository's
   `.agents/skills`, so it gets a symlink from `.claude/skills/`.
 - **MCP server:** `lode mcp`, a stdio relay the harness starts per session. It starts the daemon
   if needed and searches the session's repository when a call names none.
+- **Approval:** the tools only read the index and are marked read-only (`readOnlyHint`). For
+  Codex, `lode install` sets `default_tools_approval_mode = "approve"` on the server, so its
+  approver doesn't stop each search.
 - **Reminder:** `lode hook session-start` prints it only in a registered repository, and starts
   the daemon early so the model loads while the session starts.
 - **First use:** Codex asks you to trust the hook once (`/hooks`). At project scope, Codex must

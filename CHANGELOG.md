@@ -927,3 +927,17 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   worktree seeing only its own changes, the main checkout unaffected, an unrelated checkout
   getting an error (relay and CLI), and pruning after `git worktree remove`. It fails on the
   previous code.
+
+## Codex approves lodestone's tools
+
+- Codex's auto-approver denied lodestone tool calls. `lode install` now writes
+  `default_tools_approval_mode = "approve"` into `[mcp_servers.lodestone]`, at user scope
+  (`~/.codex/config.toml`) as at project scope, editing the file directly instead of running
+  `codex mcp add`, which cannot set it. An entry from an older install is replaced in place;
+  uninstalling removes it and leaves the rest of the file alone.
+- All three MCP tools are annotated `readOnlyHint: true`, `openWorldHint: false`: they only read
+  the index.
+- Checked: install tests cover replacing an older user entry and uninstalling; Codex 0.167.1 loads
+  the written config and reports `default_tools_approval_mode: approve` (`codex mcp get`), and
+  rejects unknown values (`auto`, `prompt`, `writes`, `approve` are valid). The relay test checks
+  the annotations.
