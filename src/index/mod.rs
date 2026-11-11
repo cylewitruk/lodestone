@@ -132,19 +132,54 @@ fn mtime_nanos(meta: &fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
-/// Walks `root` respecting `.gitignore`, `.lodestoneignore` and cache directories
-/// (`CACHEDIR.TAG`). Returns (accepted rel paths, skipped files per extension).
+/// Walks `root` respecting ignore files (`.gitignore` at every level, `.git/info/exclude`, the
+/// global git excludes file, `.ignore`, `.lodestoneignore`) and skipping hidden files, cache
+/// directories (`CACHEDIR.TAG`) and symlinks. Returns (accepted rel paths, skipped files per
+/// extension).
 pub fn walk(
     root: &Path,
     accepts: &(dyn Fn(&Path) -> bool + Sync),
+) -> (Vec<String>, BTreeMap<String, u64>) {
+    walk_within(root, accepts, |_, _| true)
+}
+
+/// The subset of `paths` (relative to `root`) that [`walk`] accepts. Walks with the same rules,
+/// entering only the directories that lead to `paths`.
+fn walk_paths(
+    root: &Path,
+    accepts: &(dyn Fn(&Path) -> bool + Sync),
+    paths: &[String],
+) -> Vec<String> {
+    let files: HashSet<PathBuf> = paths.iter().map(|p| root.join(p)).collect();
+    let dirs: HashSet<PathBuf> = files
+        .iter()
+        .flat_map(|f| f.ancestors().skip(1).take_while(|d| d.starts_with(root)))
+        .map(Path::to_path_buf)
+        .collect();
+    walk_within(root, accepts, move |path, is_dir| {
+        if is_dir {
+            dirs.contains(path)
+        } else {
+            files.contains(path)
+        }
+    })
+    .0
+}
+
+/// [`walk`], also pruning entries `scope(path, is_dir)` rejects.
+fn walk_within(
+    root: &Path,
+    accepts: &(dyn Fn(&Path) -> bool + Sync),
+    scope: impl Fn(&Path, bool) -> bool + Send + Sync + 'static,
 ) -> (Vec<String>, BTreeMap<String, u64>) {
     let mut files = Vec::new();
     let mut skipped = BTreeMap::new();
     let walker = ignore::WalkBuilder::new(root)
         .add_custom_ignore_filename(".lodestoneignore")
         .require_git(false)
-        .filter_entry(|e| {
-            !(e.file_type().is_some_and(|t| t.is_dir()) && e.path().join("CACHEDIR.TAG").exists())
+        .filter_entry(move |e| {
+            let is_dir = e.file_type().is_some_and(|t| t.is_dir());
+            scope(e.path(), is_dir) && !(is_dir && e.path().join("CACHEDIR.TAG").exists())
         })
         .build();
     for entry in walker.flatten() {
@@ -519,19 +554,8 @@ impl WorktreeIndex {
                 st.manifest.skipped_extensions = skipped;
                 files
             }
-            Some(paths) => paths
-                .iter()
-                .filter(|p| {
-                    let abs = self.root.join(p);
-                    abs.is_file()
-                        && accepts(&abs)
-                        && abs
-                            .metadata()
-                            .map(|m| m.len() <= MAX_FILE_BYTES)
-                            .unwrap_or(false)
-                })
-                .cloned()
-                .collect(),
+            // Watcher events: only files a full walk would index.
+            Some(paths) => walk_paths(&self.root, &accepts, paths),
         };
         let candidate_set: HashSet<&str> = candidates.iter().map(String::as_str).collect();
         let mut removed: Vec<String> = match &opts.paths {

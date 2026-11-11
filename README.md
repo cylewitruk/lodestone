@@ -130,8 +130,10 @@ modes:
   runs everything in-process.
 - **Stale indexes:** searches never index. A stale index answers from what it has, and
   `lode status` says why it is stale.
-- **Ignored files:** files are walked with `.gitignore` and `.lodestoneignore` rules. Directories
-  containing `CACHEDIR.TAG`, such as Cargo's `target/`, are skipped.
+- **Ignored files:** full scans and watched changes follow the same rules: `.gitignore` at every
+  level, `.git/info/exclude`, the global git excludes file (`core.excludesFile`, or
+  `~/.config/git/ignore`), `.ignore` and `.lodestoneignore`. Hidden files, symlinks and
+  directories containing `CACHEDIR.TAG`, such as Cargo's `target/`, are skipped.
 - **Linux:** large trees may need a higher `fs.inotify.max_user_watches`. If the watcher fails,
   lodestone falls back to a 60 s rescan and reports it in `status`.
 

@@ -859,3 +859,15 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   became items, plus 20 trait signatures. The only misses are two type-checker fixtures that are
   deliberately invalid Clarity. (`contrib/.../pox-5.clar` is a symlink; it is indexed once, at
   its real path.) Existing indexes pick up `.clar` files on their next scan.
+
+## Watcher follows the full scan's ignore rules
+
+- Watched changes used a smaller rule set than full scans: the root `.gitignore` and
+  `.lodestoneignore` and `.git/info/exclude` only. Files excluded by a nested `.gitignore`, the
+  global git excludes file or a hidden directory were indexed when they changed, e.g. edits in
+  agent worktrees under a globally ignored `.worktrees/`, and the index then reported itself stale
+  until the next full scan removed them. Changed files are now checked by the full scan's own
+  walker, entering only the directories that lead to them, so both apply the same rules. Symlinked
+  files changed while watched are no longer indexed either.
+- Checked: an integration test writes files excluded each way, plus one indexable file, into a
+  watched worktree; only the indexable one is indexed. It fails on the previous code.
