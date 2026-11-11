@@ -247,14 +247,33 @@ fn drop_self(resp: &mut SearchResponse, code: &str, top_k: usize) {
     }
 }
 
+/// Called with the `repo` a search names (`None`: the default), before it runs.
+pub type OnSearch = Arc<dyn Fn(Option<&str>) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct LodestoneMcp {
     engine: Arc<Engine>,
+    on_search: Option<OnSearch>,
 }
 
 impl LodestoneMcp {
     pub fn new(engine: Arc<Engine>) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            on_search: None,
+        }
+    }
+
+    /// Lets the daemon keep searched worktrees watched and indexed.
+    pub fn on_search(mut self, f: OnSearch) -> Self {
+        self.on_search = Some(f);
+        self
+    }
+
+    fn searching(&self, scope: &Scope) {
+        if let Some(f) = &self.on_search {
+            f(scope.repo.as_deref());
+        }
     }
 
     async fn search(
@@ -320,11 +339,13 @@ impl LodestoneMcp {
         match name {
             "semantic_code_search" => {
                 let a: SemanticArgs = serde_json::from_value(args).map_err(invalid)?;
+                self.searching(&a.scope);
                 let query = semantic_query(&a.query, &a.example_identifiers);
                 self.search(a.scope.request(query), |_| {}).await
             }
             "similar_code_search" => {
                 let a: SimilarArgs = serde_json::from_value(args).map_err(invalid)?;
+                self.searching(&a.scope);
                 self.similar(a.scope, a.code.into_vec()).await
             }
             "status" => {
@@ -379,9 +400,9 @@ impl ServerHandler for LodestoneMcp {
     }
 }
 
-pub fn service(engine: Arc<Engine>) -> StreamableHttpService<LodestoneMcp, LocalSessionManager> {
+pub fn service(tools: LodestoneMcp) -> StreamableHttpService<LodestoneMcp, LocalSessionManager> {
     StreamableHttpService::new(
-        move || Ok(LodestoneMcp::new(engine.clone())),
+        move || Ok(tools.clone()),
         Arc::new(LocalSessionManager::default()),
         StreamableHttpServerConfig::default(),
     )

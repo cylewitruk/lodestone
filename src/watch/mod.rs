@@ -272,6 +272,11 @@ impl Watchers {
                 Some(p) => Change::Paths(p.into_iter().collect()),
                 None => Change::Rescan,
             };
+            // Before queueing, so a search right after reports the work as pending; the worker
+            // clears it when done.
+            if change == Change::Rescan {
+                w.set_pending(Some("full rescan".into()));
+            }
             let _ = h.tx.send(change);
         }
     }

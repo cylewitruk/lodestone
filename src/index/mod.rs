@@ -250,7 +250,10 @@ impl WorktreeIndex {
         let vectors = load(VECTORS_FILE, true)?;
         let doc_vectors = load(DOC_VECTORS_FILE, config.doc_vectors)?;
         match &manifest {
-            None => stale.push("not indexed yet; run `lode index` or `lode register`".to_string()),
+            None => stale.push(
+                "not indexed yet (a session or search starts it; `lode index <path>` runs it now)"
+                    .to_string(),
+            ),
             Some(m) if m.model_id != model_id => stale.push(format!(
                 "index built with model {} but {model_id} is configured; run `lode index --force`",
                 m.model_id

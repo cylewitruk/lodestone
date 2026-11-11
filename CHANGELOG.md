@@ -980,3 +980,24 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   eval scorer reads list-valued `code`.
 - Checked: the MCP test passes two definitions (one with a diff `+`) and gets two sections of at
   most 12 results, each leaving out its own definition.
+
+## Searches index the worktree they name
+
+- A linked worktree that a session reached only through `repo` (Codex sessions often start
+  outside the repository) was registered but never indexed: MCP calls (`/v1/tool`, `/mcp`) ran
+  the search without the per-request activation REST searches get, and an always-on daemon
+  skipped activation altogether. Every search now activates the worktree it names: watched,
+  caught up, indexed if new; on-demand daemons also lease it. The same gap left a registered but
+  unwatched repository uncaught-up when only named through `repo`.
+- Queueing a full scan marks the worktree pending at once, so a search right after reports it.
+  An empty answer from an index still being built now says so ("still being indexed; search
+  again shortly") instead of "no matches", which agents read as "nothing exists". The
+  never-indexed reason no longer tells you to run `lode register` for a registered worktree.
+- Linked worktrees are named after their repository, `<repository>:<worktree>` (e.g.
+  `concurro:limits-cleanup`), instead of the directory name alone, which collided across
+  repositories (`limits-cleanup-2`). Earlier automatic registrations are renamed when the daemon
+  tidies the registry (start-up, every minute), alongside pruning removed worktrees.
+- Checked: a test searches a new nested worktree through `lode mcp` from outside every
+  repository, by path and then by its `repo:wt` name; the first answer is never "no matches", the
+  worktree gets indexed, and an old-style name is renamed on the next start. It fails on the
+  previous code ("no matches", never indexed).
