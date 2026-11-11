@@ -43,6 +43,8 @@ pub struct AppState {
     /// Watch only leased worktrees (an auto-started daemon); otherwise every registered one.
     pub on_demand: bool,
     pub request_lease: Duration,
+    /// Notified by `POST /v1/shutdown` (`lode stop`).
+    pub stop_requested: Arc<tokio::sync::Notify>,
 }
 
 impl AppState {
@@ -250,6 +252,12 @@ async fn tool(State(s): State<AppState>, Json(mut req): Json<ToolRequest>) -> Ap
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))
 }
 
+/// Asks the daemon to shut down gracefully once in-flight requests finish.
+async fn shutdown(State(s): State<AppState>) -> StatusCode {
+    s.stop_requested.notify_one();
+    StatusCode::ACCEPTED
+}
+
 pub fn router(state: AppState) -> Router {
     let mcp = mcp::service(state.engine.clone());
     Router::new()
@@ -261,6 +269,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions", post(session_renew))
         .route("/v1/sessions/{id}", axum::routing::delete(session_release))
         .route("/v1/tool", post(tool))
+        .route("/v1/shutdown", post(shutdown))
         .nest_service("/mcp", mcp)
         .with_state(state)
 }
@@ -297,7 +306,9 @@ pub async fn serve(config: Config, on_demand: bool) -> anyhow::Result<()> {
         } else {
             REQUEST_LEASE.min(idle_timeout)
         },
+        stop_requested: Arc::new(tokio::sync::Notify::new()),
     };
+    let stop_requested = state.stop_requested.clone();
     let idle = Arc::new(tokio::sync::Notify::new());
     if on_demand {
         tokio::spawn(sweep(state.clone(), idle_timeout, idle.clone()));
@@ -316,7 +327,7 @@ pub async fn serve(config: Config, on_demand: bool) -> anyhow::Result<()> {
         listeners.describe()
     );
     let (stop, stopped) = tokio::sync::watch::channel(false);
-    let shutdown = move || {
+    let graceful = move || {
         let mut stopped = stopped.clone();
         async move {
             let _ = stopped.wait_for(|s| *s).await;
@@ -328,18 +339,20 @@ pub async fn serve(config: Config, on_demand: bool) -> anyhow::Result<()> {
     #[cfg(unix)]
     servers.spawn(
         axum::serve(unix, app.clone())
-            .with_graceful_shutdown(shutdown())
+            .with_graceful_shutdown(graceful())
             .into_future(),
     );
     if let Some((tcp, _)) = listeners.tcp {
         servers.spawn(
             axum::serve(tcp, app)
-                .with_graceful_shutdown(shutdown())
+                .with_graceful_shutdown(graceful())
                 .into_future(),
         );
     }
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
+        _ = terminated() => {}
+        _ = stop_requested.notified() => eprintln!("lodestone: stopping on request"),
         _ = idle.notified() => eprintln!("lodestone: idle, exiting"),
     }
     let _ = stop.send(true);
@@ -349,6 +362,19 @@ pub async fn serve(config: Config, on_demand: bool) -> anyhow::Result<()> {
     #[cfg(unix)]
     drop(socket);
     Ok(())
+}
+
+/// Resolves on SIGTERM (Unix only; never elsewhere).
+async fn terminated() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        if let Ok(mut term) = signal(SignalKind::terminate()) {
+            term.recv().await;
+            return;
+        }
+    }
+    std::future::pending::<()>().await
 }
 
 /// Expires leases, stops watching worktrees no lease holds, and signals `idle` once no lease has

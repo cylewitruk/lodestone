@@ -764,6 +764,63 @@ fn cli_fails_fast_when_the_daemon_cannot_start() {
     );
 }
 
+#[test]
+fn stop_and_sigterm_shut_the_daemon_down_gracefully() {
+    let home = on_demand_home(0);
+    let socket = home_config(&home).socket_path();
+    let serve = |delay_ms: &str| {
+        lode(&home)
+            .args(["serve", "--on-demand"])
+            .env("LODESTONE_TEST_EMBED_DELAY_MS", delay_ms)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let stop = || {
+        let out = lode(&home).arg("stop").output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    let mut daemon = serve("0");
+    wait_until("the daemon", Duration::from_secs(30), || {
+        client(&home).is_some()
+    });
+    assert!(stop().contains("stopped"));
+    assert!(daemon.wait().unwrap().success());
+    assert!(!socket.exists());
+    assert!(stop().contains("no lodestone daemon running"));
+
+    // SIGTERM while an indexing pass is running: the daemon exits promptly and cleanly, without
+    // waiting for the pass (each embedding call takes 6 s).
+    let mut daemon = serve("6000");
+    wait_until("the daemon", Duration::from_secs(30), || {
+        client(&home).is_some()
+    });
+    let c = client(&home).unwrap();
+    c.register(&RegisterRequest {
+        path: repo(3).to_string_lossy().into_owned(),
+    })
+    .unwrap();
+    wait_until("indexing", Duration::from_secs(10), || {
+        c.status(None).unwrap().indexing.running
+    });
+    let started = Instant::now();
+    let killed = Command::new("kill")
+        .args(["-TERM", &daemon.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    assert!(daemon.wait().unwrap().success(), "not a graceful exit");
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(!socket.exists());
+}
+
 /// Reads JSON-RPC responses from the relay until the one with `id`.
 fn rpc_response(lines: &mut impl Iterator<Item = std::io::Result<String>>, id: u64) -> Value {
     for line in lines {

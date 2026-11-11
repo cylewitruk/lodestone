@@ -891,3 +891,16 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   skipping unregistered projects, unchanged files, appended and half-written lines, rewrites and
   late registration. On this machine's real transcripts (182 files, 57,516 lines) the first run
   took 2.3 s in a debug build and the second 22 ms, reading nothing.
+
+## `lode stop`
+
+- `lode stop` asks the running daemon to shut down (`POST /v1/shutdown`, over the socket) and
+  waits until it has exited and released its socket; with none running it says so and succeeds.
+- The daemon now handles SIGTERM like Ctrl-C. Before, `kill` ended it at once, cutting off
+  in-flight requests and leaving its socket file behind.
+- Shutting down finishes in-flight requests, then exits without waiting for an indexing pass in
+  progress (it waited for the whole pass before); the index is consistent after every batch, and
+  the next pass carries on.
+- Checked: an integration test stops a daemon with `lode stop` (clean exit, socket removed, a
+  second `lode stop` reports none running) and sends SIGTERM mid-index: a clean exit within 3 s.
+  Without the change, exit waited out the 6 s indexing batch.

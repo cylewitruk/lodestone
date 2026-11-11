@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -43,6 +44,8 @@ enum Cmd {
     },
     /// MCP server over stdio for agent harnesses: relays to the daemon, starting it if needed.
     Mcp,
+    /// Stop the running daemon: it finishes in-flight requests, then exits.
+    Stop,
     /// Register a worktree: canonicalize, add to the registry, watch, index if needed.
     Register { path: PathBuf },
     /// Index a worktree (incremental unless --force).
@@ -173,6 +176,9 @@ enum HookCmd {
     SessionStart,
 }
 
+/// How long `lode stop` waits for the daemon to exit.
+const STOP_WAIT: Duration = Duration::from_secs(30);
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -202,7 +208,21 @@ fn main() -> anyhow::Result<()> {
                 config.port = Some(p);
             }
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(lodestone::api::serve(config, on_demand))
+            let served = rt.block_on(lodestone::api::serve(config, on_demand));
+            // Don't wait for an indexing pass still running: the index is consistent after every
+            // batch, and the next pass picks up where this one stopped.
+            rt.shutdown_background();
+            served
+        }
+        Cmd::Stop => {
+            let Some(c) = Client::connect(&config.endpoint()) else {
+                println!("no lodestone daemon running");
+                return Ok(());
+            };
+            c.stop()?;
+            client::wait_until_stopped(&config, STOP_WAIT)?;
+            println!("stopped");
+            Ok(())
         }
         Cmd::Mcp => {
             let rt = tokio::runtime::Runtime::new()?;
