@@ -112,7 +112,16 @@ impl SearchResponse {
             }
         }
         if self.results.is_empty() {
-            out.push("no matches".into());
+            // An index still being built answers with nothing, not with "nothing exists".
+            let building = self
+                .stale_reasons
+                .iter()
+                .any(|r| r.starts_with("not indexed yet") || r.starts_with("pending:"));
+            out.push(if building {
+                "no results yet: this worktree is still being indexed; search again shortly".into()
+            } else {
+                "no matches".into()
+            });
         }
         for n in &self.notes {
             out.push(format!("# note: {n}"));

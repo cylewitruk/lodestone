@@ -148,6 +148,34 @@ impl Checkout {
     }
 }
 
+/// A registry name for `root`: its directory name, or for a linked git worktree of a registered
+/// repository `<repository>:<worktree>`, after the repository's main checkout.
+fn base_name(reg: &RegistryFile, root: &Path) -> String {
+    let dir = root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let Some(c) = Checkout::of(root).filter(Checkout::is_linked) else {
+        return dir;
+    };
+    reg.repos
+        .iter()
+        .find(|r| Checkout::of(&r.root).is_some_and(|m| m.common == c.common && !m.is_linked()))
+        .map_or(dir.clone(), |main| format!("{}:{dir}", main.name))
+}
+
+/// `base`, or `base-2`, `base-3`, … if another entry than `root` has it.
+fn unique_name(reg: &RegistryFile, base: &str, root: &Path) -> String {
+    let taken = |name: &str| reg.repos.iter().any(|r| r.name == name && r.root != root);
+    let mut name = base.to_string();
+    let mut n = 2;
+    while taken(&name) {
+        name = format!("{base}-{n}");
+        n += 1;
+    }
+    name
+}
+
 /// The registered worktree containing `dir` (the innermost, for nested worktrees).
 pub fn root_of(roots: &[PathBuf], dir: &Path) -> Option<PathBuf> {
     // A directory that no longer exists (e.g. a removed worktree) is matched as given.
@@ -359,8 +387,9 @@ impl Engine {
     }
 
     /// Unregisters automatically registered worktrees whose directory is gone and deletes their
-    /// indexes. Returns their roots.
-    pub fn prune_removed_worktrees(&self) -> anyhow::Result<Vec<PathBuf>> {
+    /// indexes, and names the others after their repository (`<repository>:<worktree>`). Returns
+    /// the roots unregistered.
+    pub fn tidy_worktrees(&self) -> anyhow::Result<Vec<PathBuf>> {
         let _write = self
             .registry_writes
             .lock()
@@ -370,10 +399,23 @@ impl Engine {
             .repos
             .into_iter()
             .partition(|r| r.auto && !r.root.exists());
-        if gone.is_empty() {
+        reg.repos = kept;
+        let mut renamed = false;
+        for i in 0..reg.repos.len() {
+            let r = &reg.repos[i];
+            let base = base_name(&reg, &r.root);
+            let suffixed = r
+                .name
+                .strip_prefix(&format!("{base}-"))
+                .is_some_and(|n| n.parse::<u32>().is_ok());
+            if r.auto && r.name != base && !suffixed {
+                reg.repos[i].name = unique_name(&reg, &base, &reg.repos[i].root.clone());
+                renamed = true;
+            }
+        }
+        if gone.is_empty() && !renamed {
             return Ok(Vec::new());
         }
-        reg.repos = kept;
         self.write_registry(&reg)?;
         let mut open = self
             .worktrees
@@ -407,16 +449,7 @@ impl Engine {
             .unwrap_or_else(|e| e.into_inner());
         let mut reg = self.registry_file();
         if !reg.repos.iter().any(|r| r.root == root) {
-            let base = root
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let mut name = base.clone();
-            let mut n = 2;
-            while reg.repos.iter().any(|r| r.name == name) {
-                name = format!("{base}-{n}");
-                n += 1;
-            }
+            let name = unique_name(&reg, &base_name(&reg, &root), &root);
             reg.repos.push(RepoEntry {
                 root: root.clone(),
                 name,

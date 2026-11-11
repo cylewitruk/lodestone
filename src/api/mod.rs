@@ -63,19 +63,28 @@ impl AppState {
     }
 
     /// Keeps a worktree a request names watched for a while (on-demand daemons only).
+    /// Keeps the worktree a request names watched and caught up (indexing it if new); an
+    /// on-demand daemon also leases it for a while.
     fn lease_request(&self, repo: Option<&str>) {
-        if !self.on_demand {
+        let Ok(w) = self.engine.resolve(repo) else {
             return;
-        }
-        if let Ok(w) = self.engine.resolve(repo) {
+        };
+        if self.on_demand {
             self.leases().renew(
                 &format!("request:{}", w.root.display()),
                 Some(w.root.clone()),
                 self.request_lease,
                 Instant::now(),
             );
-            self.activate(w);
         }
+        self.activate(w);
+    }
+
+    /// The MCP tools, activating whatever worktree a search names.
+    fn mcp(&self) -> LodestoneMcp {
+        let s = self.clone();
+        LodestoneMcp::new(self.engine.clone())
+            .on_search(Arc::new(move |repo| s.lease_request(repo)))
     }
 }
 
@@ -262,7 +271,7 @@ async fn tool(State(s): State<AppState>, Json(mut req): Json<ToolRequest>) -> Ap
         req.arguments
             .insert("repo".into(), root.to_string_lossy().into());
     }
-    LodestoneMcp::new(s.engine.clone())
+    s.mcp()
         .call(&req.name, req.arguments)
         .await
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))
@@ -275,7 +284,7 @@ async fn shutdown(State(s): State<AppState>) -> StatusCode {
 }
 
 pub fn router(state: AppState) -> Router {
-    let mcp = mcp::service(state.engine.clone());
+    let mcp = mcp::service(state.mcp());
     Router::new()
         .route("/v1/search", get(search_get).post(search_post))
         .route("/v1/status", get(status))
@@ -325,13 +334,13 @@ pub async fn serve(config: Config, on_demand: bool) -> anyhow::Result<()> {
         stop_requested: Arc::new(tokio::sync::Notify::new()),
     };
     let stop_requested = state.stop_requested.clone();
-    prune_removed_worktrees(&state);
+    tidy_worktrees(&state);
     tokio::spawn({
         let state = state.clone();
         async move {
             loop {
                 tokio::time::sleep(PRUNE).await;
-                prune_removed_worktrees(&state);
+                tidy_worktrees(&state);
             }
         }
     });
@@ -391,9 +400,9 @@ pub async fn serve(config: Config, on_demand: bool) -> anyhow::Result<()> {
 }
 
 /// Drops automatically registered worktrees whose directory is gone (see
-/// [`Engine::prune_removed_worktrees`]).
-fn prune_removed_worktrees(s: &AppState) {
-    match s.engine.prune_removed_worktrees() {
+/// [`Engine::tidy_worktrees`]).
+fn tidy_worktrees(s: &AppState) {
+    match s.engine.tidy_worktrees() {
         Ok(gone) => {
             for root in gone {
                 s.watchers.unwatch(&s.engine, &root);

@@ -991,6 +991,83 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
     assert!(lode(&home).arg("stop").status().unwrap().success());
 }
 
+#[test]
+fn a_search_naming_a_new_worktree_indexes_it() {
+    let root = git_repo(3);
+    git(
+        &root,
+        &["worktree", "add", "-q", ".worktrees/wt", "-b", "wt"],
+    );
+    let wt = root.join(".worktrees/wt").canonicalize().unwrap();
+    write(
+        &wt,
+        "core/src/only_wt.rs",
+        "/// Only in this worktree.\npub fn only_in_wt() {}\n",
+    );
+    let home = on_demand_home(3);
+    let ok = lode(&home)
+        .args(["--local", "register"])
+        .arg(&root)
+        .stdout(Stdio::null())
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+
+    // The session runs outside every repository, as Codex's often do, and names the worktree.
+    let outside = tempdir();
+    let search = || {
+        relay_call(
+            &home,
+            &outside,
+            "semantic_code_search",
+            json!({ "query": "only_in_wt", "repo": wt.to_string_lossy() }),
+        )
+    };
+    let (err, first) = search();
+    assert!(!err, "{first}");
+    assert!(
+        first.contains("core/src/only_wt.rs") || first.contains("still being indexed"),
+        "an index being built must not answer `no matches`: {first}"
+    );
+    wait_until(
+        "the worktree to be indexed",
+        Duration::from_secs(30),
+        || {
+            let (err, text) = search();
+            !err && text.contains("core/src/only_wt.rs")
+        },
+    );
+    // Named after its repository, and reachable by that name.
+    let registry = fs::read_to_string(home.join("registry.json")).unwrap();
+    assert!(registry.contains("\"auto\": true"), "{registry}");
+    assert!(registry.contains("\"name\": \"repo:wt\""), "{registry}");
+    let (err, text) = relay_call(
+        &home,
+        &outside,
+        "semantic_code_search",
+        json!({ "query": "only_in_wt", "repo": "repo:wt" }),
+    );
+    assert!(!err && text.contains("core/src/only_wt.rs"), "{text}");
+
+    // An older automatic registration named after the directory alone is renamed.
+    assert!(lode(&home).arg("stop").status().unwrap().success());
+    fs::write(
+        home.join("registry.json"),
+        registry.replace("\"repo:wt\"", "\"wt\""),
+    )
+    .unwrap();
+    let out = lode(&home)
+        .args(["search", "only_in_wt", "--repo"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let registry = fs::read_to_string(home.join("registry.json")).unwrap();
+    assert!(registry.contains("\"name\": \"repo:wt\""), "{registry}");
+    assert!(lode(&home).arg("stop").status().unwrap().success());
+}
+
 /// Reads JSON-RPC responses from the relay until the one with `id`.
 fn rpc_response(lines: &mut impl Iterator<Item = std::io::Result<String>>, id: u64) -> Value {
     for line in lines {

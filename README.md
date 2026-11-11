@@ -160,8 +160,10 @@ modes:
   text to vectors, so a second worktree costs little but sees only its own code.
 - **Which worktree:** a session or command uses the worktree it runs in (`repo` overrides it).
   A linked git worktree (`git worktree add`, e.g. under `.claude/worktrees/` or `.worktrees/`) of
-  a registered repository is registered on first use and gets its own index; once its directory
-  is deleted, the daemon unregisters it and deletes its index. A checkout nobody registered gets
+  a registered repository is registered on first use, named `<repository>:<worktree>` (e.g.
+  `concurro:limits-cleanup`), and gets its own index; once its directory is deleted, the daemon
+  unregisters it and deletes its index. Any search starts indexing the worktree it names, however
+  it reaches the daemon. A checkout nobody registered gets
   an error asking for `lode register`, never another checkout's results. Only outside any checkout
   does a single registered repository serve by default.
 - **CLI:** `search`, `register` and `index` use the daemon, starting it if needed. `status` uses
