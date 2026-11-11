@@ -904,3 +904,26 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
 - Checked: an integration test stops a daemon with `lode stop` (clean exit, socket removed, a
   second `lode stop` reports none running) and sends SIGTERM mid-index: a clean exit within 3 s.
   Without the change, exit waited out the 6 s indexing batch.
+
+## Worktrees never borrow another checkout's index
+
+- A session, CLI command or `repo` path was served by the innermost registered root containing
+  it, or, with one repository registered, by that one. A linked git worktree inside a registered
+  checkout (agents put them in `.claude/worktrees/`, `.worktrees/`) or any unregistered checkout
+  therefore searched the main checkout's index: code the worktree deleted still showed up, code
+  it added did not.
+- `registry::place` now decides from git itself (`.git` files, `commondir`): a linked worktree is
+  served only by its own index, and one of a registered repository is registered on first use
+  (`auto` in `registry.json`) and indexed, mostly from the shared embedding cache. A separate
+  repository nested in a registered checkout is not served by it; submodules still are.
+  Unregistered checkouts get an error naming `lode register`. Only outside any checkout does the
+  single registered repository serve by default.
+- The CLI's `search` and `status` default to the current directory under the same rules. A
+  search naming an unregistered path is an error instead of an empty, stale answer.
+- Automatically registered worktrees whose directory is gone are unregistered and their index
+  deleted, at daemon start and every minute.
+- The session hook shows its reminder in linked worktrees of registered repositories.
+- Checked: an integration test with real `git worktree`s covers the hook, a session in a nested
+  worktree seeing only its own changes, the main checkout unaffected, an unrelated checkout
+  getting an error (relay and CLI), and pruning after `git worktree remove`. It fails on the
+  previous code.

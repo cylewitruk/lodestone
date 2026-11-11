@@ -148,6 +148,14 @@ modes:
 
 - **Registering:** `lode register` canonicalizes the path, adds it to
   `~/.lodestone/registry.json`, then starts watching and indexing it.
+- **One index per worktree:** results never mix worktrees. The embedding cache they share maps
+  text to vectors, so a second worktree costs little but sees only its own code.
+- **Which worktree:** a session or command uses the worktree it runs in (`repo` overrides it).
+  A linked git worktree (`git worktree add`, e.g. under `.claude/worktrees/` or `.worktrees/`) of
+  a registered repository is registered on first use and gets its own index; once its directory
+  is deleted, the daemon unregisters it and deletes its index. A checkout nobody registered gets
+  an error asking for `lode register`, never another checkout's results. Only outside any checkout
+  does a single registered repository serve by default.
 - **CLI:** `search`, `register` and `index` use the daemon, starting it if needed. `status` uses
   a running daemon and otherwise reads the indexes in-process, so it never starts one. `--local`
   runs everything in-process.

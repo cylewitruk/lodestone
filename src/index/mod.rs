@@ -38,6 +38,14 @@ const VECTORS_FILE: &str = "vectors.usearch";
 const DOC_VECTORS_FILE: &str = "doc-vectors.usearch";
 
 /// Worktree id: `blake3(canonical_root)`.
+/// Where a worktree's index lives: `<data dir>/worktrees/<worktree id>`.
+pub fn index_dir(config: &Config, canonical_root: &Path) -> PathBuf {
+    config
+        .data_dir()
+        .join("worktrees")
+        .join(worktree_id(canonical_root))
+}
+
 pub fn worktree_id(canonical_root: &Path) -> String {
     blake3::hash(canonical_root.to_string_lossy().as_bytes()).to_hex()[..16].to_string()
 }
@@ -219,7 +227,7 @@ impl WorktreeIndex {
         dim: usize,
     ) -> anyhow::Result<Self> {
         let id = worktree_id(canonical_root);
-        let dir = config.data_dir().join("worktrees").join(&id);
+        let dir = index_dir(config, canonical_root);
         fs::create_dir_all(&dir)?;
         let manifest = Manifest::load(&dir.join("manifest.json"))?;
         let store = ItemStore::open(&dir.join("items.sqlite"))?;

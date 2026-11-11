@@ -11,7 +11,7 @@ use lodestone::client::{self, Client};
 use lodestone::config::{Backend, Config};
 use lodestone::embed;
 use lodestone::index::IndexOptions;
-use lodestone::registry::Engine;
+use lodestone::registry::{self, Engine};
 use lodestone::transcripts;
 
 #[derive(Parser)]
@@ -277,7 +277,7 @@ fn main() -> anyhow::Result<()> {
         } => {
             let req = SearchRequest {
                 query,
-                repo,
+                repo: repo.or_else(|| here(&config)),
                 from_unit,
                 language,
                 top_k,
@@ -346,6 +346,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Status { repo, json } => {
+            let repo = repo.or_else(|| here(&config));
             let st = match daemon(false)? {
                 Some(c) => c.status(repo.as_deref())?,
                 None => Engine::from_env(config)?.status(repo.as_deref())?,
@@ -570,6 +571,15 @@ fn on_path(program: &str) -> bool {
 
 /// The session's directory: `cwd` from the hook's stdin JSON (Claude Code and Codex both send
 /// it), else `CLAUDE_PROJECT_DIR`, else the current directory.
+/// The current directory, as the repository to use when none is named, if it is in a git
+/// checkout or a registered directory: its own index, or an error, never another checkout's.
+/// Elsewhere, `None` leaves the choice to the daemon (the only registered repository).
+fn here(config: &Config) -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let placement = registry::place(&registry::registered_roots(config), &cwd);
+    (placement != registry::Placement::Outside).then(|| cwd.to_string_lossy().into_owned())
+}
+
 fn session_dir() -> anyhow::Result<PathBuf> {
     use std::io::{IsTerminal, Read};
     let mut input = String::new();

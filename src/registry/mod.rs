@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context, bail};
@@ -30,6 +30,10 @@ struct RegistryFile {
 struct RepoEntry {
     root: PathBuf,
     name: String,
+    /// Registered automatically, as a linked git worktree of a registered repository; dropped,
+    /// index and all, once its directory is gone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    auto: bool,
 }
 
 fn read_registry(path: &Path) -> RegistryFile {
@@ -46,6 +50,84 @@ pub fn registered_roots(config: &Config) -> Vec<PathBuf> {
         .into_iter()
         .map(|r| r.root)
         .collect()
+}
+
+/// Which index serves a directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// This registered worktree's.
+    Registered(PathBuf),
+    /// A linked git worktree (top-level directory) of a registered repository, not registered
+    /// yet; it gets its own index.
+    NewWorktree(PathBuf),
+    /// A git checkout (top-level directory) that no registered worktree covers.
+    Unregistered(PathBuf),
+    /// Neither in a git checkout nor in a registered directory.
+    Outside,
+}
+
+/// Decides which index serves `dir`, never one built from a different checkout: a linked git
+/// worktree (`git worktree add`) is served only by its own index, even inside a registered
+/// checkout, and so is a separate repository nested in one. Git submodules belong to the
+/// checkout that contains them.
+pub fn place(roots: &[PathBuf], dir: &Path) -> Placement {
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let checkout = Checkout::of(&dir);
+    if let Some(c) = checkout.as_ref().filter(|c| c.is_linked()) {
+        return if roots.contains(&c.top) {
+            Placement::Registered(c.top.clone())
+        } else if roots
+            .iter()
+            .any(|r| Checkout::of(r).is_some_and(|rc| rc.common == c.common))
+        {
+            Placement::NewWorktree(c.top.clone())
+        } else {
+            Placement::Unregistered(c.top.clone())
+        };
+    }
+    match (root_of(roots, &dir), checkout) {
+        (Some(root), Some(c))
+            if c.top != root
+                && c.top.starts_with(&root)
+                && Checkout::of(&root).is_some_and(|rc| !c.git_dir.starts_with(&rc.common)) =>
+        {
+            Placement::Unregistered(c.top)
+        }
+        (Some(root), _) => Placement::Registered(root),
+        (None, Some(c)) => Placement::Unregistered(c.top),
+        (None, None) => Placement::Outside,
+    }
+}
+
+/// The git checkout a directory is in.
+struct Checkout {
+    /// Its top-level directory: the nearest one holding `.git`.
+    top: PathBuf,
+    /// Its own git directory (`.git`, `.git/worktrees/<name>`, `.git/modules/<name>`).
+    git_dir: PathBuf,
+    /// The repository's shared git directory, the same for all of its worktrees.
+    common: PathBuf,
+}
+
+impl Checkout {
+    fn of(dir: &Path) -> Option<Self> {
+        let top = dir.ancestors().find(|d| d.join(".git").exists())?;
+        let git_dir = crate::watch::git_dir(top)?.canonicalize().ok()?;
+        let common = match fs::read_to_string(git_dir.join("commondir")) {
+            Ok(rel) => git_dir.join(rel.trim()).canonicalize().ok()?,
+            Err(_) => git_dir.clone(),
+        };
+        Some(Self {
+            top: top.to_path_buf(),
+            git_dir,
+            common,
+        })
+    }
+
+    /// A worktree added with `git worktree add`, rather than a repository's main checkout.
+    fn is_linked(&self) -> bool {
+        self.git_dir != self.common
+    }
 }
 
 /// The registered worktree containing `dir` (the innermost, for nested worktrees).
@@ -72,6 +154,8 @@ pub struct Engine {
     worktrees: RwLock<BTreeMap<PathBuf, Arc<WorktreeIndex>>>,
     /// Watcher state per worktree, reported by `status` (set by the daemon).
     pub watcher_state: RwLock<BTreeMap<PathBuf, String>>,
+    /// Serializes read-modify-write updates of `registry.json`.
+    registry_writes: Mutex<()>,
 }
 
 /// Canonicalizes a user-supplied path. Called only at the registry boundary.
@@ -138,6 +222,7 @@ impl Engine {
             reranker: OnceLock::new(),
             worktrees: RwLock::new(BTreeMap::new()),
             watcher_state: RwLock::new(BTreeMap::new()),
+            registry_writes: Mutex::new(()),
             config,
         })
     }
@@ -228,8 +313,80 @@ impl Engine {
 
     /// Adds `path` to the registry (idempotent) and returns its index handle.
     pub fn register(&self, path: &Path) -> anyhow::Result<Arc<WorktreeIndex>> {
+        self.add(path, false)
+    }
+
+    /// The index serving `dir` (see [`place`]). A linked git worktree of a registered repository
+    /// is registered on first use; a directory no registered worktree covers is an error.
+    pub fn worktree_for(&self, dir: &Path) -> anyhow::Result<Arc<WorktreeIndex>> {
+        let roots: Vec<PathBuf> = self
+            .registry_file()
+            .repos
+            .into_iter()
+            .map(|r| r.root)
+            .collect();
+        match place(&roots, dir) {
+            Placement::Registered(root) => self.open_canonical(&root),
+            Placement::NewWorktree(top) => self.add(&top, true),
+            Placement::Unregistered(top) => bail!(
+                "{} is not indexed by lodestone; run `lode register {}`",
+                top.display(),
+                top.display()
+            ),
+            Placement::Outside => bail!(
+                "{} is not in a registered worktree; run `lode register <path>`",
+                dir.display()
+            ),
+        }
+    }
+
+    /// Unregisters automatically registered worktrees whose directory is gone and deletes their
+    /// indexes. Returns their roots.
+    pub fn prune_removed_worktrees(&self) -> anyhow::Result<Vec<PathBuf>> {
+        let _write = self
+            .registry_writes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut reg = self.registry_file();
+        let (gone, kept): (Vec<RepoEntry>, Vec<RepoEntry>) = reg
+            .repos
+            .into_iter()
+            .partition(|r| r.auto && !r.root.exists());
+        if gone.is_empty() {
+            return Ok(Vec::new());
+        }
+        reg.repos = kept;
+        self.write_registry(&reg)?;
+        let mut open = self
+            .worktrees
+            .write()
+            .map_err(|_| anyhow::anyhow!("poisoned"))?;
+        for r in &gone {
+            open.remove(&r.root);
+            let dir = crate::index::index_dir(&self.config, &r.root);
+            if let Err(e) = fs::remove_dir_all(&dir)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!("removing {}: {e}", dir.display());
+            }
+        }
+        Ok(gone.into_iter().map(|r| r.root).collect())
+    }
+
+    fn write_registry(&self, reg: &RegistryFile) -> anyhow::Result<()> {
+        let tmp = self.registry_path().with_extension("json.tmp");
+        fs::write(&tmp, serde_json::to_vec_pretty(reg)?)?;
+        fs::rename(tmp, self.registry_path())?;
+        Ok(())
+    }
+
+    fn add(&self, path: &Path, auto: bool) -> anyhow::Result<Arc<WorktreeIndex>> {
         let root = canonicalize(path)?;
         anyhow::ensure!(root.is_dir(), "{} is not a directory", root.display());
+        let _write = self
+            .registry_writes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut reg = self.registry_file();
         if !reg.repos.iter().any(|r| r.root == root) {
             let base = root
@@ -245,10 +402,13 @@ impl Engine {
             reg.repos.push(RepoEntry {
                 root: root.clone(),
                 name,
+                auto,
             });
-            let tmp = self.registry_path().with_extension("json.tmp");
-            fs::write(&tmp, serde_json::to_vec_pretty(&reg)?)?;
-            fs::rename(tmp, self.registry_path())?;
+            self.write_registry(&reg)?;
+        } else if !auto && let Some(e) = reg.repos.iter_mut().find(|r| r.root == root && r.auto) {
+            // Registered by hand after being registered automatically: keep it.
+            e.auto = false;
+            self.write_registry(&reg)?;
         }
         self.open_canonical(&root)
     }
@@ -301,17 +461,7 @@ impl Engine {
                 if let Some(e) = reg.repos.iter().find(|e| e.name == r) {
                     return self.open_canonical(&e.root);
                 }
-                let root = canonicalize(Path::new(r))?;
-                // A path inside a registered worktree resolves to that worktree.
-                if let Some(e) = reg
-                    .repos
-                    .iter()
-                    .filter(|e| root.starts_with(&e.root))
-                    .max_by_key(|e| e.root.as_os_str().len())
-                {
-                    return self.open_canonical(&e.root);
-                }
-                self.open_canonical(&root)
+                self.worktree_for(&canonicalize(Path::new(r))?)
             }
         }
     }

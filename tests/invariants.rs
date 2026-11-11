@@ -224,9 +224,15 @@ fn queries_never_index() {
     let root = fixture();
     let data = tempdir();
     let (e, emb) = engine(&data);
-    let resp = search(&e, &root, "retry");
-    assert!(resp.stale);
-    assert!(resp.results.is_empty());
+    // An unregistered root is reported, not searched (or indexed) on the spot.
+    let err = e
+        .search(&SearchRequest {
+            query: "retry".into(),
+            repo: Some(root.to_string_lossy().to_string()),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains("lode register"), "{err:#}");
     let id = worktree_id(&fs::canonicalize(&root).unwrap());
     assert!(
         !data
