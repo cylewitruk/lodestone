@@ -234,9 +234,8 @@ fn reads_sessions_in_registered_repositories_incrementally() {
     );
 
     let first = s.scan();
-    // The other project's Claude transcript is never opened; the other Codex session is read
-    // only up to its working directory.
-    assert_eq!(first.files_read, 4, "{first:?}");
+    // Every transcript is read; only calls in registered repositories are kept.
+    assert_eq!(first.files_read, 5, "{first:?}");
     let r = s.report();
     assert_eq!(r.groups.len(), 2, "{:#?}", r.groups);
     let c = group(&r, "claude");
@@ -325,10 +324,10 @@ fn reads_sessions_in_registered_repositories_incrementally() {
     let c = group(&s.report(), "claude").clone();
     assert_eq!((c.semantic, c.greps, c.globs, c.reads), (0, 1, 1, 0));
 
-    // Registering the other repository picks up its sessions, unchanged files included.
+    // Registering the other repository reads everything again, picking up its sessions.
     s.register(&[&s.repo, &s.other]);
     let later = s.scan();
-    assert_eq!(later.files_read, 2, "{later:?}");
+    assert_eq!(later.files_read, 5, "{later:?}");
     let r = s.report();
     assert_eq!(
         r.groups
@@ -337,6 +336,132 @@ fn reads_sessions_in_registered_repositories_incrementally() {
             .count(),
         2
     );
+}
+
+#[test]
+fn counts_calls_towards_the_repository_they_worked_in() {
+    // Sessions that start outside every registered repository (a scratch directory, a parent
+    // folder) but search, read and run commands in one.
+    let s = Setup::new();
+    let a = s.repo.join("core/a.rs");
+    fs::create_dir_all(a.parent().unwrap()).unwrap();
+    fs::write(&a, "fn a() {}\n").unwrap();
+    append(
+        &s.claude_file(&s.other, "s1.jsonl"),
+        &[
+            claude_line(
+                "s1",
+                &s.other,
+                1,
+                "assistant",
+                tool_use("g1", "Grep", json!({ "pattern": "x" })),
+            ),
+            claude_line(
+                "s1",
+                &s.other,
+                2,
+                "assistant",
+                tool_use(
+                    "q1",
+                    "mcp__lodestone__semantic_code_search",
+                    json!({ "query": "a", "repo": s.repo.to_string_lossy() }),
+                ),
+            ),
+            claude_line(
+                "s1",
+                &s.other,
+                3,
+                "user",
+                tool_result("q1", "core/a.rs:1:4  lines 1-1  fn a()"),
+            ),
+            claude_line(
+                "s1",
+                &s.other,
+                4,
+                "assistant",
+                tool_use("r1", "Read", json!({ "file_path": a })),
+            ),
+            // No `repo`: the session's other calls all worked in `repo`.
+            claude_line(
+                "s1",
+                &s.other,
+                5,
+                "assistant",
+                tool_use(
+                    "q2",
+                    "mcp__lodestone__similar_code_search",
+                    json!({ "code": "fn a() {}" }),
+                ),
+            ),
+        ],
+    );
+    // A long-running Codex thread: started the day before, searching today, by repository name;
+    // command directories as `file://` URLs.
+    let yesterday = json!({ "type": "session_meta", "timestamp": "2026-11-10T09:00:00.000Z",
+        "payload": { "id": "c1", "cwd": s.other, "timestamp": "2026-11-10T09:00:00.000Z" } });
+    append(
+        &s.codex.join("rollout-a.jsonl"),
+        &[
+            yesterday,
+            codex_item(
+                1,
+                2,
+                json!({ "type": "McpToolCall", "id": "m1", "server": "lodestone",
+                "tool": "semantic_code_search", "arguments": { "query": "a", "repo": "repo" },
+                "status": "completed",
+                "result": { "content": [{ "type": "text", "text": "core/a.rs:1:4  lines 1-1  fn a()" }] } }),
+            ),
+            codex_item(
+                3,
+                3,
+                json!({ "type": "CommandExecution", "id": "e1",
+                "cwd": format!("file://{}", s.repo.display()),
+                "parsed_cmd": [{ "type": "read", "cmd": "cat core/a.rs", "name": "a.rs", "path": "core/a.rs" }] }),
+            ),
+            codex_item(
+                5,
+                5,
+                json!({ "type": "McpToolCall", "id": "m2", "server": "lodestone",
+                "tool": "semantic_code_search", "arguments": { "query": "b", "repo": "repo" },
+                "status": "failed", "result": null }),
+            ),
+            codex_item(
+                4,
+                4,
+                json!({ "type": "CommandExecution", "id": "e2",
+                "cwd": format!("file://{}", s.other.display()),
+                "parsed_cmd": [{ "type": "search", "cmd": "rg x", "query": "x", "path": null }] }),
+            ),
+        ],
+    );
+    s.scan();
+    let r = s.report();
+    assert_eq!(r.groups.len(), 2, "{:#?}", r.groups);
+    assert!(r.groups.iter().all(|g| g.repo == s.repo.to_string_lossy()));
+    let c = group(&r, "claude");
+    assert_eq!((c.sessions, c.semantic, c.similar), (1, 1, 1));
+    // The grep ran in the scratch directory: not counted.
+    assert_eq!((c.greps, c.reads, c.searches_read), (0, 1, 1));
+    let x = group(&r, "codex");
+    assert_eq!(
+        (x.sessions, x.semantic, x.reads, x.greps, x.searches_read),
+        (1, 2, 1, 0, 1)
+    );
+    // A failed (or denied) search is not an empty one, and has no latency.
+    assert_eq!((x.searches_failed, x.searches_empty), (1, 0));
+    assert_eq!(x.latency_ms_median, Some(1000));
+
+    // `--since` applies to calls: today's searches in yesterday's thread count.
+    let today = transcripts::report(
+        &s.config,
+        &Filter {
+            harnesses: vec!["codex".into()],
+            since: transcripts::parse_date("2026-11-11"),
+            ..Filter::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(group(&today, "codex").semantic, 2);
 }
 
 #[test]

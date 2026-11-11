@@ -1,13 +1,16 @@
 //! `lode transcript-stats`: how agents use lodestone, from Claude Code and Codex transcripts.
 //!
-//! Only sessions in registered repositories are read. Reading is incremental: `transcripts.sqlite`
-//! in the data directory keeps what was extracted and how far each transcript was read (byte
-//! offset of the last complete line, size, mtime and a hash of its first bytes), so a later run
-//! skips unchanged files, reads only new lines of grown ones, and re-reads rewritten ones.
+//! Each call counts towards the registered repository it worked in: the one its `repo` argument,
+//! file path or command directory points into, else the session's working directory. Calls in no
+//! registered repository are not kept. Reading is incremental: `transcripts.sqlite` in the data
+//! directory keeps what was extracted and how far each transcript was read (byte offset of the
+//! last complete line, size, mtime and a hash of its first bytes), so a later run skips unchanged
+//! files, reads only new lines of grown ones, and re-reads rewritten ones.
 
 mod claude;
 mod codex;
 mod report;
+mod repos;
 mod store;
 mod time;
 
@@ -20,8 +23,8 @@ use serde_json::Value;
 use crate::agents::Harness;
 use crate::config::Config;
 use crate::index::mtime_nanos;
-use crate::registry;
 pub use report::{Filter, Group, Report, Search};
+use repos::Repos;
 use store::{FileState, Store};
 pub use time::parse_date;
 
@@ -92,7 +95,17 @@ pub struct Call {
     ts: i64,
     query: Option<String>,
     path: Option<String>,
+    target: Option<Target>,
     done: Option<(i64, String, bool)>,
+}
+
+/// What a call worked on, for finding its repository.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Target {
+    /// A lodestone `repo` argument: a registered name or a path.
+    Repo(String),
+    /// A file or directory it read, searched or ran in.
+    Path(PathBuf),
 }
 
 /// What a parser extracts from one transcript line.
@@ -139,15 +152,12 @@ pub struct ScanSummary {
 pub fn scan(config: &Config, sources: &[(Harness, PathBuf)]) -> anyhow::Result<ScanSummary> {
     fs::create_dir_all(config.data_dir())?;
     let store = Store::open(&config.data_dir().join("transcripts.sqlite"))?;
-    let roots = registry::registered_roots(config);
+    let repos = Repos::new(config);
+    store.reset_unless_registered(&repos.fingerprint())?;
     let mut summary = ScanSummary::default();
     for (harness, dir) in sources {
-        let files = match harness {
-            Harness::Claude => claude::files(dir, &roots),
-            Harness::Codex => jsonl_files(dir),
-        };
-        for path in files {
-            read_file(&store, *harness, &path, &roots, &mut summary)?;
+        for path in jsonl_files(dir) {
+            read_file(&store, *harness, &path, &repos, &mut summary)?;
         }
     }
     Ok(summary)
@@ -163,23 +173,18 @@ fn read_file(
     store: &Store,
     harness: Harness,
     path: &Path,
-    roots: &[PathBuf],
+    repos: &Repos,
     summary: &mut ScanSummary,
 ) -> anyhow::Result<()> {
     let meta = fs::metadata(path)?;
     let key = path.to_string_lossy().into_owned();
     let saved = store.file(&key)?;
-    let registered = |cwd: &str| registry::root_of(roots, Path::new(cwd));
-    if let Some(s) = &saved {
-        let skip = match s.cwd.as_deref() {
-            // Stopped at a session outside every registered repository: wait for one.
-            Some(cwd) if s.offset == 0 => registered(cwd).is_none(),
-            _ => s.size == meta.len() && s.mtime == mtime_nanos(&meta),
-        };
-        if skip {
-            summary.unchanged += 1;
-            return Ok(());
-        }
+    if saved
+        .as_ref()
+        .is_some_and(|s| s.size == meta.len() && s.mtime == mtime_nanos(&meta))
+    {
+        summary.unchanged += 1;
+        return Ok(());
     }
     let mut file = File::open(path)?;
     let mut state = match saved {
@@ -192,20 +197,27 @@ fn read_file(
     };
     state.size = meta.len();
     state.mtime = mtime_nanos(&meta);
-    let mut session = state
-        .cwd
-        .as_deref()
-        .and_then(registered)
-        .and(state.session.clone());
+    // The session this file belongs to, and the repository its working directory is in.
+    let mut session = state.session.clone().map(|id| {
+        let repo = state
+            .cwd
+            .as_deref()
+            .and_then(|c| repos.of_path(Path::new(c)));
+        (id, repo)
+    });
     let mut codex = codex::Context {
-        session: state.session.clone(),
+        session: state
+            .session
+            .as_deref()
+            .and_then(|s| s.split_once(':'))
+            .map(|(_, id)| id.to_string()),
     };
 
     file.seek(SeekFrom::Start(state.offset))?;
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
     store.begin()?;
-    'lines: loop {
+    loop {
         line.clear();
         let n = reader.read_until(b'\n', &mut line)?;
         // A missing newline is a line still being written; it is read next time.
@@ -220,27 +232,33 @@ fn read_file(
         for event in events {
             match event {
                 Event::Session { id, cwd, ts } => {
-                    let cwd = cwd.to_string_lossy().into_owned();
-                    let Some(root) = registered(&cwd) else {
-                        // Not ours: remember where it runs, read nothing further.
-                        state = FileState {
-                            offset: 0,
-                            cwd: Some(cwd),
-                            ..state
-                        };
-                        break 'lines;
-                    };
                     let id = format!("{}:{id}", harness.program());
-                    if session.as_deref() != Some(&id) {
-                        store.add_session(&id, harness.program(), &root.to_string_lossy(), ts)?;
+                    let repo = repos.of_path(&cwd);
+                    let known = session
+                        .as_ref()
+                        .is_some_and(|(s, r)| *s == id && *r == repo);
+                    if !known {
+                        let repo = repo.as_ref().map(|r| r.to_string_lossy().into_owned());
+                        store.add_session(&id, harness.program(), repo.as_deref(), ts)?;
                     }
-                    state.cwd = Some(cwd);
+                    state.cwd = Some(cwd.to_string_lossy().into_owned());
                     state.session = Some(id.clone());
-                    session = Some(id);
+                    session = Some((id, repo));
                 }
                 Event::Call(c) => {
-                    if let Some(s) = &session {
-                        store.add_call(&key, s, &c)?;
+                    let Some((id, session_repo)) = &session else {
+                        continue;
+                    };
+                    let repo = c
+                        .target
+                        .as_ref()
+                        .and_then(|t| repos.of(t))
+                        .or_else(|| session_repo.clone());
+                    // Calls in no registered repository are not kept, except lodestone searches,
+                    // which the session's other calls may still place (see the report).
+                    if repo.is_some() || c.kind.is_lodestone() {
+                        let repo = repo.map(|r| r.to_string_lossy().into_owned());
+                        store.add_call(&key, id, repo.as_deref(), &c)?;
                     }
                 }
                 Event::Done {

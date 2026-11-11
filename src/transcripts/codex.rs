@@ -3,11 +3,11 @@
 //! tool calls are `item_completed` events: shell commands carry Codex's own classification
 //! (`parsed_cmd`: read, search, list_files), and MCP calls their server, tool and result.
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use serde_json::Value;
 
-use super::{Call, Event, Kind, query_of, text_of, time};
+use super::{Call, Event, Kind, Target, query_of, text_of, time};
 
 /// Per-file state carried between lines (and runs): the session the file belongs to.
 #[derive(Clone, Debug, Default)]
@@ -50,18 +50,19 @@ pub fn parse(line: &str, ctx: &mut Context) -> Vec<Event> {
         return Vec::new();
     };
     let end = p["completed_at_ms"].as_i64().unwrap_or(start);
-    let call = |id: String, kind, query, path, done| Call {
+    let call = |id: String, kind, query, path, target, done| Call {
         id,
         session: session.to_string(),
         kind,
         ts: start,
         query,
         path,
+        target,
         done,
     };
     match item["type"].as_str() {
         Some("CommandExecution") => {
-            let cwd = item["cwd"].as_str().map(Path::new);
+            let cwd = item["cwd"].as_str().map(local_path);
             item["parsed_cmd"]
                 .as_array()
                 .into_iter()
@@ -74,18 +75,22 @@ pub fn parse(line: &str, ctx: &mut Context) -> Vec<Event> {
                         "list_files" => Kind::Glob,
                         _ => return None,
                     };
-                    let path = (kind == Kind::Read)
-                        .then(|| c["path"].as_str())
-                        .flatten()
-                        .map(|p| match cwd {
-                            Some(cwd) => cwd.join(p).to_string_lossy().into_owned(),
-                            None => p.to_string(),
-                        });
+                    // Relative to the command's directory; a search may name no path.
+                    let at = match (&cwd, c["path"].as_str()) {
+                        (Some(cwd), Some(p)) => Some(cwd.join(p)),
+                        (Some(cwd), None) => Some(cwd.clone()),
+                        (None, p) => p.map(PathBuf::from),
+                    };
+                    let path = at
+                        .as_ref()
+                        .filter(|_| kind == Kind::Read)
+                        .map(|p| p.to_string_lossy().into_owned());
                     Some(Event::Call(call(
                         format!("{id}#{i}"),
                         kind,
                         None,
                         path,
+                        at.map(Target::Path),
                         None,
                     )))
                 })
@@ -103,14 +108,54 @@ pub fn parse(line: &str, ctx: &mut Context) -> Vec<Event> {
             let is_error =
                 result["isError"].as_bool().unwrap_or(false) || item["status"] == "failed";
             let done = (end, text_of(&result["content"]), is_error);
+            let args = &item["arguments"];
+            let target = args["repo"].as_str().map(|r| Target::Repo(r.into()));
             vec![Event::Call(call(
                 id.to_string(),
                 kind,
-                Some(query_of(kind, &item["arguments"])),
+                Some(query_of(kind, args)),
                 None,
+                target,
                 Some(done),
             ))]
         }
         _ => Vec::new(),
+    }
+}
+
+/// A path, given plainly or as a `file://` URL (newer Codex versions record command directories
+/// as URLs).
+fn local_path(s: &str) -> PathBuf {
+    let Some(rest) = s.strip_prefix("file://") else {
+        return PathBuf::from(s);
+    };
+    let hex = |c: Option<u8>| c.and_then(|c| (c as char).to_digit(16));
+    let mut bytes = Vec::with_capacity(rest.len());
+    let mut it = rest.bytes();
+    while let Some(b) = it.next() {
+        if b != b'%' {
+            bytes.push(b);
+            continue;
+        }
+        let (hi, lo) = (it.next(), it.next());
+        match (hex(hi), hex(lo)) {
+            (Some(h), Some(l)) => bytes.push((h * 16 + l) as u8),
+            _ => bytes.extend([Some(b), hi, lo].into_iter().flatten()),
+        }
+    }
+    PathBuf::from(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_directories_as_urls() {
+        assert_eq!(local_path("/a/b"), PathBuf::from("/a/b"));
+        assert_eq!(
+            local_path("file:///a/my%20repo"),
+            PathBuf::from("/a/my repo")
+        );
     }
 }

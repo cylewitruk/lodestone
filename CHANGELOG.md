@@ -941,3 +941,27 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   the written config and reports `default_tools_approval_mode: approve` (`codex mcp get`), and
   rejects unknown values (`auto`, `prompt`, `writes`, `approve` are valid). The relay test checks
   the annotations.
+
+## Transcript stats count calls where they worked
+
+- `lode transcript-stats` showed no lodestone use for a Codex thread that searched concurro
+  16 times: the thread started in a scratch directory (`~/Documents/Codex/…`), and other concurro
+  sessions in the folder above the repository, while the work happened in Codex worktrees
+  (`~/.codex/worktrees/<task>/concurro`). Sessions were attributed only by their starting
+  directory, and skipped after their first line.
+- Each call now counts towards the registered repository it worked in: its `repo` argument
+  (name or path), file path, or command directory, else the session's working directory; a
+  lodestone search naming none falls back to the one repository the session's other calls worked
+  in. Linked worktrees count towards their repository's main checkout (by git common directory).
+  A session counts for every repository it worked in.
+- Every transcript is read; calls in no registered repository are not kept. Registering a
+  repository (as identified by git, so auto-registered worktrees don't count) re-reads
+  everything. The parser version bump re-reads once.
+- Newer Codex records command directories as `file://` URLs; they are decoded.
+- `--since` filters calls by time, so a long-running thread's recent searches count.
+- Failed (or denied) searches are reported apart from empty ones, and leave latency alone.
+- Checked: a new test covers sessions starting outside the repository that search it by name
+  and path, read its files and run commands in it, a failed search, and `--since` on a thread
+  started the day before. On this machine: concurro shows 16 Codex searches (6 failed, 1 empty,
+  9 with a result read), matching Codex's own thread history. A first full read of 410 transcripts
+  (427k lines) took 19 s in a debug build; the next run 0.04 s.

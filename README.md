@@ -112,8 +112,10 @@ lode transcript-stats --codex ~/elsewhere --repo stacks-core --since 2026-11-01 
 ```
 
 - **Sources:** name at least one; a flag without a directory uses the harness's default.
-- **Scope:** only sessions in registered repositories. Claude projects elsewhere are not opened;
-  of a Codex session elsewhere, only its first line (its working directory) is read.
+- **Scope:** every transcript is read; each call counts towards the registered repository it
+  worked in, by its `repo` argument, file path or command directory, else the session's working
+  directory. A linked worktree counts towards its repository. Calls elsewhere are not kept;
+  registering another repository re-reads everything.
 - **Incremental:** `~/.lodestone/transcripts.sqlite` keeps, per transcript, the byte offset of
   the last complete line read, its size and mtime, and a hash of its start. Unchanged files are
   not opened, grown ones are read from the offset, rewritten ones from the start. What was
@@ -121,9 +123,10 @@ lode transcript-stats --codex ~/elsewhere --repo stacks-core --since 2026-11-01 
 - **Stored:** call kinds and times, lodestone queries and result paths, and the paths of file
   reads; no other content.
 - **Reported** per repository and harness: sessions that searched, whether the first search came
-  before the first grep, searches with a result later read, searches with no results, latency,
-  and grep / glob / read calls. Codex shell commands count by Codex's own classification
-  (`read`, `search`, `list_files`). `--queries` lists every search; `--json` for machines.
+  before the first grep, searches with a result later read, with no results, and failed (or
+  denied), latency, and grep / glob / read calls. Codex shell commands count by Codex's own
+  classification (`read`, `search`, `list_files`). `--since` counts calls from that date;
+  `--queries` lists every search; `--json` for machines.
 
 ## Daemon
 
