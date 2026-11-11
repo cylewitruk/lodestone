@@ -26,7 +26,8 @@ IDENT = re.compile(r"\b(?:[a-z][a-z0-9]*_[a-z0-9_]+|[a-z]+[A-Z]\w*|[A-Z][a-z0-9]
 def query(i: dict) -> str:
     """A search call's text: the query and guessed names, or the code."""
     if "code" in i:
-        return i["code"]
+        code = i["code"]
+        return "\n\n".join(code) if isinstance(code, list) else code
     return " ".join([i.get("query", ""), *i.get("example_identifiers", [])])
 
 

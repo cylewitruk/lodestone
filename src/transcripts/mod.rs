@@ -325,12 +325,22 @@ fn text_of(content: &Value) -> String {
 fn query_of(kind: Kind, input: &Value) -> String {
     match kind {
         Kind::Similar => {
-            let code = input["code"].as_str().unwrap_or_default();
-            let first = code
-                .lines()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or_default();
-            first.trim().chars().take(200).collect()
+            let first = |code: &str| -> String {
+                let line = code
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or_default();
+                line.trim().chars().take(200).collect()
+            };
+            match &input["code"] {
+                // Several definitions in one call: their first lines.
+                Value::Array(codes) => {
+                    let lines: Vec<String> =
+                        codes.iter().filter_map(Value::as_str).map(first).collect();
+                    format!("[{}] {}", lines.len(), lines.join(" | "))
+                }
+                code => first(code.as_str().unwrap_or_default()),
+            }
         }
         _ => {
             let query = input["query"].as_str().unwrap_or_default();
@@ -346,5 +356,22 @@ fn query_of(kind: Kind, input: &Value) -> String {
                 format!("{query} [{}]", ids.join(", "))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn similar_queries_show_each_definition() {
+        let one = json!({ "code": "\n  fn a() {}\n" });
+        assert_eq!(query_of(Kind::Similar, &one), "fn a() {}");
+        let many = json!({ "code": ["fn a() {}", "\nfn b(x: u8) {\n}"] });
+        assert_eq!(
+            query_of(Kind::Similar, &many),
+            "[2] fn a() {} | fn b(x: u8) {"
+        );
     }
 }

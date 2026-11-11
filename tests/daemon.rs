@@ -254,6 +254,30 @@ fn daemon_rest_mcp_and_freshness() {
         text.contains("# note: left out the passed code itself: core/src/m3.rs:2 helper_3"),
         "{text}"
     );
+    // Several definitions in one call: a section each, fewer results each.
+    let out = mcp.request(
+        "tools/call",
+        json!({ "name": "similar_code_search", "arguments": { "code": [
+            "pub fn helper_3(x: u64) -> u64 { x + 3 }",
+            "+pub fn other_5() {}",
+        ] } }),
+    );
+    let text = out["content"][0]["text"].as_str().unwrap();
+    let sections: Vec<&str> = text.split("\n\n").collect();
+    assert_eq!(sections.len(), 2, "{text}");
+    assert!(sections[0].starts_with("## 1/2: pub fn helper_3"), "{text}");
+    assert!(
+        sections[1].starts_with("## 2/2: pub fn other_5()"),
+        "{text}"
+    );
+    for s in &sections {
+        let results = s.lines().filter(|l| l.contains("  lines ")).count();
+        assert!((1..=12).contains(&results), "{s}");
+    }
+    assert!(
+        sections[0].contains("left out the passed code itself: core/src/m3.rs:2 helper_3"),
+        "{text}"
+    );
     let out = mcp.request("tools/call", json!({ "name": "status", "arguments": {} }));
     assert!(
         out["content"][0]["text"]

@@ -19,7 +19,7 @@ use super::types::{DEFAULT_TOP_K, SearchRequest, SearchResponse};
 use crate::registry::Engine;
 
 pub const SEMANTIC_DESCRIPTION: &str = "Find existing code by what it does, when you do not know its name. `query`: one sentence describing the behaviour; `example_identifiers`: three to five guessed function or type names in the codebase's naming style (wrong guesses still help). Returns matching functions, types and macros as 'path:line:col  lines start-end  kind name(signature) — doc', where line:col is the name's position and start-end the item's line range (all 1-based). Use before writing any helper.";
-pub const SIMILAR_DESCRIPTION: &str = "Find existing code that does the same job as a given piece of code. Pass the source of one function or type as `code` (one per call, not a whole diff). Use when reviewing a diff, once for each function it adds, and when consolidating, moving or rewriting a function, to find equivalents elsewhere. Same output format as semantic_code_search; the passed code's own definition is left out.";
+pub const SIMILAR_DESCRIPTION: &str = "Find existing code that does the same job as given code. Pass `code` as a list with the source of each function or type to check, one per entry (not a whole diff in one entry): every function a diff adds, in one call, or the functions you consolidate, move or rewrite. Each gets its own section of results, same format as semantic_code_search; a single entry gets 24, several fewer each. The passed code's own definition is left out.";
 pub const STATUS_DESCRIPTION: &str =
     "Index freshness for a repo: files indexed, pending changes, model, last update.";
 
@@ -69,7 +69,7 @@ pub fn tools() -> Vec<Tool> {
             object(json!({
                 "type": "object",
                 "properties": search_properties(json!({
-                    "code": { "type": "string", "description": "the source of one function or type; diff `+` prefixes are stripped" }
+                    "code": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "the source of each function or type to check, one per entry; diff `+` prefixes are stripped" }
                 })),
                 "required": ["code"]
             })),
@@ -88,7 +88,7 @@ pub fn tools() -> Vec<Tool> {
     .collect()
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Scope {
     repo: Option<String>,
     from_unit: Option<String>,
@@ -121,10 +121,31 @@ struct SemanticArgs {
 
 #[derive(Deserialize)]
 struct SimilarArgs {
-    code: String,
+    code: Definitions,
     #[serde(flatten)]
     scope: Scope,
 }
+
+/// `similar_code_search`'s `code`: a list, or (as before) a single string.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Definitions {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Definitions {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Definitions::One(c) => vec![c],
+            Definitions::Many(cs) => cs,
+        }
+    }
+}
+
+/// Results per definition when several are checked at once: the single-definition count shared
+/// out, but never fewer than this.
+const MIN_RESULTS_EACH: usize = 5;
 
 #[derive(Deserialize, Default)]
 struct StatusArgs {
@@ -193,6 +214,20 @@ fn is_self(code: &str, body: &str) -> bool {
 }
 
 /// Drops the passed code's own definition from `resp` and keeps `top_k` results.
+/// A definition's first non-empty line, shortened, to head its results.
+fn first_line(code: &str) -> String {
+    let line = code
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let mut out: String = line.chars().take(100).collect();
+    if line.chars().count() > 100 {
+        out.push('…');
+    }
+    out
+}
+
 fn drop_self(resp: &mut SearchResponse, code: &str, top_k: usize) {
     let code = squash(code);
     let mut left_out = Vec::new();
@@ -239,6 +274,45 @@ impl LodestoneMcp {
         .map_err(|e| format!("{e:#}"))
     }
 
+    /// One search per definition; with several, a section each, headed by its first line.
+    async fn similar(&self, scope: Scope, codes: Vec<String>) -> Result<String, String> {
+        let codes: Vec<String> = codes
+            .iter()
+            .map(|c| strip_diff(c))
+            .filter(|c| !c.trim().is_empty())
+            .collect();
+        if codes.is_empty() {
+            return Err("`code` has no source to compare".into());
+        }
+        let each = (DEFAULT_TOP_K / codes.len()).max(MIN_RESULTS_EACH);
+        let n = codes.len();
+        let engine = self.engine.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut sections = Vec::new();
+            for (i, code) in codes.into_iter().enumerate() {
+                let mut req = scope.clone().request(code.clone());
+                // Room for the passed code's own definition, which is dropped afterwards.
+                req.top_k = each + 2;
+                req.with_body = Some(usize::MAX);
+                let mut resp = engine.search(&req).map_err(|e| format!("{e:#}"))?;
+                drop_self(&mut resp, &code, each);
+                sections.push(if n == 1 {
+                    resp.to_text()
+                } else {
+                    format!(
+                        "## {}/{n}: {}\n{}",
+                        i + 1,
+                        first_line(&code),
+                        resp.to_text()
+                    )
+                });
+            }
+            Ok(sections.join("\n\n"))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
     /// Executes a tool call and returns its plain-text output, or an error message.
     pub async fn call(&self, name: &str, args: Map<String, Value>) -> Result<String, String> {
         let args = Value::Object(args);
@@ -251,13 +325,7 @@ impl LodestoneMcp {
             }
             "similar_code_search" => {
                 let a: SimilarArgs = serde_json::from_value(args).map_err(invalid)?;
-                let code = strip_diff(&a.code);
-                let mut req = a.scope.request(code.clone());
-                let top_k = req.top_k;
-                // Room for the passed code's own definition, which is dropped afterwards.
-                req.top_k = top_k + 2;
-                req.with_body = Some(usize::MAX);
-                self.search(req, move |r| drop_self(r, &code, top_k)).await
+                self.similar(a.scope, a.code.into_vec()).await
             }
             "status" => {
                 let a: StatusArgs = serde_json::from_value(args).unwrap_or_default();

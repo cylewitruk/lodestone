@@ -23,7 +23,7 @@ const HOOK_LEASE_SECS: u64 = 300;
 pub const SKILL: &str = include_str!("../../plugin/skills/lodestone/SKILL.md");
 
 /// Session context added in repositories the daemon serves.
-pub const REMINDER: &str = "Before writing any new function, type or macro, when reviewing a diff that adds functions, when consolidating duplicated code, and when locating the code behind a described behaviour, look for existing code that already does it, and reuse what fits instead of writing a new version. This repository is indexed by lodestone: its `semantic_code_search` tool finds code by what it does, which Grep cannot when you do not know the name, and its `similar_code_search` tool finds code that does the same job as a given function; call it once for each function a diff adds or a refactor moves (see the lodestone skill). Use Grep for exact strings.";
+pub const REMINDER: &str = "Before writing any new function, type or macro, when reviewing a diff that adds functions, when consolidating duplicated code, and when locating the code behind a described behaviour, look for existing code that already does it, and reuse what fits instead of writing a new version. This repository is indexed by lodestone: its `semantic_code_search` tool finds code by what it does, which Grep cannot when you do not know the name, and its `similar_code_search` tool finds code that does the same job as given functions; pass it every function a diff adds or a refactor moves, in one call (see the lodestone skill). Use Grep for exact strings.";
 
 /// The SessionStart hook's output for a session in `dir`: the reminder as hook JSON when `dir` is
 /// in a registered worktree, otherwise `None`.

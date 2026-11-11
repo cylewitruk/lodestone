@@ -76,14 +76,16 @@ lode uninstall                    # same flags; --dry-run prints the steps only
 | Tool | Input | Use |
 | ---- | ---- | ---- |
 | `semantic_code_search` | `query` (one sentence), `example_identifiers` (guessed names) | find code by what it does |
-| `similar_code_search` | `code` (one function or type; diff `+` prefixes are stripped) | find code that does the same job, e.g. in a review or refactor |
+| `similar_code_search` | `code` (a list: each function or type to check; diff `+` prefixes are stripped) | find code that does the same job, e.g. for every function a diff adds, in one call |
 | `status` | `repo` | index freshness |
 
 - **Optional inputs:** both searches take `repo`, `from_unit` (only code a given unit may depend
   on, per the build graph), `language` and `include_tests`.
 - **Results:** 24 per search, with no `top_k` (agents asked for too few). REST and the CLI keep
   `top_k`, also 24 by default.
-- **Self-match:** `similar_code_search` leaves out the passed code's own definition.
+- **Several definitions:** `similar_code_search` searches each separately and returns a section
+  per definition: 24 results for one, fewer each for several (at least 5). It leaves out each
+  passed definition's own match. A single string is still accepted.
 
 ### Result format
 

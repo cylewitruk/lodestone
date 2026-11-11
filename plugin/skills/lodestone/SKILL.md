@@ -14,8 +14,8 @@ search takes about 10 ms and returns definitions with their location.
 | Situation | Tool | Input |
 | ---- | ---- | ---- |
 | Writing new code | `semantic_code_search`, before writing any helper, type, trait or macro | what you need it to do |
-| Reviewing a diff | `similar_code_search`, once for each new function or type the diff adds | that function's code |
-| Refactoring | `similar_code_search`, for each function you consolidate, move or rewrite | that function's code |
+| Reviewing a diff | `similar_code_search`, once, with every new function or type the diff adds | each one's code, one per entry |
+| Refactoring | `similar_code_search`, once, with the functions you consolidate, move or rewrite | each one's code, one per entry |
 | Locating behaviour | `semantic_code_search`, when a report describes behaviour | the behaviour |
 
 Use Grep instead for exact strings: a quoted log or error message, a known identifier, a config
@@ -37,9 +37,10 @@ and search again. Two or three searches is normal.
 
 ## similar_code_search
 
-`code` is the source of one function or type, as written (diff `+` prefixes are fine). Pass one
-definition per call, not a whole diff. The passed code's own definition is left out of the
-results. If it finds nothing, describe the function with `semantic_code_search`.
+`code` is a list with the source of each function or type to check, one definition per entry,
+as written (diff `+` prefixes are fine): all of a diff's new functions in one call, not the whole
+diff in one entry. Each gets its own section of results; the passed code's own definition is
+left out. If a definition finds nothing, describe it with `semantic_code_search`.
 
 ## Using the results
 
