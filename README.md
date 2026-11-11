@@ -35,12 +35,26 @@ when they are done (see [Daemon](#daemon)). Models download on first use into `~
 
 ## Writing queries
 
-One sentence on what the code does, then a few guessed function or type names. Wrong guesses
-still help.
+Describe what the code does in one sentence, and guess a few function or type names in the
+codebase's naming style. Wrong guesses still help.
 
-```text
-parse a duration such as "5m" or "2h" into seconds. parse_duration duration_from_str
+Agents pass these as separate fields of `semantic_code_search`:
+
+```json
+{
+  "query": "parse a duration such as \"5m\" or \"2h\" into seconds",
+  "example_identifiers": ["parse_duration", "duration_from_str", "to_secs"]
+}
 ```
+
+`lode search` and `/v1/search` take one string: the sentence, then the names.
+
+```bash
+lode search 'parse a duration such as "5m" or "2h" into seconds. parse_duration duration_from_str'
+```
+
+To find code that does the same job as code you have, use `similar_code_search` instead (see
+[MCP tools](#mcp-tools)).
 
 ## Agent integration
 
