@@ -965,3 +965,18 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   started the day before. On this machine: concurro shows 16 Codex searches (6 failed, 1 empty,
   9 with a result read), matching Codex's own thread history. A first full read of 410 transcripts
   (427k lines) took 19 s in a debug build; the next run 0.04 s.
+
+## `similar_code_search` takes several definitions
+
+- `code` is now a list: every function a diff adds (or a refactor moves) in one call. Each
+  definition is searched separately and gets its own section, headed by its first line, with its
+  own match left out. One definition gets 24 results as before; several share them, at least 5
+  each. A single string is still accepted.
+- Why: in a real Codex session the skill's "once for each function" produced 13 calls in 40 s
+  returning ~46k characters, none of which the agent read further. Batched, that is one call and
+  65 result lines instead of 312.
+- The skill, the session reminder and the tool description now ask for one call with every
+  definition. `transcript-stats` shows a batched query as `[n] first line | first line …`; the
+  eval scorer reads list-valued `code`.
+- Checked: the MCP test passes two definitions (one with a diff `+`) and gets two sections of at
+  most 12 results, each leaving out its own definition.
