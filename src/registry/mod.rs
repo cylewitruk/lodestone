@@ -11,7 +11,8 @@ use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::api::types::{
-    ExtensionCount, RepoInfo, SearchRequest, SearchResponse, SearchResult, StatusReport,
+    ExtensionCount, RepoFailure, RepoInfo, SearchRequest, SearchResponse, SearchResult,
+    StatusOverview, StatusReport,
 };
 use crate::cache::EmbeddingCache;
 use crate::chunk::{Chunker, LanguageRegistry};
@@ -680,7 +681,26 @@ impl Engine {
     }
 
     pub fn status(&self, repo: Option<&str>) -> anyhow::Result<StatusReport> {
-        let w = self.resolve(repo)?;
+        Ok(self.status_of(&*self.resolve(repo)?))
+    }
+
+    /// Status of every registered repository; one that cannot be read is listed as failed.
+    pub fn status_all(&self) -> StatusOverview {
+        let mut repos = Vec::new();
+        let mut failed = Vec::new();
+        for e in self.registry_file().repos {
+            match self.open_canonical(&e.root) {
+                Ok(w) => repos.push(self.status_of(&w)),
+                Err(err) => failed.push(RepoFailure {
+                    name: e.name,
+                    error: format!("{err:#}"),
+                }),
+            }
+        }
+        StatusOverview::new(repos, failed)
+    }
+
+    fn status_of(&self, w: &WorktreeIndex) -> StatusReport {
         let snap = w.snapshot();
         let languages = self.languages.clone();
         let pending = w.pending_files(&|p: &Path| languages.accepts(p));
@@ -698,7 +718,7 @@ impl Engine {
             .ok()
             .and_then(|m| m.get(&w.root).cloned())
             .unwrap_or_else(|| "none (in-process)".into());
-        Ok(StatusReport {
+        StatusReport {
             repo: w.root.to_string_lossy().to_string(),
             name: self.repo_name(&w.root),
             worktree_id: w.id.clone(),
@@ -733,7 +753,7 @@ impl Engine {
                     )
                 })
                 .collect(),
-        })
+        }
     }
 
     pub fn worktrees(&self) -> Vec<Arc<WorktreeIndex>> {

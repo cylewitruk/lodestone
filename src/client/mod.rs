@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 
 use crate::api::types::{
     ErrorBody, IndexRequest, IndexResponse, RegisterRequest, RepoInfo, SearchRequest,
-    SearchResponse, SessionRequest, SessionResponse, StatusReport, ToolRequest,
+    SearchResponse, SessionRequest, SessionResponse, StatusOverview, StatusReport, ToolRequest,
 };
 use crate::config::{Config, Endpoint};
 
@@ -153,9 +153,14 @@ impl Client {
         let status = resp.status();
         let text = resp.body_mut().read_to_string()?;
         if !status.is_success() {
-            let msg = serde_json::from_str::<ErrorBody>(&text)
-                .map(|e| e.error)
-                .unwrap_or(text);
+            let msg = match serde_json::from_str::<ErrorBody>(&text) {
+                Ok(e) => e.error,
+                // The daemon's own errors carry a body; an empty one is an unknown route.
+                Err(_) if text.is_empty() => format!(
+                    "the daemon answered {status}; it may predate this `lode` (`lode stop` it)"
+                ),
+                Err(_) => text,
+            };
             bail!("{msg}");
         }
         serde_json::from_str(&text).context("decoding daemon response")
@@ -175,6 +180,14 @@ impl Client {
             r = r.query("repo", repo);
         }
         Self::decode(r.call()?)
+    }
+
+    pub fn status_all(&self) -> anyhow::Result<StatusOverview> {
+        Self::decode(
+            self.agent
+                .get(format!("{}/v1/status/all", self.base))
+                .call()?,
+        )
     }
 
     pub fn register(&self, req: &RegisterRequest) -> anyhow::Result<RepoInfo> {

@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use super::store::{CallRow, SessionRow};
 use super::{Kind, time};
+use crate::text::table;
 
 #[derive(Clone, Debug, Default)]
 pub struct Filter {
@@ -274,32 +275,6 @@ impl Report {
         }
         out.join("\n")
     }
-}
-
-fn table(rows: &[(String, Vec<String>)]) -> String {
-    let label = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
-    let cols = rows.first().map_or(0, |(_, c)| c.len());
-    let widths: Vec<usize> = (0..cols)
-        .map(|i| {
-            rows.iter()
-                .map(|(_, c)| c[i].chars().count())
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
-    rows.iter()
-        .map(|(l, cells)| {
-            let cells: Vec<String> = cells
-                .iter()
-                .zip(&widths)
-                .map(|(c, w)| format!("{c:>w$}"))
-                .collect();
-            format!("  {l:<label$}  {}", cells.join("  "))
-                .trim_end()
-                .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn share(n: usize, of: usize) -> String {

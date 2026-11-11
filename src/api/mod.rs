@@ -178,6 +178,24 @@ async fn status(State(s): State<AppState>, Query(q): Query<StatusQuery>) -> ApiR
     })
 }
 
+#[derive(Deserialize)]
+struct FormatQuery {
+    format: Option<String>,
+}
+
+async fn status_all(
+    State(s): State<AppState>,
+    Query(q): Query<FormatQuery>,
+) -> ApiResult<Response> {
+    let engine = s.engine.clone();
+    let overview = blocking(move || Ok(engine.status_all())).await?;
+    Ok(if q.format.as_deref() == Some("text") {
+        overview.to_text().into_response()
+    } else {
+        Json(overview).into_response()
+    })
+}
+
 async fn register(
     State(s): State<AppState>,
     Json(req): Json<RegisterRequest>,
@@ -288,6 +306,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/search", get(search_get).post(search_post))
         .route("/v1/status", get(status))
+        .route("/v1/status/all", get(status_all))
         .route("/v1/register", post(register))
         .route("/v1/index", post(index))
         .route("/v1/repos", get(repos))
