@@ -79,7 +79,7 @@ lode uninstall                    # same flags; --dry-run prints the steps only
 - **Optional inputs:** both searches take `repo`, `from_unit` (only code a given unit may depend
   on, per the build graph), `language` and `include_tests`.
 - **Results:** 24 per search, with no `top_k` (agents asked for too few). REST and the CLI keep
-  `top_k`.
+  `top_k`, also 24 by default.
 - **Self-match:** `similar_code_search` leaves out the passed code's own definition.
 
 ### Result format
@@ -164,6 +164,14 @@ POST /v1/index    {repo, force}
 GET  /v1/repos
 ```
 
+Used by `lode mcp` and the session hook:
+
+```text
+POST   /v1/sessions        {id, cwd, ttl_secs}   lease the worktree containing cwd
+DELETE /v1/sessions/{id}                         release it
+POST   /v1/tool            {name, arguments, session}   run an MCP tool
+```
+
 ## Configuration
 
 `~/.lodestone/config.toml`. Every key is optional, and `LODESTONE_HOME` moves the data directory.
@@ -200,13 +208,16 @@ identifier_lexical_weight = 0.0
 
 - **macOS:** the default build runs models on the GPU through candle and Metal.
 - **Elsewhere:** candle on the CPU.
-- **fastembed (ONNX Runtime):** an optional backend for the models it ships.
+- **fastembed (ONNX Runtime):** built by default; select it for the models it ships.
+- **remote:** any OpenAI-compatible embeddings endpoint, set in `[remote]` (`url`, and
+  `api_key_env` naming the variable that holds the key).
 
 **Models:**
 
 - **Built in (`lode models`):** `jina-code-v2` (default), `qwen3-0.6b`, `harrier-0.6b`,
-  `coderank`, `granite-r2`, `granite-small-r2`, `ultrabert-150m`, `embeddinggemma-2`,
-  `minilm-l6`, and `jina-code-0.5b` (non-commercial licence).
+  `coderank`, `gte-modernbert`, `granite-r2`, `granite-small-r2`, `ultrabert-150m`,
+  `embeddinggemma-2`, `nomic-text-v1.5`, `bge-small`, `minilm-l6`, and `jina-code-0.5b`
+  (non-commercial licence).
 - **Rerankers:** any Hugging Face repo in `[rerank] hf_repo`. The CHANGELOG compares the ones
   measured.
 - **Switching models** needs a full re-index (`lode index --force`). The cache keeps each model's
