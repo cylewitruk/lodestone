@@ -15,6 +15,7 @@ use lodestone::api::mcp::{SEMANTIC_DESCRIPTION, SIMILAR_DESCRIPTION, STATUS_DESC
 use lodestone::api::types::{
     RegisterRequest, SearchResponse, SessionRequest, StatusOverview, StatusReport, ToolRequest,
 };
+use lodestone::cache::EmbeddingCache;
 use lodestone::client::Client;
 use lodestone::config::Config;
 use lodestone::index::{ItemStore, Lexical, Manifest, TokenizerKind, VectorIndex, worktree_id};
@@ -366,7 +367,11 @@ fn branch_switch_rescans_with_cache_hits() {
         std::thread::sleep(Duration::from_millis(50));
     }
     println!("branch_switch_fresh_ms={}", t.elapsed().as_millis());
-    // Switching back is all cache hits.
+    // Switching back is all cache hits: nothing new reaches the embedding cache. (It may take
+    // several passes, as file and ref changes can land in separate debounce windows.)
+    let cache = EmbeddingCache::open(&home.join("cache.sqlite")).unwrap();
+    let (before, _) = cache.stats().unwrap();
+    assert!(before > 0, "no embedding cache at {}", home.display());
     git(&root, &["checkout", "-q", "main"]);
     let t = Instant::now();
     loop {
@@ -376,26 +381,17 @@ fn branch_switch_rescans_with_cache_hits() {
             .results
             .first()
             .is_some_and(|r| r.name == "helper_3");
-        if back
-            && !st.stale
-            && st
-                .last_report
-                .as_ref()
-                .is_some_and(|r| r.files_changed >= 5)
-        {
-            let r = st.last_report.unwrap();
-            let total = (r.chunks_cached + r.chunks_embedded).max(1);
-            let hit = r.chunks_cached as f64 / total as f64;
-            println!(
-                "branch_switch_back_cache_hit_rate={hit:.3} files_changed={}",
-                r.files_changed
-            );
-            assert!(hit >= 0.95, "{r:?}");
+        if back && !st.stale {
             break;
         }
-        assert!(t.elapsed() < Duration::from_secs(30));
+        assert!(
+            t.elapsed() < Duration::from_secs(30),
+            "switch back not fresh in 30s (helper_3 found: {back}): {st:?}"
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
+    let (after, _) = cache.stats().unwrap();
+    assert_eq!(after, before, "switching back embedded new chunks");
 }
 
 #[test]
