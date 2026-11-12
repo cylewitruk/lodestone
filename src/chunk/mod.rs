@@ -873,9 +873,7 @@ async fn async_test() {}
         assert!(total.text.contains("reduce"));
         let markup: Vec<_> = items.iter().filter(|i| !i.tagged).collect();
         assert!(
-            markup
-                .iter()
-                .any(|i| i.text.contains("<h1>Chart</h1>")),
+            markup.iter().any(|i| i.text.contains("<h1>Chart</h1>")),
             "{markup:#?}"
         );
         assert!(markup.iter().all(|i| !i.text.contains("rebeccapurple")
