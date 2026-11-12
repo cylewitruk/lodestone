@@ -2,11 +2,10 @@
 //! session reminder hooks, the `lode mcp` stdio relay, and installing all three.
 
 mod install;
+mod marker;
 mod relay;
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::path::Path;
 
 use serde_json::json;
 
@@ -20,9 +19,6 @@ use crate::registry;
 
 /// How long the hook's lease keeps the session's worktree watched before the relay's takes over.
 const HOOK_LEASE_SECS: u64 = 300;
-
-/// Markers older than this are removed when a new one is written.
-const MARKER_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 
 /// The lodestone skill, shared by every harness (`.agents/skills/lodestone/SKILL.md`).
 pub const SKILL: &str = include_str!("../../plugin/skills/lodestone/SKILL.md");
@@ -61,9 +57,9 @@ impl HookEvent {
 /// The hook's output for `event` in session `session` (the harness's id) in `dir`: the reminder
 /// as hook JSON when `dir` is in a registered worktree, otherwise `None`.
 ///
-/// Each session is checked once, at its first hook, which leaves a marker: `UserPromptSubmit`
-/// stays silent once one exists, or when the harness gives no session id. `SessionStart` always
-/// checks, since a compacted session has lost the reminder.
+/// Every hook keeps the session's marker (see [`marker`]) current. `UserPromptSubmit` adds the
+/// reminder only when it writes a session's first marker, so never without a session id;
+/// `SessionStart` always adds it, since a compacted session has lost it.
 pub fn hook(
     event: HookEvent,
     dir: &Path,
@@ -71,17 +67,27 @@ pub fn hook(
     config: &Config,
     config_path: Option<&Path>,
 ) -> Option<String> {
-    let marker = session.and_then(|id| marker_path(config, id));
-    if event == HookEvent::UserPromptSubmit && marker.as_ref().is_none_or(|m| m.exists()) {
-        return None;
-    }
-    let served = serves(dir, config, config_path);
-    if let Some(m) = &marker
-        && let Err(e) = write_marker(m, event)
+    let path = session.and_then(|id| marker::path(&config.data_dir(), id));
+    let previous = path.as_deref().and_then(marker::read);
+    if let Some(p) = &path
+        && (event == HookEvent::SessionStart
+            || previous
+                .as_ref()
+                .is_none_or(|m| m.cwd.as_deref() != Some(dir)))
     {
-        tracing::warn!("{e:#}");
+        let m = marker::Marker {
+            event: event.name().into(),
+            cwd: Some(dir.to_path_buf()),
+        };
+        if let Err(e) = marker::write(p, &m) {
+            tracing::warn!("{e:#}");
+        }
     }
-    served.then(|| {
+    let remind = match event {
+        HookEvent::SessionStart => true,
+        HookEvent::UserPromptSubmit => path.is_some() && previous.is_none(),
+    };
+    (remind && serves(dir, config, config_path)).then(|| {
         json!({
             "hookSpecificOutput": {
                 "hookEventName": event.name(),
@@ -90,32 +96,6 @@ pub fn hook(
         })
         .to_string()
     })
-}
-
-/// Marks a session as checked; its contents name the hook that checked it.
-fn marker_path(config: &Config, session: &str) -> Option<PathBuf> {
-    let id: String = session
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-        .collect();
-    (!id.is_empty()).then(|| config.data_dir().join("hook-sessions").join(id))
-}
-
-fn write_marker(path: &Path, event: HookEvent) -> anyhow::Result<()> {
-    let dir = path.parent().expect("marker has a parent");
-    fs::create_dir_all(dir)?;
-    fs::write(path, event.name())?;
-    let now = SystemTime::now();
-    for entry in fs::read_dir(dir)?.flatten() {
-        let old = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .is_ok_and(|t| now.duration_since(t).unwrap_or_default() > MARKER_MAX_AGE);
-        if old {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
-    Ok(())
 }
 
 /// Whether the daemon serves `dir`.

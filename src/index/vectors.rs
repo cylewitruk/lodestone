@@ -1,7 +1,11 @@
 //! usearch HNSW index keyed by item id (cosine). Snapshots share an index read-only; writers
 //! duplicate it, mutate the copy and publish the copy in the next snapshot.
+//!
+//! usearch fails a search that finds all of an index's thread slots taken ("Reserve capacity
+//! ahead of searches!"), so each index reserves [`search_slots`] and searches beyond that wait.
 
 use std::path::Path;
+use std::sync::{Condvar, Mutex, MutexGuard};
 
 use anyhow::anyhow;
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
@@ -12,6 +16,49 @@ pub struct VectorIndex {
     index: Index,
     dim: usize,
     precision: Precision,
+    slots: Slots,
+}
+
+/// Searches one index runs at once: one per core, usearch's own default.
+fn search_slots() -> usize {
+    std::thread::available_parallelism().map_or(4, |n| n.get())
+}
+
+/// A counting semaphore over an index's search slots.
+struct Slots {
+    free: Mutex<usize>,
+    freed: Condvar,
+}
+
+impl Slots {
+    fn new(n: usize) -> Self {
+        Self {
+            free: Mutex::new(n),
+            freed: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, usize> {
+        self.free.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn take(&self) -> Slot<'_> {
+        let mut free = self.lock();
+        while *free == 0 {
+            free = self.freed.wait(free).unwrap_or_else(|e| e.into_inner());
+        }
+        *free -= 1;
+        Slot(self)
+    }
+}
+
+struct Slot<'a>(&'a Slots);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        *self.0.lock() += 1;
+        self.0.freed.notify_one();
+    }
 }
 
 fn options(dim: usize, precision: Precision) -> IndexOptions {
@@ -32,11 +79,21 @@ fn options(dim: usize, precision: Precision) -> IndexOptions {
 impl VectorIndex {
     pub fn new(dim: usize, precision: Precision) -> anyhow::Result<Self> {
         let index = Index::new(&options(dim, precision)).map_err(|e| anyhow!("usearch: {e}"))?;
-        Ok(Self {
+        let v = Self {
             index,
             dim,
             precision,
-        })
+            slots: Slots::new(search_slots()),
+        };
+        v.reserve(0)?;
+        Ok(v)
+    }
+
+    /// Room for `capacity` vectors and [`search_slots`] concurrent searches.
+    fn reserve(&self, capacity: usize) -> anyhow::Result<()> {
+        self.index
+            .reserve_capacity_and_threads(capacity.max(self.len()), search_slots())
+            .map_err(|e| anyhow!("usearch reserve: {e}"))
     }
 
     /// Loads `path`, or returns `None` if it is missing or was built with other parameters.
@@ -49,6 +106,7 @@ impl VectorIndex {
         if v.index.load(&p).is_err() || v.index.dimensions() != dim {
             return Ok(None);
         }
+        v.reserve(0)?;
         Ok(Some(v))
     }
 
@@ -81,6 +139,7 @@ impl VectorIndex {
         copy.index
             .load_from_buffer(&buf)
             .map_err(|e| anyhow!("usearch load: {e}"))?;
+        copy.reserve(0)?;
         Ok(copy)
     }
 
@@ -90,9 +149,7 @@ impl VectorIndex {
         if entries.is_empty() {
             return Ok(());
         }
-        self.index
-            .reserve(self.len() + entries.len())
-            .map_err(|e| anyhow!("usearch reserve: {e}"))?;
+        self.reserve(self.len() + entries.len())?;
         for (id, v) in entries {
             if v.len() != self.dim {
                 return Err(anyhow!("vector dim {} != {}", v.len(), self.dim));
@@ -119,10 +176,12 @@ impl VectorIndex {
         if self.is_empty() || !query.iter().all(|x| x.is_finite()) {
             return Ok(Vec::new());
         }
-        let m = self
-            .index
-            .search(query, k)
-            .map_err(|e| anyhow!("usearch search: {e}"))?;
+        let m = {
+            let _slot = self.slots.take();
+            self.index
+                .search(query, k)
+                .map_err(|e| anyhow!("usearch search: {e}"))?
+        };
         Ok(m.keys
             .into_iter()
             .zip(m.distances)
@@ -151,5 +210,35 @@ mod tests {
         v.add_many(&[(2, &[1.0, 0.0, 0.0, 0.0])]).unwrap();
         assert_eq!(v.search(&[1.0, 0.0, 0.0, 0.0], 1).unwrap()[0].0, 2);
         assert!(v.search(&[f32::NAN; 4], 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn more_concurrent_searches_than_slots_all_succeed() {
+        let mut v = VectorIndex::new(8, Precision::F32).unwrap();
+        let vecs: Vec<Vec<f32>> = (0..300)
+            .map(|i| (0..8).map(|j| ((i * 7 + j) % 13) as f32 + 0.5).collect())
+            .collect();
+        let entries: Vec<(u64, &[f32])> = vecs
+            .iter()
+            .enumerate()
+            .map(|(i, x)| (i as u64, x.as_slice()))
+            .collect();
+        v.add_many(&entries).unwrap();
+        // Published indexes are duplicates; they need their slots too.
+        let v = v.duplicate().unwrap();
+        let failed = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for t in 0..search_slots() * 4 {
+                let (v, failed) = (&v, &failed);
+                s.spawn(move || {
+                    for i in 0..500 {
+                        if v.search(&[(t + i) as f32 % 5.0 + 1.0; 8], 10).is_err() {
+                            failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(failed.into_inner(), 0);
     }
 }
