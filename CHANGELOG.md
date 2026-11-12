@@ -1078,3 +1078,23 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   identical vectors and their order depends on insertion order. It now checks presence.
 - Checked: a unit test runs four searches per core at once on a duplicated index; it fails on the
   previous code (most searches errored with 64 threads on 16 cores).
+
+## Svelte components
+
+- `.svelte` files were skipped, so in a Svelte app the agent could not find anything defined or
+  rendered in a component: in concurro-backoffice that was 41 of 149 definitions (903 of 3,634
+  script lines) plus 1,698 lines of markup. A helper like `UsageChart.svelte`'s `fmt`, which
+  reimplements `tokens()` from `lib/format.ts`, was invisible to `similar_code_search`.
+- New `lang-svelte` feature (on by default), using `tree-sitter-svelte-ng` only to find `<script>`
+  and `<style>` blocks. Script blocks are tagged with the TypeScript grammar (`lang="ts"`) or
+  the JavaScript one, the markup is chunked as text, and styles are left out. Each part is the
+  file with everything else blanked byte for byte, so the existing tagger runs unchanged and
+  every item keeps the component's own lines and columns. `tree-sitter-htmlx-svelte` (Svelte 5)
+  could not be used: it requires tree-sitter 0.26, and only one tree-sitter runtime can link.
+- Text chunks: a paragraph longer than the chunk budget is now cut at line boundaries instead of
+  truncated, which matters for markup that has few blank lines. Indexes re-chunk once.
+- Checked: chunk tests for a component with module and instance TypeScript scripts (positions,
+  doc comments, markup without script or style), a plain-JavaScript one and one without a script,
+  and for paragraph cutting. On concurro-backoffice (`overview-fixes`): 195 items from 47
+  components, indexed in 3.8 s; "format a token count" ranks `tokens()` then `fmt`, and "split
+  source code into tokens for syntax highlighting" finds `CodeBlock.svelte`'s `tokenize` first.

@@ -58,6 +58,7 @@ tree-sitter-tags = "0.27.2"
 tree-sitter-typescript = { version = "0.23.2", optional = true }
 ureq = { version = "3.5.1", features = ["json"] }
 usearch = "2.26.6"
+tree-sitter-svelte-ng = { version = "1.0.2", optional = true }
 
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -71,10 +72,12 @@ ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, fea
 cc = "1.2"
 
 [features]
-default = ["lang-rust", "lang-python", "lang-typescript", "lang-go", "lang-markdown", "lang-clarity", "candle", "fastembed"]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-svelte", "lang-go", "lang-markdown", "lang-clarity", "candle", "fastembed"]
 lang-rust = ["dep:tree-sitter-rust"]
 lang-python = ["dep:tree-sitter-python"]
 lang-typescript = ["dep:tree-sitter-typescript", "dep:tree-sitter-javascript"]
+# Svelte components: their `<script>` blocks are tagged as TypeScript or JavaScript.
+lang-svelte = ["lang-typescript", "dep:tree-sitter-svelte-ng"]
 lang-go = ["dep:tree-sitter-go"]
 lang-markdown = ["dep:tree-sitter-md"]
 # Vendored in `vendor/tree-sitter-clarity` (not on crates.io), compiled by `build.rs`.

@@ -1,8 +1,10 @@
 //! Chunking: one item per definition as identified by the grammar's tags query; files without a
-//! grammar (or without any definitions) are chunked into prose paragraphs.
+//! grammar (or without any definitions) are chunked into prose paragraphs. Component files
+//! (`.svelte`) get both: their scripts' definitions and their markup as text.
 
 #[cfg(feature = "lang-clarity")]
 mod clarity;
+mod component;
 pub mod languages;
 
 use std::cell::RefCell;
@@ -14,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use tree_sitter::{Parser, QueryCursor, StreamingIterator};
 use tree_sitter_tags::TagsContext;
 
+use component::Component;
 pub use languages::{Language, LanguageInfo, LanguageRegistry};
 
 /// Kind assigned to prose chunks.
@@ -21,7 +24,7 @@ pub const TEXT_KIND: &str = "text";
 /// Language assigned to prose chunks from files without a grammar.
 pub const TEXT_LANGUAGE: &str = "text";
 /// Bumped when items gain fields, so existing indexes re-chunk on the next full index.
-const ITEM_FORMAT: u32 = 2;
+const ITEM_FORMAT: u32 = 3;
 
 /// One searchable definition (or prose chunk) extracted from a file.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -130,8 +133,11 @@ impl Chunker {
     /// Chunks one file. Returns no items for files the registry does not accept.
     pub fn chunk(&self, rel_path: &str, source: &[u8]) -> Vec<Item> {
         let path = Path::new(rel_path);
+        if let Some(c) = self.registry.component_for(path) {
+            return self.chunk_component(rel_path, c, source);
+        }
         if let Some(lang) = self.registry.for_path(path) {
-            let items = self.chunk_tagged(rel_path, lang, source);
+            let items = self.chunk_tagged(rel_path, &lang.name, lang, source, source);
             if !items.is_empty() {
                 return items;
             }
@@ -143,7 +149,39 @@ impl Chunker {
         Vec::new()
     }
 
-    fn chunk_tagged(&self, rel_path: &str, lang: &Language, source: &[u8]) -> Vec<Item> {
+    /// A component's script definitions (or, without any, its script as text) and its markup as
+    /// text, all in the component's language.
+    fn chunk_component(&self, rel_path: &str, c: &Component, source: &[u8]) -> Vec<Item> {
+        let Some(parts) = PARSER.with(|p| c.split(&mut p.borrow_mut(), source)) else {
+            return self.chunk_text(rel_path, c.name, source);
+        };
+        let guest = if parts.typescript {
+            "typescript"
+        } else {
+            "javascript"
+        };
+        let mut items = self
+            .registry
+            .by_name(guest)
+            .map(|lang| self.chunk_tagged(rel_path, c.name, lang, &parts.script, source))
+            .unwrap_or_default();
+        if items.is_empty() {
+            items = self.chunk_text(rel_path, c.name, &parts.script);
+        }
+        items.extend(self.chunk_text(rel_path, c.name, &parts.markup));
+        items
+    }
+
+    /// Items for the definitions `lang`'s tags query finds in `source`, labelled `language`.
+    /// `original` is the file as read, of which `source` may be a copy with parts blanked.
+    fn chunk_tagged(
+        &self,
+        rel_path: &str,
+        language: &str,
+        lang: &Language,
+        source: &[u8],
+        original: &[u8],
+    ) -> Vec<Item> {
         let mut defs: Vec<Def> = TAGS_CONTEXT.with(|ctx| {
             let mut ctx = ctx.borrow_mut();
             let Ok((tags, _)) = ctx.generate_tags(&lang.tags, source, None) else {
@@ -211,7 +249,7 @@ impl Chunker {
             .then(|| {
                 module_item(
                     rel_path,
-                    &lang.name,
+                    language,
                     &text,
                     &defs,
                     &signatures,
@@ -235,10 +273,10 @@ impl Chunker {
                 } else {
                     body.push_str(&own);
                 }
-                let (name_line, name_column) = lines.position(source, d.name_start);
+                let (name_line, name_column) = lines.position(original, d.name_start);
                 Item {
                     rel_path: rel_path.to_string(),
-                    language: lang.name.clone(),
+                    language: language.to_string(),
                     kind: d.kind.clone(),
                     name: d.name.clone(),
                     qualified_name: qualified[i].clone(),
@@ -260,78 +298,79 @@ impl Chunker {
         items
     }
 
-    /// Blank-line-separated paragraphs merged up to the chunk budget.
+    /// Blank-line-separated paragraphs merged up to the chunk budget; a paragraph over the
+    /// budget is cut at line boundaries first.
     fn chunk_text(&self, rel_path: &str, language: &str, source: &[u8]) -> Vec<Item> {
         let text = String::from_utf8_lossy(source);
-        let mut items = Vec::new();
-        let mut buf = String::new();
-        let mut start_line = 0u32;
-        let mut para = String::new();
-        let mut para_start = 0u32;
-        let flush = |buf: &mut String, start: u32, end: u32, items: &mut Vec<Item>| {
-            let trimmed = buf.trim();
-            if trimmed.is_empty() {
-                buf.clear();
-                return;
-            }
-            let first = buf.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-            let indent = first.chars().take_while(|c| c.is_whitespace()).count() as u32;
-            let name: String = first.trim().chars().take(80).collect();
-            items.push(Item {
-                rel_path: rel_path.to_string(),
-                language: language.to_string(),
-                kind: TEXT_KIND.to_string(),
-                name: name.clone(),
-                qualified_name: name.clone(),
-                line_start: start,
-                line_end: end.max(start),
-                name_line: start,
-                name_column: indent + 1,
-                signature: name,
-                doc: String::new(),
-                is_test: false,
-                tagged: false,
-                text: truncate(
-                    &format!("{rel_path} {TEXT_KIND}\n{trimmed}"),
-                    self.max_chars,
-                ),
-            });
-            buf.clear();
-        };
-        let all_lines: Vec<&str> = text.lines().collect();
-        for (i, line) in all_lines.iter().enumerate() {
+        // (first line, lines) of each paragraph or paragraph piece.
+        let mut pieces: Vec<(u32, Vec<&str>)> = Vec::new();
+        let mut cur: Option<(u32, Vec<&str>, usize)> = None;
+        for (i, line) in text.lines().enumerate() {
             let lineno = i as u32 + 1;
             if line.trim().is_empty() {
-                if !para.is_empty() {
-                    if !buf.is_empty() && buf.len() + para.len() > self.max_chars {
-                        flush(&mut buf, start_line, para_start - 1, &mut items);
-                    }
-                    if buf.is_empty() {
-                        start_line = para_start;
-                    }
-                    buf.push_str(&para);
-                    buf.push('\n');
-                    para.clear();
+                if let Some((first, lines, _)) = cur.take() {
+                    pieces.push((first, lines));
                 }
                 continue;
             }
-            if para.is_empty() {
-                para_start = lineno;
+            let (first, lines, len) = cur.get_or_insert((lineno, Vec::new(), 0));
+            if *len > 0 && *len + line.len() + 1 > self.max_chars {
+                pieces.push((*first, std::mem::take(lines)));
+                (*first, *len) = (lineno, 0);
             }
-            para.push_str(line);
-            para.push('\n');
+            lines.push(line);
+            *len += line.len() + 1;
         }
-        if !para.is_empty() {
-            if !buf.is_empty() && buf.len() + para.len() > self.max_chars {
-                flush(&mut buf, start_line, para_start - 1, &mut items);
+        if let Some((first, lines, _)) = cur {
+            pieces.push((first, lines));
+        }
+        let mut items = Vec::new();
+        let mut buf = String::new();
+        let (mut start, mut end) = (0u32, 0u32);
+        for (first, lines) in pieces {
+            let para = lines.join("\n");
+            if !buf.is_empty() && buf.len() + para.len() + 2 > self.max_chars {
+                items.push(self.text_item(rel_path, language, &buf, start, end));
+                buf.clear();
             }
             if buf.is_empty() {
-                start_line = para_start;
+                start = first;
+            } else {
+                buf.push_str("\n\n");
             }
             buf.push_str(&para);
+            end = first + lines.len() as u32 - 1;
         }
-        flush(&mut buf, start_line, all_lines.len() as u32, &mut items);
+        if !buf.is_empty() {
+            items.push(self.text_item(rel_path, language, &buf, start, end));
+        }
         items
+    }
+
+    /// A prose item for `text`, lines `start..=end`, named after its first line.
+    fn text_item(&self, rel_path: &str, language: &str, text: &str, start: u32, end: u32) -> Item {
+        let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        let indent = first.chars().take_while(|c| c.is_whitespace()).count() as u32;
+        let name: String = first.trim().chars().take(80).collect();
+        Item {
+            rel_path: rel_path.to_string(),
+            language: language.to_string(),
+            kind: TEXT_KIND.to_string(),
+            name: name.clone(),
+            qualified_name: name.clone(),
+            line_start: start,
+            line_end: end.max(start),
+            name_line: start,
+            name_column: indent + 1,
+            signature: name,
+            doc: String::new(),
+            is_test: false,
+            tagged: false,
+            text: truncate(
+                &format!("{rel_path} {TEXT_KIND}\n{}", text.trim()),
+                self.max_chars,
+            ),
+        }
     }
 }
 
@@ -798,5 +837,74 @@ async fn async_test() {}
         assert_eq!(signature("def f(a, b):\n    return a"), "def f(a, b)");
         assert_eq!(signature("# Heading\n\nbody text"), "# Heading");
         assert_eq!(signature("const X: u64 = 5;"), "const X: u64 = 5");
+    }
+
+    #[cfg(feature = "lang-svelte")]
+    #[test]
+    fn svelte_scripts_are_tagged_and_markup_is_text() {
+        let src = "<script context=\"module\" lang=\"ts\">
+  export const PAGE = 20;
+</script>
+
+<script lang=\"ts\">
+  let { rows } = $props();
+  /** Thousands as `k`/`M` (é). */
+  const fmt = (k: number) => (k >= 1000 ? `${k / 1000}M` : `${k}k`);
+  function total(r: number[]): number {
+    return r.reduce((a, b) => a + b, 0);
+  }
+</script>
+
+<h1>Usage chart</h1>
+<ul>{#each rows as r}<li>{fmt(total(r))}</li>{/each}</ul>
+
+<style>
+  h1 { color: rebeccapurple; }
+</style>
+";
+        let items = chunker().chunk("src/lib/UsageChart.svelte", src.as_bytes());
+        assert!(items.iter().all(|i| i.language == "svelte"), "{items:#?}");
+        let def = |name: &str| items.iter().find(|i| i.name == name && i.tagged);
+        let fmt = def("fmt").expect("fmt");
+        assert_eq!((fmt.line_start, fmt.name_line, fmt.name_column), (8, 8, 9));
+        assert!(fmt.doc.contains("Thousands"), "{fmt:?}");
+        let total = def("total").expect("total");
+        assert_eq!((total.line_start, total.line_end), (9, 11));
+        assert!(total.text.contains("reduce"));
+        let markup: Vec<_> = items.iter().filter(|i| !i.tagged).collect();
+        assert!(
+            markup
+                .iter()
+                .any(|i| i.text.contains("<h1>Usage chart</h1>")),
+            "{markup:#?}"
+        );
+        assert!(markup.iter().all(|i| !i.text.contains("rebeccapurple")
+            && !i.text.contains("reduce")
+            && !i.text.contains("<script")));
+        assert_eq!(markup[0].line_start, 14);
+    }
+
+    #[cfg(feature = "lang-svelte")]
+    #[test]
+    fn svelte_plain_script_is_javascript_and_scriptless_files_are_markup() {
+        let js = b"<script>\n  function go(href) { location.href = href; }\n</script>\n<a on:click={() => go('/')}>Home</a>\n";
+        let items = chunker().chunk("Nav.svelte", js);
+        assert!(
+            items.iter().any(|i| i.name == "go" && i.tagged),
+            "{items:#?}"
+        );
+        let items = chunker().chunk("Static.svelte", b"<p>Nothing to run.</p>\n");
+        assert_eq!(items.len(), 1);
+        assert!(!items[0].tagged && items[0].text.contains("Nothing to run."));
+    }
+
+    #[test]
+    fn long_paragraphs_are_cut_at_lines() {
+        let line = "x".repeat(300);
+        let src = format!("{line}\n{line}\n{line}\n{line}\n\nshort\n");
+        let items = Chunker::new(chunker().registry().clone(), 200).chunk("a.txt", src.as_bytes());
+        // 800-character budget: two 300-character lines per item, and `short` joins the last.
+        let lines: Vec<_> = items.iter().map(|i| (i.line_start, i.line_end)).collect();
+        assert_eq!(lines, [(1, 2), (3, 6)], "{items:#?}");
     }
 }
