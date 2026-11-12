@@ -1,4 +1,4 @@
-//! `lode install` / `lode uninstall`: the skill, the MCP server and the SessionStart hook for
+//! `lode install` / `lode uninstall`: the skill, the MCP server and the reminder hooks for
 //! Claude Code and Codex.
 //!
 //! The skill lives in the shared `.agents/skills/` location (read by Codex, and by Claude Code
@@ -15,12 +15,10 @@ use std::process::Command;
 use anyhow::{Context, bail};
 use serde_json::{Map, Value, json};
 
-use super::SKILL;
+use super::{HookEvent, SKILL};
 
 const NAME: &str = "lodestone";
-/// Marks our hook among others in a hooks file.
-const HOOK_ARGS: &str = "hook session-start";
-const HOOK_MATCHER: &str = "startup|resume|clear|compact";
+const SESSION_START_MATCHER: &str = "startup|resume|clear|compact";
 const HOOK_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -37,6 +35,15 @@ impl Harness {
         match self {
             Harness::Claude => "claude",
             Harness::Codex => "codex",
+        }
+    }
+
+    /// The hooks that add the reminder. Claude Code in the desktop app skips SessionStart hooks
+    /// at startup, so Claude also gets the first-prompt hook.
+    fn hook_events(self) -> &'static [HookEvent] {
+        match self {
+            Harness::Claude => &[HookEvent::SessionStart, HookEvent::UserPromptSubmit],
+            Harness::Codex => &[HookEvent::SessionStart],
         }
     }
 
@@ -111,10 +118,11 @@ impl Target {
         }
     }
 
-    fn hook_command(&self) -> String {
+    fn hook_command(&self, event: HookEvent) -> String {
+        let args = event.args();
         match self.scope {
-            Scope::User => format!("'{}' {HOOK_ARGS}", self.program()),
-            Scope::Project => format!("{} {HOOK_ARGS}", self.program()),
+            Scope::User => format!("'{}' {args}", self.program()),
+            Scope::Project => format!("{} {args}", self.program()),
         }
     }
 }
@@ -138,9 +146,10 @@ pub enum Step {
         args: Vec<String>,
         may_fail: bool,
     },
-    /// Adds or removes our SessionStart hook in a Claude settings or Codex hooks JSON file.
+    /// Adds or removes our `event` hook in a Claude settings or Codex hooks JSON file.
     Hook {
         path: PathBuf,
+        event: HookEvent,
         command: Option<String>,
     },
     /// Adds or removes our server (`<program> mcp`) in a `.mcp.json` file.
@@ -165,10 +174,15 @@ impl fmt::Display for Step {
             }
             Step::Remove { path } => write!(f, "remove {}", path.display()),
             Step::Run { program, args, .. } => write!(f, "run {program} {}", args.join(" ")),
-            Step::Hook { path, command } => write!(
+            Step::Hook {
+                path,
+                event,
+                command,
+            } => write!(
                 f,
-                "{} SessionStart hook in {}",
+                "{} {} hook in {}",
                 verb(command.is_some()),
+                event.name(),
                 path.display()
             ),
             Step::McpJson { path, program } | Step::CodexToml { path, program } => write!(
@@ -227,10 +241,11 @@ pub fn install(harnesses: &[Harness], t: &Target) -> Vec<Step> {
             });
         }
         steps.extend(mcp_steps(h, t, true));
-        steps.push(Step::Hook {
+        steps.extend(h.hook_events().iter().map(|&event| Step::Hook {
             path: t.hooks_file(h),
-            command: Some(t.hook_command()),
-        });
+            event,
+            command: Some(t.hook_command(event)),
+        }));
     }
     steps
 }
@@ -246,10 +261,11 @@ pub fn uninstall(harnesses: &[Harness], t: &Target) -> Vec<Step> {
             });
         }
         steps.extend(mcp_steps(h, t, false));
-        steps.push(Step::Hook {
+        steps.extend(h.hook_events().iter().map(|&event| Step::Hook {
             path: t.hooks_file(h),
+            event,
             command: None,
-        });
+        }));
     }
     if Harness::ALL.iter().all(|h| harnesses.contains(h)) {
         steps.push(Step::Remove {
@@ -292,7 +308,11 @@ pub fn apply(step: &Step) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Step::Hook { path, command } => edit_json(path, |doc| set_hook(doc, command.as_deref())),
+        Step::Hook {
+            path,
+            event,
+            command,
+        } => edit_json(path, |doc| set_hook(doc, *event, command.as_deref())),
         Step::McpJson { path, program } => {
             edit_json(path, |doc| set_mcp_server(doc, program.as_deref()))
         }
@@ -370,37 +390,42 @@ fn edit_json(path: &Path, edit: impl FnOnce(&mut Map<String, Value>)) -> anyhow:
     write_if_changed(path, &text, &new)
 }
 
-fn is_ours(hook: &Value) -> bool {
+fn is_ours(hook: &Value, event: HookEvent) -> bool {
     hook["command"]
         .as_str()
-        .is_some_and(|c| c.contains("lode") && c.ends_with(HOOK_ARGS))
+        .is_some_and(|c| c.contains("lode") && c.ends_with(event.args()))
 }
 
-/// Replaces our SessionStart hook with one running `command`, or removes it; other hooks stay.
-fn set_hook(doc: &mut Map<String, Value>, command: Option<&str>) {
+/// Replaces our `event` hook with one running `command`, or removes it; other hooks stay.
+fn set_hook(doc: &mut Map<String, Value>, event: HookEvent, command: Option<&str>) {
     let hooks = doc
         .entry("hooks")
         .or_insert_with(|| json!({}))
         .as_object_mut();
     let Some(hooks) = hooks else { return };
     let mut groups: Vec<Value> = hooks
-        .remove("SessionStart")
+        .remove(event.name())
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
     for g in &mut groups {
         if let Some(list) = g.get_mut("hooks").and_then(Value::as_array_mut) {
-            list.retain(|h| !is_ours(h));
+            list.retain(|h| !is_ours(h, event));
         }
     }
     groups.retain(|g| g["hooks"].as_array().is_none_or(|l| !l.is_empty()));
     if let Some(command) = command {
-        groups.push(json!({
-            "matcher": HOOK_MATCHER,
-            "hooks": [{ "type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECS }],
-        }));
+        let mut group = Map::new();
+        if event == HookEvent::SessionStart {
+            group.insert("matcher".into(), SESSION_START_MATCHER.into());
+        }
+        group.insert(
+            "hooks".into(),
+            json!([{ "type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECS }]),
+        );
+        groups.push(Value::Object(group));
     }
     if !groups.is_empty() {
-        hooks.insert("SessionStart".into(), Value::Array(groups));
+        hooks.insert(event.name().into(), Value::Array(groups));
     }
     if hooks.is_empty() {
         doc.remove("hooks");
@@ -535,6 +560,18 @@ mod tests {
                 "'/opt/bin/lode' hook session-start"
             );
         }
+        // Claude Code in the desktop app skips SessionStart at startup; Codex does not.
+        let prompt_hook =
+            |file: &str| read_json(&home.join(file))["hooks"]["UserPromptSubmit"].clone();
+        assert_eq!(
+            prompt_hook(".claude/settings.json"),
+            json!([{ "hooks": [{
+                "type": "command",
+                "command": "'/opt/bin/lode' hook prompt-submit",
+                "timeout": HOOK_TIMEOUT_SECS,
+            }] }])
+        );
+        assert_eq!(prompt_hook(".codex/hooks.json"), Value::Null);
 
         run_all(&uninstall(&[Harness::Claude], &t));
         assert!(skill.exists(), "Codex still reads the shared skill");
@@ -614,7 +651,11 @@ mod tests {
             "theme": "dark"
         }))
         .unwrap();
-        set_hook(&mut doc, Some("lode hook session-start"));
+        set_hook(
+            &mut doc,
+            HookEvent::SessionStart,
+            Some("lode hook session-start"),
+        );
         let keys: Vec<&str> = doc.keys().map(String::as_str).collect();
         assert_eq!(keys, ["model", "hooks", "theme"]);
         let groups = doc["hooks"]["SessionStart"].as_array().unwrap();
@@ -624,7 +665,7 @@ mod tests {
             json!([{ "type": "command", "command": "other" }])
         );
         assert_eq!(groups[1]["hooks"][0]["command"], "lode hook session-start");
-        set_hook(&mut doc, None);
+        set_hook(&mut doc, HookEvent::SessionStart, None);
         assert_eq!(doc["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
         assert!(doc["hooks"]["Stop"].is_array());
     }

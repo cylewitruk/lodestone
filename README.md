@@ -69,7 +69,7 @@ lode uninstall                    # same flags; --dry-run prints the steps only
 | ---- | ---- | ---- |
 | Skill | `~/.agents/skills/lodestone/`, linked from `~/.claude/skills/` | `.agents/skills/lodestone/`, linked from `.claude/skills/` |
 | MCP server (`lode mcp`) | `claude mcp add` / `~/.codex/config.toml` | `.mcp.json` / `.codex/config.toml` |
-| SessionStart reminder | `~/.claude/settings.json` / `~/.codex/hooks.json` | `.claude/settings.json` / `.codex/hooks.json` |
+| Reminder hooks | `~/.claude/settings.json` / `~/.codex/hooks.json` | `.claude/settings.json` / `.codex/hooks.json` |
 
 - **Skill location:** the shared `.agents/skills/`. Claude Code doesn't read a repository's
   `.agents/skills`, so it gets a symlink from `.claude/skills/`.
@@ -79,11 +79,14 @@ lode uninstall                    # same flags; --dry-run prints the steps only
   Codex, `lode install` sets `default_tools_approval_mode = "approve"` on the server, so its
   approver doesn't stop each search.
 - **Reminder:** `lode hook session-start` prints it only in a registered repository, and starts
-  the daemon early so the model loads while the session starts.
+  the daemon early so the model loads while the session starts. Claude Code in the desktop app
+  doesn't run SessionStart hooks at startup, so Claude also gets `lode hook prompt-submit`, which
+  adds the reminder on a session's first prompt unless a SessionStart hook already ran (it leaves
+  a marker per session in `~/.lodestone/hook-sessions/`).
 - **First use:** Codex asks you to trust the hook once (`/hooks`). At project scope, Codex must
   trust the project and Claude Code asks you to approve the `.mcp.json` server.
-- **Plugin:** `plugin/` bundles the same skill, server and hook as a Claude Code plugin
-  (`claude --plugin-dir plugin`); its hook needs `lode` on PATH.
+- **Plugin:** `plugin/` bundles the same skill, server and hooks as a Claude Code plugin
+  (`claude --plugin-dir plugin`); its hooks need `lode` on PATH.
 
 **Measured effect** (Opus 5.5, details in [eval/situations/README.md](eval/situations/README.md)):
 

@@ -1038,3 +1038,15 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   file changes and ref change can land in separate debounce windows, so the last pass is a no-op
   rescan and its report replaced the one the test read. It now checks that switching back adds
   nothing to the embedding cache. Eight full-suite runs passed in a row (it had failed 3 of 8).
+
+## The reminder reaches desktop sessions
+
+- Claude Code in the desktop app never ran the SessionStart hook at startup (only after a
+  compaction), so new Code-tab sessions got lodestone's tools but not the reminder to use them.
+  `lode install` now also adds a `UserPromptSubmit` hook for Claude (`lode hook prompt-submit`,
+  and in the plugin) that adds the reminder on a session's first prompt. Whichever hook checks a
+  session first leaves a marker in `~/.lodestone/hook-sessions/`; the prompt hook stays silent
+  once one exists, so CLI sessions still get the reminder once. Markers older than 30 days are
+  removed. Codex runs SessionStart at startup and is unchanged.
+- Checked: a test runs both hooks with session ids, and checks that the prompt hook adds the
+  reminder only to a session no hook has reminded, and only once.

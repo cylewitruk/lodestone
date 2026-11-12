@@ -989,22 +989,40 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
     assert!(ok);
 
     // The session hook counts the worktree as served (and starts the daemon).
-    let mut hook = lode(&home)
-        .args(["hook", "session-start"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    {
-        use std::io::Write;
-        let mut stdin = hook.stdin.take().unwrap();
-        writeln!(stdin, "{}", json!({ "cwd": feat.join("core") })).unwrap();
-    }
-    let out = hook.wait_with_output().unwrap();
+    let hook = |event: &str, input: Value| {
+        let mut hook = lode(&home)
+            .args(["hook", event])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            use std::io::Write;
+            let mut stdin = hook.stdin.take().unwrap();
+            writeln!(stdin, "{input}").unwrap();
+        }
+        let out = hook.wait_with_output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let core = feat.join("core");
+    let started = hook("session-start", json!({ "cwd": core, "session_id": "s1" }));
+    assert!(started.contains("additionalContext"), "{started}");
+    // The first-prompt hook adds the reminder once, to a session no other hook has reminded.
+    let prompt = |id: Option<&str>| {
+        hook(
+            "prompt-submit",
+            json!({ "cwd": core, "session_id": id, "prompt": "hi" }),
+        )
+    };
+    assert_eq!(prompt(Some("s1")), "");
+    let first = prompt(Some("s2"));
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("additionalContext"),
-        "{out:?}"
+        first.contains("additionalContext") && first.contains("UserPromptSubmit"),
+        "{first}"
     );
+    assert_eq!(prompt(Some("s2")), "");
+    assert_eq!(prompt(None), "");
 
     // A session in the worktree searches the worktree's own index, registered on first use.
     let search = |dir: &Path, query: &str| {

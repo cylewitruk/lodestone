@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
-use lodestone::agents::{self, Harness, Scope, Target};
+use lodestone::agents::{self, Harness, HookEvent, Scope, Target};
 use lodestone::api::types::{
     DEFAULT_TOP_K, IndexRequest, RegisterRequest, SearchRequest, StatusOverview, StatusReport,
 };
@@ -128,7 +128,7 @@ enum Cmd {
     Models,
     /// Built-in grammars, grammars found via tree-sitter's config, and the extension map.
     Languages,
-    /// Install the skill, MCP server and SessionStart reminder into Claude Code and/or Codex.
+    /// Install the skill, MCP server and reminder hooks into Claude Code and/or Codex.
     Install(HarnessArgs),
     /// Remove what `install` added.
     Uninstall(HarnessArgs),
@@ -179,6 +179,8 @@ struct HarnessArgs {
 enum HookCmd {
     /// Print the lodestone reminder in a registered repository; start the daemon if needed.
     SessionStart,
+    /// The same, on a session's first prompt only, unless a session-start hook already ran.
+    PromptSubmit,
 }
 
 /// How long `lode stop` waits for the daemon to exit.
@@ -352,9 +354,20 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Cmd::Hook(HookCmd::SessionStart) => {
-            let dir = session_dir()?;
-            if let Some(out) = agents::session_start(&dir, &config, cli.config.as_deref()) {
+        Cmd::Hook(cmd) => {
+            let event = match cmd {
+                HookCmd::SessionStart => HookEvent::SessionStart,
+                HookCmd::PromptSubmit => HookEvent::UserPromptSubmit,
+            };
+            let input = HookInput::read()?;
+            let out = agents::hook(
+                event,
+                &input.dir,
+                input.session.as_deref(),
+                &config,
+                cli.config.as_deref(),
+            );
+            if let Some(out) = out {
                 println!("{out}");
             }
             Ok(())
@@ -635,19 +648,30 @@ fn indexed_here(config: &Config) -> anyhow::Result<PathBuf> {
     }
 }
 
-fn session_dir() -> anyhow::Result<PathBuf> {
-    use std::io::{IsTerminal, Read};
-    let mut input = String::new();
-    if !std::io::stdin().is_terminal() {
-        std::io::stdin().read_to_string(&mut input)?;
-    }
-    let cwd = serde_json::from_str::<serde_json::Value>(&input)
-        .ok()
-        .and_then(|v| v["cwd"].as_str().map(PathBuf::from));
-    Ok(
-        match cwd.or_else(|| std::env::var_os("CLAUDE_PROJECT_DIR").map(PathBuf::from)) {
+/// What a harness passes a hook on stdin.
+struct HookInput {
+    /// The session's directory.
+    dir: PathBuf,
+    /// The harness's session id.
+    session: Option<String>,
+}
+
+impl HookInput {
+    fn read() -> anyhow::Result<Self> {
+        use std::io::{IsTerminal, Read};
+        let mut input = String::new();
+        if !std::io::stdin().is_terminal() {
+            std::io::stdin().read_to_string(&mut input)?;
+        }
+        let json = serde_json::from_str::<serde_json::Value>(&input).unwrap_or_default();
+        let cwd = json["cwd"].as_str().map(PathBuf::from);
+        let dir = match cwd.or_else(|| std::env::var_os("CLAUDE_PROJECT_DIR").map(PathBuf::from)) {
             Some(dir) => dir,
             None => std::env::current_dir()?,
-        },
-    )
+        };
+        Ok(Self {
+            dir,
+            session: json["session_id"].as_str().map(String::from),
+        })
+    }
 }
