@@ -644,7 +644,8 @@ fn lode(home: &Path) -> Command {
     c.env("LODESTONE_HOME", home)
         .env("LODESTONE_TEST_EMBEDDER", "hash")
         .env_remove("LODESTONE_PORT")
-        .env_remove("LODESTONE_SOCKET");
+        .env_remove("LODESTONE_SOCKET")
+        .env_remove("CLAUDE_CODE_SESSION_ID");
     c
 }
 
@@ -917,9 +918,24 @@ fn stop_and_sigterm_shut_the_daemon_down_gracefully() {
 
 /// Calls one MCP tool through a `lode mcp` relay started in `dir`; returns (is_error, text).
 fn relay_call(home: &Path, dir: &Path, tool: &str, arguments: Value) -> (bool, String) {
+    relay_call_in(home, dir, None, tool, arguments)
+}
+
+/// [`relay_call`] from a relay Claude Code started for session `session`.
+fn relay_call_in(
+    home: &Path,
+    dir: &Path,
+    session: Option<&str>,
+    tool: &str,
+    arguments: Value,
+) -> (bool, String) {
     use std::io::{BufRead, BufReader, Write};
 
-    let mut relay = lode(home)
+    let mut cmd = lode(home);
+    if let Some(id) = session {
+        cmd.env("CLAUDE_CODE_SESSION_ID", id);
+    }
+    let mut relay = cmd
         .arg("mcp")
         .current_dir(dir)
         .stdin(Stdio::piped())
@@ -1046,6 +1062,26 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
     let (_, text) = search(&root, "helper_0");
     assert!(text.contains("core/src/m0.rs"), "{text}");
     let (_, text) = search(&root, "only_in_feat");
+    assert!(!text.contains("only_feat.rs"), "{text}");
+
+    // Claude Code in the desktop app starts the relay in the main checkout of a worktree session:
+    // the relay searches the directory the session's hooks recorded.
+    let (_, text) = relay_call_in(
+        &home,
+        &root,
+        Some("s2"),
+        "semantic_code_search",
+        json!({ "query": "only_in_feat" }),
+    );
+    assert!(text.contains("core/src/only_feat.rs"), "{text}");
+    // A session whose hooks recorded nothing keeps the relay's own directory.
+    let (_, text) = relay_call_in(
+        &home,
+        &root,
+        Some("unknown"),
+        "semantic_code_search",
+        json!({ "query": "only_in_feat" }),
+    );
     assert!(!text.contains("only_feat.rs"), "{text}");
 
     // An unrelated checkout gets an error, not another checkout's results.

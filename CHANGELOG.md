@@ -1050,3 +1050,18 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   removed. Codex runs SessionStart at startup and is unchanged.
 - Checked: a test runs both hooks with session ids, and checks that the prompt hook adds the
   reminder only to a session no hook has reminded, and only once.
+
+## Desktop worktree sessions search their worktree
+
+- Claude Code in the desktop app starts MCP servers in the main checkout (`cwd` and
+  `CLAUDE_PROJECT_DIR`) even when the session runs in a worktree, so `lode mcp` searched the main
+  checkout's index there and missed the branch's changes. The hooks get the session's real
+  directory; they now record it in the session's marker (JSON: `event`, `cwd`), and `lode mcp`
+  uses it for the session `CLAUDE_CODE_SESSION_ID` names, re-leasing before a call when it
+  changed. Without a marker it keeps its own directory, as before. Markers from the previous
+  build (the event name only) still count as reminded.
+- Claude Code also offers MCP roots (the CLI reports the session's directory); not used yet,
+  since what the desktop app reports there is unverified.
+- Checked: a test starts the relay in the main checkout for a session whose hook recorded a linked
+  worktree, and finds the worktree's code; a session with no marker still gets the main
+  checkout's. It fails on the previous code.

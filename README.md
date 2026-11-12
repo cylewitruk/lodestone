@@ -74,15 +74,18 @@ lode uninstall                    # same flags; --dry-run prints the steps only
 - **Skill location:** the shared `.agents/skills/`. Claude Code doesn't read a repository's
   `.agents/skills`, so it gets a symlink from `.claude/skills/`.
 - **MCP server:** `lode mcp`, a stdio relay the harness starts per session. It starts the daemon
-  if needed and searches the session's repository when a call names none.
+  if needed and searches the session's repository when a call names none. Claude Code in the
+  desktop app starts it in the main checkout even for a worktree session, so for a Claude session
+  (`CLAUDE_CODE_SESSION_ID`) it uses the directory the session's hooks recorded in
+  `~/.lodestone/hook-sessions/`.
 - **Approval:** the tools only read the index and are marked read-only (`readOnlyHint`). For
   Codex, `lode install` sets `default_tools_approval_mode = "approve"` on the server, so its
   approver doesn't stop each search.
 - **Reminder:** `lode hook session-start` prints it only in a registered repository, and starts
   the daemon early so the model loads while the session starts. Claude Code in the desktop app
   doesn't run SessionStart hooks at startup, so Claude also gets `lode hook prompt-submit`, which
-  adds the reminder on a session's first prompt unless a SessionStart hook already ran (it leaves
-  a marker per session in `~/.lodestone/hook-sessions/`).
+  adds the reminder on a session's first prompt unless a SessionStart hook already ran. Both
+  keep a marker per session in `~/.lodestone/hook-sessions/` with the session's directory.
 - **First use:** Codex asks you to trust the hook once (`/hooks`). At project scope, Codex must
   trust the project and Claude Code asks you to approve the `.mcp.json` server.
 - **Plugin:** `plugin/` bundles the same skill, server and hooks as a Claude Code plugin
