@@ -1,6 +1,7 @@
 //! Language registry: compiled-in grammars plus grammars discovered through tree-sitter's own
 //! config. A language is a grammar, its tags query (merged with lodestone's supplementary
-//! overlay) and an optional tests query. Nothing here knows about any specific language.
+//! overlay) and an optional tests query. Component formats (see [`super::component`]) are
+//! registered alongside. Nothing here knows about any specific language.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -10,6 +11,7 @@ use std::sync::Arc;
 use tree_sitter::{Language as Grammar, Query};
 use tree_sitter_tags::TagsConfiguration;
 
+use super::component::Component;
 use crate::config::LanguagesConfig;
 
 /// Where a language came from.
@@ -183,6 +185,18 @@ fn builtins() -> Vec<Builtin> {
     v
 }
 
+#[allow(unused_mut, clippy::vec_init_then_push)]
+fn components() -> Vec<Component> {
+    let mut v = Vec::new();
+    #[cfg(feature = "lang-svelte")]
+    v.push(Component {
+        name: "svelte",
+        extensions: &["svelte"],
+        grammar: tree_sitter_svelte_ng::LANGUAGE.into(),
+    });
+    v
+}
+
 /// Summary row for `lode languages`.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct LanguageInfo {
@@ -196,6 +210,7 @@ pub struct LanguageInfo {
 pub struct LanguageRegistry {
     languages: Vec<Arc<Language>>,
     by_extension: HashMap<String, usize>,
+    components: Vec<Arc<Component>>,
     text_extensions: HashSet<String>,
     /// Grammars that were found but could not be used (ABI mismatch, bad query, no tags).
     pub issues: Vec<String>,
@@ -231,6 +246,7 @@ impl LanguageRegistry {
                 Err(e) => reg.issues.push(format!("{}: {e}", b.name)),
             }
         }
+        reg.components = components().into_iter().map(Arc::new).collect();
         if let Some(ts_config) = &config.tree_sitter_config {
             reg.load_external(&expand_home(ts_config), data_dir, &user_overlays);
         }
@@ -341,6 +357,19 @@ impl LanguageRegistry {
         self.by_extension.get(&ext).map(|&i| &self.languages[i])
     }
 
+    /// The language named `name`.
+    pub fn by_name(&self, name: &str) -> Option<&Arc<Language>> {
+        self.languages.iter().find(|l| l.name == name)
+    }
+
+    /// The component format of `path`, if it is one.
+    pub fn component_for(&self, path: &Path) -> Option<&Arc<Component>> {
+        let ext = path.extension()?.to_str()?.to_lowercase();
+        self.components
+            .iter()
+            .find(|c| c.extensions.contains(&ext.as_str()))
+    }
+
     pub fn is_text_extension(&self, path: &Path) -> bool {
         path.extension()
             .and_then(|e| e.to_str())
@@ -349,7 +378,9 @@ impl LanguageRegistry {
 
     /// Whether the walker should index this file at all.
     pub fn accepts(&self, path: &Path) -> bool {
-        self.for_path(path).is_some() || self.is_text_extension(path)
+        self.for_path(path).is_some()
+            || self.component_for(path).is_some()
+            || self.is_text_extension(path)
     }
 
     pub fn languages(&self) -> &[Arc<Language>] {
@@ -361,23 +392,26 @@ impl LanguageRegistry {
         for (ext, idx) in &self.by_extension {
             exts.entry(*idx).or_default().push(ext.clone());
         }
-        self.languages
-            .iter()
-            .enumerate()
-            .map(|(i, l)| {
-                let mut e = exts.remove(&i).unwrap_or_default();
-                e.sort();
-                LanguageInfo {
-                    name: l.name.clone(),
-                    origin: match &l.origin {
-                        Origin::Builtin => "builtin".into(),
-                        Origin::External(p) => p.display().to_string(),
-                    },
-                    extensions: e,
-                    has_tests_query: l.tests.is_some(),
-                }
-            })
-            .collect()
+        let languages = self.languages.iter().enumerate().map(|(i, l)| {
+            let mut e = exts.remove(&i).unwrap_or_default();
+            e.sort();
+            LanguageInfo {
+                name: l.name.clone(),
+                origin: match &l.origin {
+                    Origin::Builtin => "builtin".into(),
+                    Origin::External(p) => p.display().to_string(),
+                },
+                extensions: e,
+                has_tests_query: l.tests.is_some(),
+            }
+        });
+        let components = self.components.iter().map(|c| LanguageInfo {
+            name: c.name.to_string(),
+            origin: "builtin".into(),
+            extensions: c.extensions.iter().map(|e| e.to_string()).collect(),
+            has_tests_query: false,
+        });
+        languages.chain(components).collect()
     }
 
     /// Identity of everything that shapes chunks: languages, their queries and the extension map.
@@ -385,6 +419,9 @@ impl LanguageRegistry {
         let mut h = blake3::Hasher::new();
         for l in &self.languages {
             h.update(l.query_hash.as_bytes());
+        }
+        for c in &self.components {
+            h.update(format!("{}={}", c.name, c.extensions.join(",")).as_bytes());
         }
         let mut exts: Vec<_> = self
             .by_extension
