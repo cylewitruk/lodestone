@@ -855,14 +855,14 @@ async fn async_test() {}
   }
 </script>
 
-<h1>Usage chart</h1>
+<h1>Chart</h1>
 <ul>{#each rows as r}<li>{fmt(total(r))}</li>{/each}</ul>
 
 <style>
   h1 { color: rebeccapurple; }
 </style>
 ";
-        let items = chunker().chunk("src/lib/UsageChart.svelte", src.as_bytes());
+        let items = chunker().chunk("src/lib/Chart.svelte", src.as_bytes());
         assert!(items.iter().all(|i| i.language == "svelte"), "{items:#?}");
         let def = |name: &str| items.iter().find(|i| i.name == name && i.tagged);
         let fmt = def("fmt").expect("fmt");
@@ -875,7 +875,7 @@ async fn async_test() {}
         assert!(
             markup
                 .iter()
-                .any(|i| i.text.contains("<h1>Usage chart</h1>")),
+                .any(|i| i.text.contains("<h1>Chart</h1>")),
             "{markup:#?}"
         );
         assert!(markup.iter().all(|i| !i.text.contains("rebeccapurple")

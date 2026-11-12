@@ -1082,9 +1082,9 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
 ## Svelte components
 
 - `.svelte` files were skipped, so in a Svelte app the agent could not find anything defined or
-  rendered in a component: in concurro-backoffice that was 41 of 149 definitions (903 of 3,634
-  script lines) plus 1,698 lines of markup. A helper like `UsageChart.svelte`'s `fmt`, which
-  reimplements `tokens()` from `lib/format.ts`, was invisible to `similar_code_search`.
+  rendered in a component. In one SvelteKit app that was over a quarter of its definitions plus
+  all of its markup, and a component-local helper duplicating a shared one was invisible to
+  `similar_code_search`.
 - New `lang-svelte` feature (on by default), using `tree-sitter-svelte-ng` only to find `<script>`
   and `<style>` blocks. Script blocks are tagged with the TypeScript grammar (`lang="ts"`) or
   the JavaScript one, the markup is chunked as text, and styles are left out. Each part is the
@@ -1095,6 +1095,6 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   truncated, which matters for markup that has few blank lines. Indexes re-chunk once.
 - Checked: chunk tests for a component with module and instance TypeScript scripts (positions,
   doc comments, markup without script or style), a plain-JavaScript one and one without a script,
-  and for paragraph cutting. On concurro-backoffice (`overview-fixes`): 195 items from 47
-  components, indexed in 3.8 s; "format a token count" ranks `tokens()` then `fmt`, and "split
-  source code into tokens for syntax highlighting" finds `CodeBlock.svelte`'s `tokenize` first.
+  and for paragraph cutting. On a SvelteKit app with 47 components, all were indexed in under
+  4 s, and searches for a helper defined in a component, or for the component rendering a given
+  view, now find it.
