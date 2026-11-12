@@ -350,12 +350,11 @@ fn branch_switch_rescans_with_cache_hits() {
     std::thread::sleep(Duration::from_millis(800));
     let t = Instant::now();
     git(&root, &["checkout", "-q", "feature"]);
+    // Presence, not rank: the test embedder hashes words into 64 buckets, so different items
+    // can get identical vectors (`helper_3` and `helper_44` do), and their order is arbitrary.
+    let has = |query: &str, name: &str| d.search(query).results.iter().any(|r| r.name == name);
     loop {
-        let found = d
-            .search("feature_3")
-            .results
-            .first()
-            .is_some_and(|r| r.name == "feature_3");
+        let found = has("feature_3", "feature_3");
         let st = d.status();
         if found && !st.stale {
             break;
@@ -376,11 +375,7 @@ fn branch_switch_rescans_with_cache_hits() {
     let t = Instant::now();
     loop {
         let st = d.status();
-        let back = d
-            .search("helper_3")
-            .results
-            .first()
-            .is_some_and(|r| r.name == "helper_3");
+        let back = has("helper_3", "helper_3") && !has("feature_3", "feature_3");
         if back && !st.stale {
             break;
         }

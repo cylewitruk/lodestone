@@ -1065,3 +1065,16 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
 - Checked: a test starts the relay in the main checkout for a session whose hook recorded a linked
   worktree, and finds the worktree's code; a session with no marker still gets the main
   checkout's. It fails on the previous code.
+
+## Concurrent searches no longer fail
+
+- usearch gives each index a fixed number of thread slots (one per core by default) and fails a
+  search that finds them all taken ("Reserve capacity ahead of searches!"). More concurrent
+  searches than cores, e.g. several sessions on a small machine or the 8-client test on a 3-core CI
+  runner, occasionally got HTTP 400. Each index now reserves one slot per core explicitly
+  (including loaded and duplicated ones), and searches beyond that wait for a slot.
+- `branch_switch_rescans_with_cache_hits` asserted that `helper_3` ranks first for "helper_3", but
+  the test embedder hashes "3" and "44" into the same bucket, so `helper_3` and `helper_44` have
+  identical vectors and their order depends on insertion order. It now checks presence.
+- Checked: a unit test runs four searches per core at once on a duplicated index; it fails on the
+  previous code (most searches errored with 64 threads on 16 cores).
