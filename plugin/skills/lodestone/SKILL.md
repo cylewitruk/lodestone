@@ -7,7 +7,8 @@ description: Use when asked to write, add or implement a function, helper, type 
 
 lodestone (MCP server `lodestone`) is a semantic index of this repository's definitions with two
 search tools. Both find code by what it does, which Grep cannot when you do not know the name. A
-search takes about 10 ms and returns definitions with their location.
+search takes about 10 ms and returns definitions with their location. If the tools are listed only
+as deferred tools, load them first with ToolSearch (query `+lodestone search`).
 
 ## When to search
 

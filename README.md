@@ -92,6 +92,9 @@ lode uninstall                    # same flags; --dry-run prints the steps only
   doesn't run SessionStart hooks at startup, so Claude also gets `lode hook prompt-submit`, which
   adds the reminder on a session's first prompt unless a SessionStart hook already ran. Both
   keep a marker per session in `~/.lodestone/hook-sessions/` with the session's directory.
+- **Deferred tools:** Claude Code defers MCP tools behind ToolSearch. The search tools ask to load
+  upfront (`_meta["anthropic/alwaysLoad"]`, Claude Code v2.1.285 or later); where they are still
+  deferred, the reminder and the skill say to load them with ToolSearch (`+lodestone search`).
 - **First use:** Codex asks you to trust the hook once (`/hooks`). At project scope, Codex must
   trust the project and Claude Code asks you to approve the `.mcp.json` server.
 - **Plugin:** `plugin/` bundles the same skill, server and hooks as a Claude Code plugin
