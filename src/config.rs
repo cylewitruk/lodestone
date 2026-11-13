@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -203,6 +204,24 @@ pub struct RemoteConfig {
     /// OpenAI-compatible `/v1/embeddings` endpoint.
     pub url: String,
     pub api_key_env: String,
+}
+
+impl RemoteConfig {
+    /// Whether `url` names this machine (`localhost` or a loopback address).
+    pub fn is_loopback(&self) -> bool {
+        let rest = self
+            .url
+            .split_once("://")
+            .map_or(self.url.as_str(), |(_, r)| r);
+        let authority = rest.split('/').next().unwrap_or_default();
+        let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        let host = match authority.strip_prefix('[') {
+            Some(v6) => v6.split(']').next().unwrap_or_default(),
+            None => authority.split(':').next().unwrap_or_default(),
+        };
+        host.eq_ignore_ascii_case("localhost")
+            || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    }
 }
 
 impl Default for RemoteConfig {
@@ -525,6 +544,12 @@ pub fn builtin_models() -> BTreeMap<String, ModelConfig> {
 }
 
 impl Config {
+    /// Whether queries and code stay on this machine: unless embeddings come from a remote
+    /// endpoint elsewhere.
+    pub fn is_local(&self) -> bool {
+        self.backend != Backend::Remote || self.remote.is_loopback()
+    }
+
     /// Loads the config file if it exists (defaults otherwise); user `[models]` entries are
     /// merged over the built-in table.
     pub fn load(path: Option<&Path>) -> anyhow::Result<Self> {
@@ -645,6 +670,23 @@ pub fn default_data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_unless_embeddings_come_from_another_machine() {
+        let mut c = Config::default();
+        assert!(c.is_local());
+        c.backend = Backend::Remote;
+        for (url, local) in [
+            ("http://127.0.0.1:8080/v1/embeddings", true),
+            ("http://localhost/v1/embeddings", true),
+            ("https://key@[::1]:9000/v1/embeddings", true),
+            ("https://api.example.com/v1/embeddings", false),
+            ("http://10.0.0.2:8080/v1/embeddings", false),
+        ] {
+            c.remote.url = url.into();
+            assert_eq!(c.is_local(), local, "{url}");
+        }
+    }
 
     #[test]
     fn default_model_runs_on_default_backend() {

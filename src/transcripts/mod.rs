@@ -315,10 +315,21 @@ fn text_of(content: &Value) -> String {
         Value::Array(blocks) => blocks
             .iter()
             .filter_map(|b| b["text"].as_str())
+            .map(unwrapped)
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
     }
+}
+
+/// A text block's text; Codex records some tool results as a text block holding the whole
+/// serialized result (`{"content":[…]}`), whose own text this returns.
+fn unwrapped(text: &str) -> String {
+    text.starts_with('{')
+        .then(|| serde_json::from_str::<Value>(text).ok())
+        .flatten()
+        .filter(|v| v["content"].is_array())
+        .map_or_else(|| text.to_string(), |v| text_of(&v["content"]))
 }
 
 /// What a lodestone search was asked: the sentence and guessed names, or the start of the code.
@@ -363,6 +374,16 @@ fn query_of(kind: Kind, input: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn results_serialized_inside_a_text_block_are_unwrapped() {
+        let inner =
+            json!({ "content": [{ "type": "text", "text": "a/b.rs:2:8  lines 2-3  fn x()" }] });
+        let content = json!([{ "type": "text", "text": inner.to_string() }]);
+        assert_eq!(text_of(&content), "a/b.rs:2:8  lines 2-3  fn x()");
+        let plain = json!([{ "type": "text", "text": "{ not json" }]);
+        assert_eq!(text_of(&plain), "{ not json");
+    }
 
     #[test]
     fn similar_queries_show_each_definition() {

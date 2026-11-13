@@ -1123,3 +1123,29 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   exclusions each find an item that unfiltered search ranks below 20 others (the test fails when
   filtering runs after fusion); a unit test finds k admitted vectors past rejected nearer ones;
   an invalid glob is reported.
+
+## Sessions in parent folders, local tools, new worktrees
+
+Transcript stats after the reminder fix showed four problems.
+
+- **Parent folders.** Sessions often start in a folder that holds several checkouts rather than in
+  one. Neither hook reminded such a session (one ran about 1,000 grep/rg commands without a
+  search, reminded only after compactions moved it into a worktree), and calls without `repo` got
+  an error suggesting `lode register`. The hooks now remind a session in a folder holding
+  registered worktrees, listing them by name and root, and the error for a call without `repo`
+  lists them too (the relay sends the session's directory with each call).
+- **Approvers.** Codex's automatic approval review rejected six searches in one session as sending
+  private code "to an external service", then steered the agent away from lodestone. When
+  embeddings are computed on this machine, the search tools' descriptions now say it runs locally
+  and sends nothing elsewhere (`Config::is_local`: any backend but `remote`, or `remote` on a
+  loopback address).
+- **New worktrees.** Five searches, mostly the first in a worktree Codex had just created,
+  answered "still being indexed; search again shortly". A search in a worktree that has never
+  finished an index now waits up to 30 s for its first one (it stops waiting if indexing fails).
+- **Stats.** `lode transcript-stats` counted five searches with results as having none: Codex
+  records some results as a text block holding the whole serialized result. Those are unwrapped,
+  and the parser version is bumped, so transcripts are read again once.
+- Checked: in the worktree test, a hook and a relay call in the repository's parent folder name it;
+  the first search naming a new worktree now returns its results (it failed before the wait);
+  unit tests for loopback detection, the tool descriptions and the unwrapping. The hook, run for a
+  real parent folder, lists its four registered worktrees.

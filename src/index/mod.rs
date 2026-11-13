@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use arc_swap::ArcSwap;
@@ -339,6 +339,21 @@ impl WorktreeIndex {
         Manifest::load(&self.dir.join("manifest.json"))
             .ok()
             .flatten()
+    }
+
+    /// Waits up to `timeout` while a worktree that has never finished an index gets its first
+    /// one, giving up early if indexing runs and stops without finishing it (it failed).
+    pub fn await_first_index(&self, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut started = false;
+        while self.snapshot().updated_at == 0 && Instant::now() < deadline {
+            let running = self.progress().running;
+            if started && !running {
+                break;
+            }
+            started |= running;
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     pub fn is_writing(&self) -> bool {

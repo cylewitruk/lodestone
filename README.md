@@ -77,12 +77,18 @@ lode uninstall                    # same flags; --dry-run prints the steps only
   if needed and searches the session's repository when a call names none. Claude Code in the
   desktop app starts it in the main checkout even for a worktree session, so for a Claude session
   (`CLAUDE_CODE_SESSION_ID`) it uses the directory the session's hooks recorded in
-  `~/.lodestone/hook-sessions/`.
+  `~/.lodestone/hook-sessions/`. A session in a folder that holds indexed repositories (e.g. a
+  directory of several checkouts) must pass `repo`; the error for a call without one lists them.
+- **New worktrees:** the first search in a worktree that has never been indexed, such as one an
+  agent just created, waits up to 30 s for its first index instead of answering from an empty
+  one.
 - **Approval:** the tools only read the index and are marked read-only (`readOnlyHint`). For
   Codex, `lode install` sets `default_tools_approval_mode = "approve"` on the server, so its
-  approver doesn't stop each search.
-- **Reminder:** `lode hook session-start` prints it only in a registered repository, and starts
-  the daemon early so the model loads while the session starts. Claude Code in the desktop app
+  approver doesn't stop each search. When embeddings are computed on this machine (any backend but
+  a `remote` endpoint on another host), the search tools' descriptions also say that nothing is
+  sent elsewhere, for approvers that judge whether a call exports code.
+- **Reminder:** `lode hook session-start` prints it only in a registered repository, or in a
+  folder that holds some (then naming them, to pass as `repo`), and starts the daemon early so the model loads while the session starts. Claude Code in the desktop app
   doesn't run SessionStart hooks at startup, so Claude also gets `lode hook prompt-submit`, which
   adds the reminder on a session's first prompt unless a SessionStart hook already ran. Both
   keep a marker per session in `~/.lodestone/hook-sessions/` with the session's directory.

@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use crate::config::Config;
 use crate::index::{IndexOptions, WorktreeIndex};
-use crate::registry::Engine;
+use crate::registry::{self, Engine};
 use crate::watch::Watchers;
 use listen::Listeners;
 use mcp::LodestoneMcp;
@@ -288,11 +288,23 @@ async fn tool(State(s): State<AppState>, Json(mut req): Json<ToolRequest>) -> Ap
         // Never another checkout's index: a session outside every registered worktree must name
         // one.
         let root = s.leases().root(id).ok_or_else(|| {
+            let repos = req.cwd.as_deref().map_or_else(Vec::new, |dir| {
+                let repos = s.engine.repos().into_iter().map(Into::into).collect();
+                registry::inside(repos, Path::new(dir))
+            });
             ApiError(
                 StatusCode::BAD_REQUEST,
-                "this session's directory is not in a worktree lodestone indexes; run \
-                 `lode register <dir>` for it, or pass `repo`"
-                    .into(),
+                if repos.is_empty() {
+                    "this session's directory is not in a worktree lodestone indexes; run \
+                     `lode register <dir>` for it, or pass `repo`"
+                        .into()
+                } else {
+                    format!(
+                        "this session's directory is not in a worktree lodestone indexes, but \
+                         these in it are: {}; pass the one you work in as `repo`",
+                        registry::listing(&repos)
+                    )
+                },
             )
         })?;
         req.arguments

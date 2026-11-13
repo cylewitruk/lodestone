@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::{Call, Kind};
 
 /// Bumped when parsing or the schema changes, so every transcript is read again.
-const PARSER_VERSION: &str = "2";
+const PARSER_VERSION: &str = "3";
 
 const META: &str = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);";
 
