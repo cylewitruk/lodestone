@@ -19,7 +19,7 @@ use super::types::{DEFAULT_TOP_K, SearchRequest, SearchResponse};
 use crate::registry::Engine;
 
 pub const SEMANTIC_DESCRIPTION: &str = "Find existing code by what it does, when you do not know its name. Returns matching functions, types and macros as 'path:line:col  lines start-end  kind name(signature) — doc', where line:col is the name's position and start-end the item's line range (all 1-based). Use before writing any helper.";
-pub const SIMILAR_DESCRIPTION: &str = "Find existing code that does the same job as given code: every function a diff adds, or the functions you consolidate, move or rewrite. Each `code` entry gets its own section of results in semantic_code_search's format: 24 for a single entry, fewer each for several. The passed code's own definition is left out.";
+pub const SIMILAR_DESCRIPTION: &str = "Find existing code that does the same job as given code: every function a diff adds, or the functions you consolidate, move or rewrite. Returns one section per `code` entry, listing the closest matches in semantic_code_search's format; the entry's own definition is not listed.";
 pub const STATUS_DESCRIPTION: &str =
     "Index freshness for a repo: files indexed, pending changes, model, last update.";
 
