@@ -1113,6 +1113,12 @@ no reuse wording), Opus 5.5 at medium effort, 2 runs each, 168 runs; method and 
   searches: usearch's `filtered_search` walks the graph past rejected items until it has enough
   admitted ones, and tantivy's `FilterCollector` drops rejected ids before ranking. Both use one
   predicate.
+- Tool inputs carry their own instructions: the search tools' descriptions now say only what the
+  tool does and returns, and each input's description says how to fill it. `repo` said a missing
+  value meant the only registered repo, but `lode mcp` uses the session's worktree. `language`
+  now lists names and says an unknown one returns nothing, `from_unit` says it includes the
+  unit's dependencies, and `include_tests` and `status`'s `repo` gained descriptions. A test
+  requires a description on every input.
 - Checked: with one candidate per list, filtered searches for a directory, a glob and a set of
   exclusions each find an item that unfiltered search ranks below 20 others (the test fails when
   filtering runs after fusion); a unit test finds k admitted vectors past rejected nearer ones;
