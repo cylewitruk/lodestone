@@ -269,13 +269,17 @@ fn one_canonical_key() {
     let root = fixture();
     let data = tempdir();
     let (e, _) = engine(&data);
-    let link = root.parent().unwrap().join("link");
-    std::os::unix::fs::symlink(&root, &link).unwrap();
     let dotted = root.join("core").join("..");
     let a = e.register(&root).unwrap();
-    let b = e.register(&link).unwrap();
     let c = e.register(&dotted).unwrap();
-    assert!(Arc::ptr_eq(&a, &b) && Arc::ptr_eq(&a, &c));
+    assert!(Arc::ptr_eq(&a, &c));
+    // Creating symlinks on Windows needs a privilege test runners may lack.
+    #[cfg(unix)]
+    {
+        let link = root.parent().unwrap().join("link");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        assert!(Arc::ptr_eq(&a, &e.register(&link).unwrap()));
+    }
     assert_eq!(e.repos().len(), 1);
     assert_eq!(a.id, worktree_id(&fs::canonicalize(&root).unwrap()));
     e.index_blocking(&a, IndexOptions::default()).unwrap();
