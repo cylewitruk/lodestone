@@ -172,14 +172,21 @@ impl VectorIndex {
     }
 
     /// Nearest `k` as (id, cosine similarity), best first.
-    pub fn search(&self, query: &[f32], k: usize) -> anyhow::Result<Vec<(u64, f32)>> {
+    /// The `k` nearest keys that `admit` accepts, as (key, cosine similarity). The graph walk
+    /// continues past rejected keys until `k` are found or the graph is exhausted.
+    pub fn search(
+        &self,
+        query: &[f32],
+        k: usize,
+        admit: impl Fn(u64) -> bool,
+    ) -> anyhow::Result<Vec<(u64, f32)>> {
         if self.is_empty() || !query.iter().all(|x| x.is_finite()) {
             return Ok(Vec::new());
         }
         let m = {
             let _slot = self.slots.take();
             self.index
-                .search(query, k)
+                .filtered_search(query, k, admit)
                 .map_err(|e| anyhow!("usearch search: {e}"))?
         };
         Ok(m.keys
@@ -208,8 +215,28 @@ mod tests {
         let mut v = VectorIndex::new(4, Precision::F32).unwrap();
         assert!(v.add_many(&[(1, &[f32::NAN, 0.0, 0.0, 0.0])]).is_err());
         v.add_many(&[(2, &[1.0, 0.0, 0.0, 0.0])]).unwrap();
-        assert_eq!(v.search(&[1.0, 0.0, 0.0, 0.0], 1).unwrap()[0].0, 2);
-        assert!(v.search(&[f32::NAN; 4], 1).unwrap().is_empty());
+        assert_eq!(
+            v.search(&[1.0, 0.0, 0.0, 0.0], 1, |_| true).unwrap()[0].0,
+            2
+        );
+        assert!(v.search(&[f32::NAN; 4], 1, |_| true).unwrap().is_empty());
+    }
+
+    #[test]
+    fn filtered_search_finds_k_admitted_keys_past_rejected_ones() {
+        let mut v = VectorIndex::new(8, Precision::F32).unwrap();
+        let vecs: Vec<Vec<f32>> = (0..300)
+            .map(|i| (0..8).map(|j| ((i * 7 + j) % 13) as f32 + 0.5).collect())
+            .collect();
+        let entries: Vec<(u64, &[f32])> = vecs
+            .iter()
+            .enumerate()
+            .map(|(i, x)| (i as u64, x.as_slice()))
+            .collect();
+        v.add_many(&entries).unwrap();
+        let hits = v.search(&vecs[1], 5, |k| k % 50 == 0).unwrap();
+        assert_eq!(hits.len(), 5);
+        assert!(hits.iter().all(|(k, _)| k % 50 == 0), "{hits:?}");
     }
 
     #[test]
@@ -232,7 +259,9 @@ mod tests {
                 let (v, failed) = (&v, &failed);
                 s.spawn(move || {
                     for i in 0..500 {
-                        if v.search(&[(t + i) as f32 % 5.0 + 1.0; 8], 10).is_err() {
+                        if v.search(&[(t + i) as f32 % 5.0 + 1.0; 8], 10, |_| true)
+                            .is_err()
+                        {
                             failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }

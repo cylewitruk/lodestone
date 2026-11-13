@@ -392,7 +392,7 @@ fn filters_leave_index_byte_identical() {
             ..Default::default()
         },
         SearchRequest {
-            path_prefix: Some("web/".into()),
+            paths: vec!["web/".into(), "!**/*.md".into()],
             ..Default::default()
         },
         SearchRequest {
@@ -411,6 +411,52 @@ fn filters_leave_index_byte_identical() {
     }
     assert_eq!(dir_bytes(&w.dir), before);
     assert_eq!(w.snapshot().version, version);
+}
+
+/// Filters apply inside both index searches: with one candidate per list, a filtered search still
+/// finds an item that unfiltered results rank below many others.
+#[test]
+fn filters_apply_inside_index_searches() {
+    let root = fixture();
+    let noise: String = (0..20)
+        .map(|i| format!("/// Generate the weekly report.\npub fn weekly_report_{i}() {{}}\n\n"))
+        .collect();
+    write(&root, "core/src/noise.rs", &noise);
+    let data = tempdir();
+    let mut config = Config {
+        data_dir: Some(data.to_path_buf()),
+        ..Config::default()
+    };
+    config.rerank.enabled = false;
+    config.search.candidates = 1;
+    let e = Engine::with_embedder(config, Arc::new(hash_embedder())).unwrap();
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let paths_of = |paths: &[&str]| -> anyhow::Result<Vec<String>> {
+        Ok(e.search(&SearchRequest {
+            query: "Generate the weekly report.".into(),
+            repo: Some(root.to_string_lossy().to_string()),
+            top_k: 1,
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+            ..Default::default()
+        })?
+        .results
+        .into_iter()
+        .map(|r| r.path)
+        .collect())
+    };
+    assert_ne!(paths_of(&[]).unwrap(), ["web/ui.ts"]);
+    // A directory, a glob and exclusions all reach it; `*` stays within one directory.
+    for paths in [
+        &["web"][..],
+        &["**/*.ts"],
+        &["!core", "!app", "!tools", "!*.md", "!*.txt"],
+    ] {
+        assert_eq!(paths_of(paths).unwrap(), ["web/ui.ts"], "{paths:?}");
+    }
+    assert!(paths_of(&["*.ts"]).unwrap().is_empty());
+    let err = paths_of(&["src/[a"]).unwrap_err().to_string();
+    assert!(err.contains("invalid path glob `src/[a`"), "{err}");
 }
 
 #[test]

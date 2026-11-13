@@ -592,7 +592,7 @@ impl Engine {
         };
         let filters = Filters {
             from_unit: req.from_unit.clone(),
-            path_prefix: req.path_prefix.clone(),
+            paths: req.paths.clone(),
             language: req.language.clone(),
             kinds: req.kinds.clone(),
             include_tests: req.include_tests,

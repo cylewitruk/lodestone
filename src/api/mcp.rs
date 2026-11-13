@@ -18,8 +18,8 @@ use serde_json::{Map, Value, json};
 use super::types::{DEFAULT_TOP_K, SearchRequest, SearchResponse};
 use crate::registry::Engine;
 
-pub const SEMANTIC_DESCRIPTION: &str = "Find existing code by what it does, when you do not know its name. `query`: one sentence describing the behaviour; `example_identifiers`: three to five guessed function or type names in the codebase's naming style (wrong guesses still help). Returns matching functions, types and macros as 'path:line:col  lines start-end  kind name(signature) — doc', where line:col is the name's position and start-end the item's line range (all 1-based). Use before writing any helper.";
-pub const SIMILAR_DESCRIPTION: &str = "Find existing code that does the same job as given code. Pass `code` as a list with the source of each function or type to check, one per entry (not a whole diff in one entry): every function a diff adds, in one call, or the functions you consolidate, move or rewrite. Each gets its own section of results, same format as semantic_code_search; a single entry gets 24, several fewer each. The passed code's own definition is left out.";
+pub const SEMANTIC_DESCRIPTION: &str = "Find existing code by what it does, when you do not know its name. Returns matching functions, types and macros as 'path:line:col  lines start-end  kind name(signature) — doc', where line:col is the name's position and start-end the item's line range (all 1-based). Use before writing any helper.";
+pub const SIMILAR_DESCRIPTION: &str = "Find existing code that does the same job as given code: every function a diff adds, or the functions you consolidate, move or rewrite. Returns one section per `code` entry, listing the closest matches in semantic_code_search's format; the entry's own definition is not listed.";
 pub const STATUS_DESCRIPTION: &str =
     "Index freshness for a repo: files indexed, pending changes, model, last update.";
 
@@ -37,16 +37,20 @@ fn object(v: Value) -> Map<String, Value> {
 /// the default, and missed answers ranked below that.
 fn search_properties(first: Value) -> Value {
     let mut props = object(first);
+    props.insert("repo".into(), repo_property());
     props.extend(object(json!({
-        "repo": { "type": "string", "description": "worktree root or registered name; default = the only registered repo, else error" },
-        "from_unit": { "type": "string", "description": "only items this package/crate/module may depend on, per the repo's build graph" },
-        "language": { "type": "string", "description": "restrict to one language" },
-        "include_tests": { "type": "boolean", "default": false }
+        "from_unit": { "type": "string", "description": "a package, crate or module name from the repo's build graph: searches that unit and everything it may depend on. For only a unit's own files, use `paths`." },
+        "language": { "type": "string", "description": "one language, e.g. rust, python, javascript, typescript, tsx, go, svelte or markdown; `text` for plain prose files. Case-insensitive; a name no item has returns nothing." },
+        "paths": { "type": "array", "items": { "type": "string" }, "description": "repo-relative globs: `*` stays within a directory and `**` crosses them, a directory matches everything under it, and a leading `!` excludes, e.g. [\"crates/foo\", \"!**/generated/**\"]" },
+        "include_tests": { "type": "boolean", "default": false, "description": "include test functions and test modules, ranked below other code" }
     })));
     Value::Object(props)
 }
 
-/// The three tool definitions.
+fn repo_property() -> Value {
+    json!({ "type": "string", "description": "omit to use this session's worktree; otherwise a worktree root path or registered repo name, to use another repository" })
+}
+
 /// The MCP tools. All of them only read the index, which harnesses may use to approve them.
 pub fn tools() -> Vec<Tool> {
     let read_only = ToolAnnotations::default().read_only(true).open_world(false);
@@ -57,8 +61,8 @@ pub fn tools() -> Vec<Tool> {
             object(json!({
                 "type": "object",
                 "properties": search_properties(json!({
-                    "query": { "type": "string", "description": "one sentence on what the code does, e.g. \"parse a duration like 5m or 2h into seconds\"" },
-                    "example_identifiers": { "type": "array", "items": { "type": "string" }, "description": "guessed names, e.g. [\"parse_duration\", \"duration_from_str\", \"to_secs\"]" }
+                    "query": { "type": "string", "description": "one sentence describing what the code does, e.g. \"parse a duration like 5m or 2h into seconds\"" },
+                    "example_identifiers": { "type": "array", "items": { "type": "string" }, "description": "three to five guessed function or type names in the codebase's naming style (wrong guesses still help), e.g. [\"parse_duration\", \"duration_from_str\", \"to_secs\"]" }
                 })),
                 "required": ["query"]
             })),
@@ -69,7 +73,7 @@ pub fn tools() -> Vec<Tool> {
             object(json!({
                 "type": "object",
                 "properties": search_properties(json!({
-                    "code": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "the source of each function or type to check, one per entry; diff `+` prefixes are stripped" }
+                    "code": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "the source of each function or type to check, one per entry, never a whole diff in one entry; pass all of them in one call. Diff `+` prefixes are stripped." }
                 })),
                 "required": ["code"]
             })),
@@ -79,7 +83,7 @@ pub fn tools() -> Vec<Tool> {
             STATUS_DESCRIPTION,
             object(json!({
                 "type": "object",
-                "properties": { "repo": { "type": "string" } }
+                "properties": { "repo": repo_property() }
             })),
         ),
     ]
@@ -93,6 +97,8 @@ struct Scope {
     repo: Option<String>,
     from_unit: Option<String>,
     language: Option<String>,
+    #[serde(default)]
+    paths: Vec<String>,
     include_tests: Option<bool>,
 }
 
@@ -103,6 +109,7 @@ impl Scope {
             repo: self.repo,
             from_unit: self.from_unit,
             language: self.language,
+            paths: self.paths,
             top_k: DEFAULT_TOP_K,
             include_tests: self.include_tests.unwrap_or(false),
             ..SearchRequest::default()
@@ -434,7 +441,7 @@ mod tests {
             k.sort();
             k
         };
-        let shared = ["from_unit", "include_tests", "language", "repo"];
+        let shared = ["from_unit", "include_tests", "language", "paths", "repo"];
         let with = |extra: &[&str]| {
             let mut k: Vec<String> = shared.iter().chain(extra).map(|s| s.to_string()).collect();
             k.sort();
@@ -442,6 +449,13 @@ mod tests {
         };
         assert_eq!(keys(0), with(&["example_identifiers", "query"]));
         assert_eq!(keys(1), with(&["code"]));
+        // Each input's instructions live on the input itself.
+        for tool in &t {
+            for (key, prop) in tool.input_schema["properties"].as_object().unwrap() {
+                let d = prop["description"].as_str().unwrap_or_default();
+                assert!(!d.is_empty(), "{}.{key} has no description", tool.name);
+            }
+        }
         assert_eq!(t[0].input_schema["required"], json!(["query"]));
         assert_eq!(t[1].input_schema["required"], json!(["code"]));
     }

@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tantivy::collector::TopDocs;
+use tantivy::collector::{FilterCollector, TopDocs};
 use tantivy::query::{BooleanQuery, BoostQuery, Occur, Query, TermQuery};
 use tantivy::schema::{
     FAST, Field, INDEXED, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions,
@@ -340,12 +340,14 @@ impl Lexical {
         out
     }
 
-    /// BM25 over all text fields with field boosts; returns (id, score), best first.
+    /// BM25 over all text fields with field boosts, over documents whose id `admit` accepts;
+    /// returns (id, score), best first.
     pub fn search(
         &self,
         searcher: &Searcher,
         query: &str,
         k: usize,
+        admit: impl Fn(u64) -> bool + Clone + Send + Sync + 'static,
     ) -> anyhow::Result<Vec<(u64, f32)>> {
         let terms = self.query_terms(query);
         if terms.is_empty() {
@@ -368,7 +370,14 @@ impl Lexical {
             }
         }
         let q = BooleanQuery::new(clauses);
-        let top = searcher.search(&q, &TopDocs::with_limit(k).order_by_score())?;
+        let top = searcher.search(
+            &q,
+            &FilterCollector::new(
+                "id".to_string(),
+                admit,
+                TopDocs::with_limit(k).order_by_score(),
+            ),
+        )?;
         let mut out = Vec::with_capacity(top.len());
         for (score, addr) in top {
             let seg = searcher.segment_reader(addr.segment_ord);

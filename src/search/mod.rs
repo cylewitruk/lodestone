@@ -1,5 +1,5 @@
-//! Hybrid search over one snapshot: kNN (code and doc vectors) + BM25 → reciprocal rank fusion → result-only filters →
-//! one row per item → optional rerank → top-k. Never touches index state.
+//! Hybrid search over one snapshot: filtered kNN (code and doc vectors) + filtered BM25 →
+//! reciprocal rank fusion → one row per item → optional rerank → top-k. Never touches index state.
 
 pub mod format;
 pub mod rerank;
@@ -7,19 +7,111 @@ pub mod rerank;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use anyhow::Context;
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::config::SearchConfig;
 use crate::index::{ItemRow, Lexical, Snapshot};
 
-/// Result-only scope filters (invariant 5: they never touch index state).
+/// Scope filters, applied inside the vector and lexical searches (invariant 5: they never touch
+/// index state).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Filters {
     pub from_unit: Option<String>,
-    pub path_prefix: Option<String>,
+    /// Repo-relative globs (`*` stays within a directory, `**` crosses them). A pattern also
+    /// matches everything under a directory it names; one starting with `!` excludes.
+    pub paths: Vec<String>,
     pub language: Option<String>,
     pub kinds: Vec<String>,
     pub include_tests: bool,
+}
+
+/// [`Filters`] compiled against one snapshot: which item ids a search may return.
+struct Admit {
+    items: Arc<HashMap<u64, Arc<ItemRow>>>,
+    units: Option<BTreeSet<String>>,
+    include: Option<GlobSet>,
+    exclude: GlobSet,
+    language: Option<String>,
+    kinds: Vec<String>,
+    include_tests: bool,
+}
+
+impl Admit {
+    fn new(snap: &Snapshot, f: &Filters, notes: &mut Vec<String>) -> anyhow::Result<Self> {
+        let units = match &f.from_unit {
+            Some(u) if snap.graph.has_edges() => {
+                let set = snap.graph.allowed_from(u);
+                if set.is_none() {
+                    notes.push(format!("unknown unit {u}; from_unit ignored"));
+                }
+                set
+            }
+            Some(_) => {
+                notes.push("no build graph provider matched; from_unit ignored".into());
+                None
+            }
+            None => None,
+        };
+        let (excludes, includes): (Vec<&str>, Vec<&str>) = f
+            .paths
+            .iter()
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .partition(|p| p.starts_with('!'));
+        let excludes: Vec<&str> = excludes.iter().map(|p| &p[1..]).collect();
+        Ok(Self {
+            items: snap.items.clone(),
+            units,
+            include: (!includes.is_empty())
+                .then(|| globs(&includes))
+                .transpose()?,
+            exclude: globs(&excludes)?,
+            language: f.language.clone(),
+            kinds: f.kinds.clone(),
+            include_tests: f.include_tests,
+        })
+    }
+
+    /// Whether item `id` is in the snapshot and passes every filter.
+    fn admits(&self, id: u64) -> bool {
+        let Some(row) = self.items.get(&id) else {
+            return false;
+        };
+        let it = &row.item;
+        self.units
+            .as_ref()
+            .is_none_or(|units| row.unit.as_ref().is_some_and(|u| units.contains(u)))
+            && self
+                .language
+                .as_ref()
+                .is_none_or(|l| it.language.eq_ignore_ascii_case(l))
+            && (self.kinds.is_empty() || self.kinds.contains(&it.kind))
+            && (self.include_tests || !it.is_test)
+            && self
+                .include
+                .as_ref()
+                .is_none_or(|g| g.is_match(&it.rel_path))
+            && !self.exclude.is_match(&it.rel_path)
+    }
+}
+
+/// `patterns` as one set; each also matches everything under the directory it may name.
+fn globs(patterns: &[&str]) -> anyhow::Result<GlobSet> {
+    let mut set = GlobSetBuilder::new();
+    for p in patterns {
+        let p = p.trim_start_matches("./").trim_end_matches('/');
+        for g in [p.to_string(), format!("{p}/**")] {
+            set.add(
+                GlobBuilder::new(&g)
+                    .literal_separator(true)
+                    .build()
+                    .with_context(|| format!("invalid path glob `{p}`"))?,
+            );
+        }
+    }
+    Ok(set.build()?)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -91,15 +183,12 @@ pub struct SearchParams<'a> {
 /// Runs the hybrid pipeline on `snap` (without rerank; see [`rerank`]).
 pub fn search(snap: &Snapshot, lexical: &Lexical, p: &SearchParams) -> anyhow::Result<Outcome> {
     let mut notes = Vec::new();
+    let admit = Arc::new(Admit::new(snap, p.filters, &mut notes)?);
+    let admits = |id: u64| admit.admits(id);
     let k = p.config.candidates.max(p.top_k);
     let vector_hits: Vec<(u64, f32)> = match p.query_vector {
         Some(q) if p.config.vector_weight <= 0.0 && snap.vectors.dim() == q.len() => Vec::new(),
-        Some(q) if snap.vectors.dim() == q.len() => snap
-            .vectors
-            .search(q, k)?
-            .into_iter()
-            .filter(|(id, _)| snap.items.contains_key(id))
-            .collect(),
+        Some(q) if snap.vectors.dim() == q.len() => snap.vectors.search(q, k, admits)?,
         Some(_) => {
             notes.push("query vector dimension does not match index; lexical only".into());
             Vec::new()
@@ -107,12 +196,9 @@ pub fn search(snap: &Snapshot, lexical: &Lexical, p: &SearchParams) -> anyhow::R
         None => Vec::new(),
     };
     let doc_hits: Vec<(u64, f32)> = match p.query_vector {
-        Some(q) if p.config.doc_weight > 0.0 && snap.doc_vectors.dim() == q.len() => snap
-            .doc_vectors
-            .search(q, k)?
-            .into_iter()
-            .filter(|(id, _)| snap.items.contains_key(id))
-            .collect(),
+        Some(q) if p.config.doc_weight > 0.0 && snap.doc_vectors.dim() == q.len() => {
+            snap.doc_vectors.search(q, k, admits)?
+        }
         _ => Vec::new(),
     };
     let mut sentence_hits: Vec<Vec<(u64, f32)>> = Vec::new();
@@ -121,13 +207,7 @@ pub fn search(snap: &Snapshot, lexical: &Lexical, p: &SearchParams) -> anyhow::R
         .iter()
         .filter(|v| v.len() == snap.vectors.dim())
     {
-        sentence_hits.push(
-            snap.vectors
-                .search(v, k)?
-                .into_iter()
-                .filter(|(id, _)| snap.items.contains_key(id))
-                .collect(),
-        );
+        sentence_hits.push(snap.vectors.search(v, k, admits)?);
     }
     let idents = identifier_tokens(p.query);
     let lex_weight = if idents.is_empty() {
@@ -137,11 +217,8 @@ pub fn search(snap: &Snapshot, lexical: &Lexical, p: &SearchParams) -> anyhow::R
     };
     // A list weighted 0 contributes no candidates at all.
     let lexical_hits: Vec<(u64, f32)> = if lex_weight > 0.0 {
-        lexical
-            .search(&snap.searcher, p.query, k)?
-            .into_iter()
-            .filter(|(id, _)| snap.items.contains_key(id))
-            .collect()
+        let admit = admit.clone();
+        lexical.search(&snap.searcher, p.query, k, move |id| admit.admits(id))?
     } else {
         Vec::new()
     };
@@ -171,47 +248,11 @@ pub fn search(snap: &Snapshot, lexical: &Lexical, p: &SearchParams) -> anyhow::R
             lex_weight / (p.config.rrf_k + rank as f32 + 1.0);
     }
 
-    let allowed_units: Option<BTreeSet<String>> = match &p.filters.from_unit {
-        Some(u) if snap.graph.has_edges() => match snap.graph.allowed_from(u) {
-            Some(set) => Some(set),
-            None => {
-                notes.push(format!("unknown unit {u}; from_unit ignored"));
-                None
-            }
-        },
-        Some(_) => {
-            notes.push("no build graph provider matched; from_unit ignored".into());
-            None
-        }
-        None => None,
-    };
-    let f = p.filters;
     let mut hits: Vec<Hit> = fused
         .into_iter()
         .filter_map(|(id, (score, similarity))| {
             let row = snap.items.get(&id)?;
             let it = &row.item;
-            if let Some(allowed) = &allowed_units
-                && !row.unit.as_ref().is_some_and(|u| allowed.contains(u))
-            {
-                return None;
-            }
-            if let Some(prefix) = &f.path_prefix
-                && !it.rel_path.starts_with(prefix.as_str())
-            {
-                return None;
-            }
-            if let Some(lang) = &f.language
-                && !it.language.eq_ignore_ascii_case(lang)
-            {
-                return None;
-            }
-            if !f.kinds.is_empty() && !f.kinds.iter().any(|k| k == &it.kind) {
-                return None;
-            }
-            if it.is_test && !f.include_tests {
-                return None;
-            }
             let mut score = score;
             if it.is_test {
                 score *= p.config.test_weight;
