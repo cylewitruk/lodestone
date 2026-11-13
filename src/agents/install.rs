@@ -82,8 +82,10 @@ impl Target {
         }
     }
 
+    /// Joined component by component: it is also a symlink's target, which Windows stores
+    /// verbatim and resolves only with `\` separators.
     fn skill_dir(&self) -> PathBuf {
-        self.base().join(".agents/skills").join(NAME)
+        self.base().join(".agents").join("skills").join(NAME)
     }
 
     fn claude_skill_link(&self) -> PathBuf {
@@ -94,7 +96,11 @@ impl Target {
     fn claude_skill_link_target(&self) -> PathBuf {
         match self.scope {
             Scope::User => self.skill_dir(),
-            Scope::Project => PathBuf::from("../../.agents/skills").join(NAME),
+            Scope::Project => Path::new("..")
+                .join("..")
+                .join(".agents")
+                .join("skills")
+                .join(NAME),
         }
     }
 
@@ -346,6 +352,8 @@ fn remove(path: &Path) -> anyhow::Result<()> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(e) => Err(e),
         Ok(m) if m.is_dir() => fs::remove_dir_all(path),
+        // Windows removes a directory symlink only as a directory.
+        Ok(m) if m.is_symlink() => fs::remove_file(path).or_else(|_| fs::remove_dir(path)),
         Ok(_) => fs::remove_file(path),
     };
     result.with_context(|| format!("removing {}", path.display()))

@@ -41,7 +41,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - run: cargo nextest run --locked
+      - run: cargo nextest run --locked --no-fail-fast
 
   package:
     runs-on: ubuntu-latest
