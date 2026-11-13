@@ -62,6 +62,25 @@ pub fn registered(config: &Config) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
+/// The worktrees among `repos` (name, root) inside `dir`, a folder that holds several
+/// repositories.
+pub fn inside(repos: Vec<(String, PathBuf)>, dir: &Path) -> Vec<(String, PathBuf)> {
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    repos
+        .into_iter()
+        .filter(|(_, root)| root.starts_with(&dir))
+        .collect()
+}
+
+/// `repos` (name, root) for a message: "`name` (root), …".
+pub fn listing(repos: &[(String, PathBuf)]) -> String {
+    repos
+        .iter()
+        .map(|(name, root)| format!("`{name}` ({})", root.display()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The top-level directory of the git checkout `dir` is in.
 pub fn checkout_top(dir: &Path) -> Option<PathBuf> {
     Checkout::of(dir).map(|c| c.top)

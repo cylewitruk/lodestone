@@ -11,7 +11,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use lodestone::api::mcp::{SEMANTIC_DESCRIPTION, SIMILAR_DESCRIPTION, STATUS_DESCRIPTION};
+use lodestone::api::mcp::{
+    LOCAL_NOTE, SEMANTIC_DESCRIPTION, SIMILAR_DESCRIPTION, STATUS_DESCRIPTION,
+};
 use lodestone::api::types::{
     RegisterRequest, SearchResponse, SessionRequest, StatusOverview, StatusReport, ToolRequest,
 };
@@ -234,8 +236,15 @@ fn daemon_rest_mcp_and_freshness() {
             .unwrap()
             .to_string()
     };
-    assert_eq!(desc("semantic_code_search"), SEMANTIC_DESCRIPTION);
-    assert_eq!(desc("similar_code_search"), SIMILAR_DESCRIPTION);
+    // The test daemon's embeddings are local.
+    assert_eq!(
+        desc("semantic_code_search"),
+        format!("{SEMANTIC_DESCRIPTION} {LOCAL_NOTE}")
+    );
+    assert_eq!(
+        desc("similar_code_search"),
+        format!("{SIMILAR_DESCRIPTION} {LOCAL_NOTE}")
+    );
     assert_eq!(desc("status"), STATUS_DESCRIPTION);
     let out = mcp.request(
         "tools/call",
@@ -699,6 +708,7 @@ fn a_session_keeps_the_worktrees_it_searched_watched() {
         name: "semantic_code_search".into(),
         arguments,
         session: Some("s1".into()),
+        ..ToolRequest::default()
     })
     .unwrap()
     .unwrap();
@@ -1093,6 +1103,29 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
         "{out:?}"
     );
 
+    // A session in a folder holding indexed worktrees is told which, and must name one.
+    let folder = root.parent().unwrap();
+    let listed = format!("({})", root.canonicalize().unwrap().display());
+    let note = hook(
+        "session-start",
+        json!({ "cwd": folder, "session_id": "s3" }),
+    );
+    assert!(
+        note.contains("not itself indexed") && note.contains(&listed),
+        "{note}"
+    );
+    let (err, text) = relay_call_in(
+        &home,
+        folder,
+        None,
+        "semantic_code_search",
+        json!({ "query": "helper_0" }),
+    );
+    assert!(
+        err && text.contains(&listed) && text.contains("as `repo`"),
+        "{text}"
+    );
+
     // Once the worktree is removed, the next daemon drops it and its index.
     let id = lodestone::index::worktree_id(&feat);
     assert!(home.join("worktrees").join(&id).exists());
@@ -1143,20 +1176,10 @@ fn a_search_naming_a_new_worktree_indexes_it() {
             json!({ "query": "only_in_wt", "repo": wt.to_string_lossy() }),
         )
     };
+    // The first search waits for the new worktree's first index instead of answering from an
+    // empty one.
     let (err, first) = search();
-    assert!(!err, "{first}");
-    assert!(
-        first.contains("core/src/only_wt.rs") || first.contains("still being indexed"),
-        "an index being built must not answer `no matches`: {first}"
-    );
-    wait_until(
-        "the worktree to be indexed",
-        Duration::from_secs(30),
-        || {
-            let (err, text) = search();
-            !err && text.contains("core/src/only_wt.rs")
-        },
-    );
+    assert!(!err && first.contains("core/src/only_wt.rs"), "{first}");
     // Named after its repository, and reachable by that name.
     let registry = fs::read_to_string(home.join("registry.json")).unwrap();
     assert!(registry.contains("\"auto\": true"), "{registry}");

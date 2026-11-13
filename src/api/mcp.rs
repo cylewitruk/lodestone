@@ -3,6 +3,7 @@
 //! inputs are part of the design (agents re-read them every turn); keep them verbatim.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
@@ -20,8 +21,13 @@ use crate::registry::Engine;
 
 pub const SEMANTIC_DESCRIPTION: &str = "Find existing code by what it does, when you do not know its name. Returns matching functions, types and macros as 'path:line:col  lines start-end  kind name(signature) — doc', where line:col is the name's position and start-end the item's line range (all 1-based). Use before writing any helper.";
 pub const SIMILAR_DESCRIPTION: &str = "Find existing code that does the same job as given code: every function a diff adds, or the functions you consolidate, move or rewrite. Returns one section per `code` entry, listing the closest matches in semantic_code_search's format; the entry's own definition is not listed.";
+/// Appended to the search tools' descriptions when [`crate::config::Config::is_local`].
+pub const LOCAL_NOTE: &str = "It runs on this machine: the index and the embedding model are local, and nothing is sent elsewhere.";
 pub const STATUS_DESCRIPTION: &str =
     "Index freshness for a repo: files indexed, pending changes, model, last update.";
+
+/// How long a search waits for a new worktree's first index.
+const FIRST_INDEX_WAIT: Duration = Duration::from_secs(30);
 
 /// Normalized code shorter than this is never treated as the passed code's own definition.
 const MIN_SELF_MATCH: usize = 24;
@@ -51,13 +57,21 @@ fn repo_property() -> Value {
     json!({ "type": "string", "description": "omit to use this session's worktree; otherwise a worktree root path or registered repo name, to use another repository" })
 }
 
-/// The MCP tools. All of them only read the index, which harnesses may use to approve them.
-pub fn tools() -> Vec<Tool> {
+/// The MCP tools. All of them only read the index, which harnesses may use to approve them;
+/// `local` (see [`crate::config::Config::is_local`]) adds [`LOCAL_NOTE`] to the searches.
+pub fn tools(local: bool) -> Vec<Tool> {
     let read_only = ToolAnnotations::default().read_only(true).open_world(false);
+    let search = |description: &str| {
+        if local {
+            format!("{description} {LOCAL_NOTE}")
+        } else {
+            description.to_string()
+        }
+    };
     [
         Tool::new(
             "semantic_code_search",
-            SEMANTIC_DESCRIPTION,
+            search(SEMANTIC_DESCRIPTION),
             object(json!({
                 "type": "object",
                 "properties": search_properties(json!({
@@ -69,7 +83,7 @@ pub fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "similar_code_search",
-            SIMILAR_DESCRIPTION,
+            search(SIMILAR_DESCRIPTION),
             object(json!({
                 "type": "object",
                 "properties": search_properties(json!({
@@ -277,10 +291,22 @@ impl LodestoneMcp {
         self
     }
 
-    fn searching(&self, scope: &Scope) {
-        if let Some(f) = &self.on_search {
-            f(scope.repo.as_deref());
-        }
+    /// Starts indexing the searched worktree through `on_search`, and waits up to
+    /// [`FIRST_INDEX_WAIT`] for a worktree with no index yet (a new agent worktree) to get one,
+    /// rather than answer from an empty index.
+    async fn searching(&self, scope: &Scope) {
+        let Some(f) = &self.on_search else {
+            return;
+        };
+        f(scope.repo.as_deref());
+        let engine = self.engine.clone();
+        let repo = scope.repo.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Ok(w) = engine.resolve(repo.as_deref()) {
+                w.await_first_index(FIRST_INDEX_WAIT);
+            }
+        })
+        .await;
     }
 
     async fn search(
@@ -346,13 +372,13 @@ impl LodestoneMcp {
         match name {
             "semantic_code_search" => {
                 let a: SemanticArgs = serde_json::from_value(args).map_err(invalid)?;
-                self.searching(&a.scope);
+                self.searching(&a.scope).await;
                 let query = semantic_query(&a.query, &a.example_identifiers);
                 self.search(a.scope.request(query), |_| {}).await
             }
             "similar_code_search" => {
                 let a: SimilarArgs = serde_json::from_value(args).map_err(invalid)?;
-                self.searching(&a.scope);
+                self.searching(&a.scope).await;
                 self.similar(a.scope, a.code.into_vec()).await
             }
             "status" => {
@@ -388,7 +414,9 @@ impl ServerHandler for LodestoneMcp {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(tools()))
+        Ok(ListToolsResult::with_all_items(tools(
+            self.engine.config.is_local(),
+        )))
     }
 
     async fn call_tool(
@@ -422,7 +450,7 @@ mod tests {
 
     #[test]
     fn three_tools_with_plan_descriptions() {
-        let t = tools();
+        let t = tools(false);
         let names: Vec<&str> = t.iter().map(|t| t.name.as_ref()).collect();
         assert_eq!(
             names,
@@ -431,6 +459,19 @@ mod tests {
         assert_eq!(t[0].description.as_deref(), Some(SEMANTIC_DESCRIPTION));
         assert_eq!(t[1].description.as_deref(), Some(SIMILAR_DESCRIPTION));
         assert_eq!(t[2].description.as_deref(), Some(STATUS_DESCRIPTION));
+        let local = tools(true);
+        assert_eq!(
+            local[0].description.as_deref(),
+            Some(format!("{SEMANTIC_DESCRIPTION} {LOCAL_NOTE}").as_str())
+        );
+        assert!(
+            local[1]
+                .description
+                .as_deref()
+                .unwrap()
+                .ends_with(LOCAL_NOTE)
+        );
+        assert_eq!(local[2].description.as_deref(), Some(STATUS_DESCRIPTION));
         let keys = |i: usize| {
             let mut k: Vec<String> = t[i].input_schema["properties"]
                 .as_object()

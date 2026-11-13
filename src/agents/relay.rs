@@ -118,7 +118,9 @@ impl ServerHandler for Relay {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(tools()))
+        Ok(ListToolsResult::with_all_items(tools(
+            self.daemon.config.is_local(),
+        )))
     }
 
     async fn call_tool(
@@ -131,11 +133,15 @@ impl ServerHandler for Relay {
             name: request.name.to_string(),
             arguments: request.arguments.unwrap_or_default(),
             session: Some(d.session.clone()),
+            cwd: None,
         };
         let out = tokio::task::spawn_blocking(move || {
             d.with_client(|c| {
                 d.follow_dir(c)?;
-                c.tool(&req)
+                c.tool(&ToolRequest {
+                    cwd: Some(d.dir().to_string_lossy().into_owned()),
+                    ..req.clone()
+                })
             })
         })
         .await

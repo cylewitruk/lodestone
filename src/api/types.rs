@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::iter;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +64,9 @@ pub struct ToolRequest {
     /// Lease id; a call without `repo` searches the session's worktree.
     #[serde(default)]
     pub session: Option<String>,
+    /// The session's directory, for an error naming the worktrees inside it when it is in none.
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -459,6 +463,13 @@ pub struct RepoInfo {
     pub root: String,
     pub name: String,
     pub worktree_id: String,
+}
+
+/// (name, root), as [`crate::registry::registered`] lists worktrees.
+impl From<RepoInfo> for (String, PathBuf) {
+    fn from(r: RepoInfo) -> Self {
+        (r.name, r.root.into())
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
