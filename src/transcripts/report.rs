@@ -186,9 +186,7 @@ fn tally(
             calls.iter().any(|o| {
                 o.kind == Kind::Read
                     && o.ts >= c.ts
-                    && o.path
-                        .as_deref()
-                        .is_some_and(|p| p == r || p.ends_with(&format!("/{r}")))
+                    && o.path.as_deref().is_some_and(|p| Path::new(p).ends_with(r))
             })
         });
         g.searches_read += usize::from(read);

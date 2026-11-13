@@ -367,10 +367,8 @@ mod tests {
     #[test]
     fn git_file_worktree() {
         let root = crate::testutil::tempdir();
-        std::fs::write(root.join(".git"), "gitdir: /repo/.git/worktrees/wt\n").unwrap();
-        assert_eq!(
-            git_dir(&root),
-            Some(PathBuf::from("/repo/.git/worktrees/wt"))
-        );
+        let target = crate::testutil::tempdir().join(".git/worktrees/wt");
+        std::fs::write(root.join(".git"), format!("gitdir: {}\n", target.display())).unwrap();
+        assert_eq!(git_dir(&root), Some(target));
     }
 }

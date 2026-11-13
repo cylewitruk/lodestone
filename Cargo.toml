@@ -70,6 +70,9 @@ candle-transformers = { version = "0.11.1", optional = true, features = ["metal"
 # Same prerelease fastembed resolves to; only adds the CoreML execution provider.
 ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["coreml"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
+
 [build-dependencies]
 cc = "1.2"
 

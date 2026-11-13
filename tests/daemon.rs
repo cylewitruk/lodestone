@@ -583,7 +583,11 @@ fn watcher_indexes_only_files_a_full_scan_would() {
         "gitconfig",
         &format!(
             "[core]\n\texcludesFile = {}\n",
-            home.join("global-ignore").display()
+            // Git config reads `\` as an escape.
+            home.join("global-ignore")
+                .display()
+                .to_string()
+                .replace('\\', "/")
         ),
     );
     let d = Daemon::start_with_env(&home, 0, &[("GIT_CONFIG_GLOBAL", &home.join("gitconfig"))]);
@@ -1119,6 +1123,10 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
         "session-start",
         json!({ "cwd": folder, "session_id": "s3" }),
     );
+    let note: Value = serde_json::from_str(&note).unwrap();
+    let note = note["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
     assert!(
         note.contains("not itself indexed") && note.contains(&listed),
         "{note}"

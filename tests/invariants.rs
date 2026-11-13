@@ -123,7 +123,13 @@ fn search(e: &Engine, repo: &Path, q: &str) -> lodestone::api::types::SearchResp
 fn dir_bytes(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut out = Vec::new();
     for e in walkdir(dir) {
-        out.push((e.clone(), fs::read(&e).unwrap()));
+        // Windows refuses to read a file another handle has byte-range locked (SQLite's); its
+        // size and modification time stand in.
+        let bytes = fs::read(&e).unwrap_or_else(|_| {
+            let m = fs::metadata(&e).unwrap();
+            format!("{} {:?}", m.len(), m.modified().unwrap()).into_bytes()
+        });
+        out.push((e.clone(), bytes));
     }
     out.sort();
     out
