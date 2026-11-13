@@ -1149,3 +1149,17 @@ Transcript stats after the reminder fix showed four problems.
   the first search naming a new worktree now returns its results (it failed before the wait);
   unit tests for loopback detection, the tool descriptions and the unwrapping. The hook, run for a
   real parent folder, lists its four registered worktrees.
+
+## Claude Code loads the search tools upfront
+
+- After the session fixes, Claude still never searched, though the reminder reached its sessions
+  and Codex searched in each session it spent on code. Claude Code lists MCP tools as deferred:
+  the model must load one with ToolSearch before calling it. Claude did so 14 times in one long
+  session, each time for a tool the app's own instructions named, and never for lodestone, which
+  the reminder named without saying how to load it.
+- Both search tools now set `_meta["anthropic/alwaysLoad"]` in `tools/list`, so Claude Code
+  (v2.1.285 or later) loads them upfront; `status` stays deferred. A user's server-level
+  `alwaysLoad` setting still overrides this.
+- For older versions, or a configuration that defers the server, the reminder and the skill also
+  say to load the tools with ToolSearch (`+lodestone search`, which matches the plugin's prefixed
+  names too) when they are listed only as deferred.

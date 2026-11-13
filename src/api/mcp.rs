@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
+    MetaObject, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -57,10 +57,16 @@ fn repo_property() -> Value {
     json!({ "type": "string", "description": "omit to use this session's worktree; otherwise a worktree root path or registered repo name, to use another repository" })
 }
 
+/// Asks Claude Code to load a tool upfront rather than defer it behind ToolSearch.
+const ALWAYS_LOAD: &str = "anthropic/alwaysLoad";
+
 /// The MCP tools. All of them only read the index, which harnesses may use to approve them;
-/// `local` (see [`crate::config::Config::is_local`]) adds [`LOCAL_NOTE`] to the searches.
+/// `local` (see [`crate::config::Config::is_local`]) adds [`LOCAL_NOTE`] to the searches. The
+/// searches ask to load upfront ([`ALWAYS_LOAD`]), since a model rarely loads a deferred tool
+/// that its harness's instructions don't name.
 pub fn tools(local: bool) -> Vec<Tool> {
     let read_only = ToolAnnotations::default().read_only(true).open_world(false);
+    let upfront = MetaObject(object(json!({ ALWAYS_LOAD: true })));
     let search = |description: &str| {
         if local {
             format!("{description} {LOCAL_NOTE}")
@@ -80,7 +86,8 @@ pub fn tools(local: bool) -> Vec<Tool> {
                 })),
                 "required": ["query"]
             })),
-        ),
+        )
+        .with_meta(upfront.clone()),
         Tool::new(
             "similar_code_search",
             search(SIMILAR_DESCRIPTION),
@@ -91,7 +98,8 @@ pub fn tools(local: bool) -> Vec<Tool> {
                 })),
                 "required": ["code"]
             })),
-        ),
+        )
+        .with_meta(upfront),
         Tool::new(
             "status",
             STATUS_DESCRIPTION,
@@ -472,6 +480,11 @@ mod tests {
                 .ends_with(LOCAL_NOTE)
         );
         assert_eq!(local[2].description.as_deref(), Some(STATUS_DESCRIPTION));
+        // The searches load upfront in Claude Code; `status` stays deferred.
+        let upfront = |t: &Tool| t.meta.as_ref().map(|m| m.0[ALWAYS_LOAD].clone());
+        assert_eq!(upfront(&t[0]), Some(json!(true)));
+        assert_eq!(upfront(&t[1]), Some(json!(true)));
+        assert_eq!(upfront(&t[2]), None);
         let keys = |i: usize| {
             let mut k: Vec<String> = t[i].input_schema["properties"]
                 .as_object()

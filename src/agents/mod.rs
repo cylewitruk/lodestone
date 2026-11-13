@@ -27,7 +27,7 @@ pub const SKILL: &str = include_str!("../../plugin/skills/lodestone/SKILL.md");
 const ADVICE: &str = "Before writing any new function, type or macro, when reviewing a diff that adds functions, when consolidating duplicated code, and when locating the code behind a described behaviour, look for existing code that already does it, and reuse what fits instead of writing a new version.";
 
 /// The reminder's description of the tools, after what lodestone serves.
-const TOOLS: &str = "The `semantic_code_search` tool finds code by what it does, which Grep cannot when you do not know the name, and the `similar_code_search` tool finds code that does the same job as given functions; pass it every function a diff adds or a refactor moves, in one call (see the lodestone skill). Use Grep for exact strings.";
+const TOOLS: &str = "The `semantic_code_search` tool finds code by what it does, which Grep cannot when you do not know the name, and the `similar_code_search` tool finds code that does the same job as given functions; pass it every function a diff adds or a refactor moves, in one call (see the lodestone skill). If they are listed only as deferred tools, load them first with ToolSearch (query `+lodestone search`). Use Grep for exact strings.";
 
 /// What lodestone serves a session's directory.
 #[derive(Debug, PartialEq)]
