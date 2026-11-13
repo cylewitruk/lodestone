@@ -29,8 +29,9 @@ pub struct SearchRequest {
     pub top_k: usize,
     #[serde(default)]
     pub include_tests: bool,
+    /// See [`crate::search::Filters::paths`].
     #[serde(default)]
-    pub path_prefix: Option<String>,
+    pub paths: Vec<String>,
     #[serde(default)]
     pub kinds: Vec<String>,
     /// Lines of source to include per result (REST only).

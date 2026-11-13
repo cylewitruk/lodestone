@@ -41,6 +41,7 @@ fn search_properties(first: Value) -> Value {
         "repo": { "type": "string", "description": "worktree root or registered name; default = the only registered repo, else error" },
         "from_unit": { "type": "string", "description": "only items this package/crate/module may depend on, per the repo's build graph" },
         "language": { "type": "string", "description": "restrict to one language" },
+        "paths": { "type": "array", "items": { "type": "string" }, "description": "restrict to repo-relative path globs; a directory matches everything under it, `!` excludes, e.g. [\"crates/foo\", \"!**/generated/**\"]" },
         "include_tests": { "type": "boolean", "default": false }
     })));
     Value::Object(props)
@@ -93,6 +94,8 @@ struct Scope {
     repo: Option<String>,
     from_unit: Option<String>,
     language: Option<String>,
+    #[serde(default)]
+    paths: Vec<String>,
     include_tests: Option<bool>,
 }
 
@@ -103,6 +106,7 @@ impl Scope {
             repo: self.repo,
             from_unit: self.from_unit,
             language: self.language,
+            paths: self.paths,
             top_k: DEFAULT_TOP_K,
             include_tests: self.include_tests.unwrap_or(false),
             ..SearchRequest::default()
@@ -434,7 +438,7 @@ mod tests {
             k.sort();
             k
         };
-        let shared = ["from_unit", "include_tests", "language", "repo"];
+        let shared = ["from_unit", "include_tests", "language", "paths", "repo"];
         let with = |extra: &[&str]| {
             let mut k: Vec<String> = shared.iter().chain(extra).map(|s| s.to_string()).collect();
             k.sort();

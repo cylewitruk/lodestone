@@ -71,8 +71,10 @@ enum Cmd {
         top_k: usize,
         #[arg(long)]
         include_tests: bool,
-        #[arg(long)]
-        path_prefix: Option<String>,
+        /// Repo-relative path glob, repeatable; a directory matches everything under it, and a
+        /// leading `!` excludes.
+        #[arg(long = "path", alias = "path-prefix", value_name = "GLOB")]
+        paths: Vec<String>,
         #[arg(long)]
         with_body: Option<usize>,
         #[arg(long)]
@@ -287,7 +289,7 @@ fn main() -> anyhow::Result<()> {
             language,
             top_k,
             include_tests,
-            path_prefix,
+            paths,
             with_body,
             json,
         } => {
@@ -298,7 +300,7 @@ fn main() -> anyhow::Result<()> {
                 language,
                 top_k,
                 include_tests,
-                path_prefix,
+                paths,
                 kinds: Vec::new(),
                 with_body,
             };

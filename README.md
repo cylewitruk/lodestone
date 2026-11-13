@@ -106,7 +106,12 @@ lode uninstall                    # same flags; --dry-run prints the steps only
 | `status` | `repo` | index freshness |
 
 - **Optional inputs:** both searches take `repo`, `from_unit` (only code a given unit may depend
-  on, per the build graph), `language` and `include_tests`.
+  on, per the build graph), `language`, `paths` and `include_tests`.
+- **`paths`:** repo-relative globs, e.g. `["crates/foo", "!**/generated/**"]`. `*` stays within one
+  directory and `**` crosses them, a pattern also matches everything under a directory it names,
+  and a leading `!` excludes. The CLI takes `--path`, repeatable.
+- **Filters** apply inside the vector and BM25 searches, so a narrow scope still returns a full
+  set of results rather than what survived of the unfiltered top candidates.
 - **Results:** 24 per search, with no `top_k` (agents asked for too few). REST and the CLI keep
   `top_k`, also 24 by default.
 - **Several definitions:** `similar_code_search` searches each separately and returns a section
@@ -228,8 +233,8 @@ Over the socket (`curl --unix-socket ~/.lodestone/daemon.sock http://localhost/v
 `127.0.0.1:<port>` when TCP is on. MCP over HTTP is at `/mcp`.
 
 ```text
-GET  /v1/search?q=&repo=&from_unit=&language=&top_k=&include_tests=&with_body=&format=text|json
-POST /v1/search   {query, repo, from_unit, language, top_k, include_tests, path_prefix, kinds, with_body}
+GET  /v1/search?q=&repo=&from_unit=&language=&path=&top_k=&include_tests=&with_body=&format=text|json
+POST /v1/search   {query, repo, from_unit, language, paths, top_k, include_tests, kinds, with_body}
 GET  /v1/status?repo=&format=text|json
 GET  /v1/status/all?format=text|json
 POST /v1/register {path}

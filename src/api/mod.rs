@@ -112,7 +112,9 @@ struct SearchQuery {
     language: Option<String>,
     top_k: Option<usize>,
     include_tests: Option<bool>,
-    path_prefix: Option<String>,
+    /// One path glob (see [`crate::search::Filters::paths`]).
+    #[serde(alias = "path_prefix")]
+    path: Option<String>,
     with_body: Option<usize>,
     format: Option<String>,
 }
@@ -138,7 +140,7 @@ async fn search_get(
         language: q.language,
         top_k: q.top_k.unwrap_or(DEFAULT_TOP_K),
         include_tests: q.include_tests.unwrap_or(false),
-        path_prefix: q.path_prefix,
+        paths: q.path.into_iter().collect(),
         kinds: Vec::new(),
         with_body: q.with_body,
     };
