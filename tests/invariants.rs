@@ -1,6 +1,7 @@
 //! One test per invariant in PLAN.md §3.1, plus the end-to-end index/search path, using a
 //! deterministic hash embedder so they run without model downloads.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -286,6 +287,38 @@ fn one_canonical_key() {
             .all(|k| !k.starts_with('/') && !k.contains(".."))
     );
     assert!(m.files.contains_key("core/src/lib.rs"));
+}
+
+/// An index stays open only while leased or in use, and a status overview opens none; a closed
+/// one reopens with what it had, and indexes again after its writer was released.
+#[test]
+fn unused_indexes_are_closed_and_reopen_intact() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let items = w.snapshot().items.len();
+    let kept = BTreeSet::from([w.root.clone()]);
+
+    e.close_unused(&BTreeSet::new());
+    assert_eq!(e.worktrees().len(), 1, "in use");
+    w.release_writer();
+    drop(w);
+    e.close_unused(&kept);
+    assert_eq!(e.worktrees().len(), 1, "leased");
+    e.close_unused(&BTreeSet::new());
+    assert!(e.worktrees().is_empty());
+
+    assert_eq!(e.status_all().repos[0].items, items);
+    assert!(e.worktrees().is_empty());
+
+    write(&root, "core/src/more.rs", "pub fn one_more() {}\n");
+    let w = e.register(&root).unwrap();
+    assert_eq!(w.snapshot().items.len(), items);
+    let report = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert_eq!(report.files_changed, 1);
+    assert_eq!(w.snapshot().items.len(), items + 1);
 }
 
 /// Invariant 3: single writer, snapshot readers. Searches during a reindex never block and see

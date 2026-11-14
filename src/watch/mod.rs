@@ -329,6 +329,7 @@ async fn worker(
         }
         if rx.is_empty() {
             w.set_pending(None);
+            w.release_writer();
         }
     }
 }

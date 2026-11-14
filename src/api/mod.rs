@@ -469,7 +469,7 @@ async fn terminated() {
     std::future::pending::<()>().await
 }
 
-/// Expires leases, stops watching worktrees no lease holds, and signals `idle` once no lease has
+/// Expires leases, stops watching and closes worktrees no lease holds, and signals `idle` once no lease has
 /// been live for `idle_timeout` (never, when it is zero) and no indexing pass is running.
 async fn sweep(s: AppState, idle_timeout: Duration, idle: Arc<tokio::sync::Notify>) {
     loop {
@@ -484,6 +484,7 @@ async fn sweep(s: AppState, idle_timeout: Duration, idle: Arc<tokio::sync::Notif
                 s.watchers.unwatch(&s.engine, &root);
             }
         }
+        s.engine.close_unused(&live);
         if !idle_timeout.is_zero()
             && idle_for.is_some_and(|d| d >= idle_timeout)
             && !s.watchers.indexing()

@@ -1,7 +1,7 @@
 //! Registry of worktrees and the engine shared by the daemon and the in-process CLI. This is the
 //! only place paths are canonicalized (invariant 2).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -513,14 +513,32 @@ impl Engine {
         if let Some(w) = map.get(root) {
             return Ok(w.clone());
         }
-        let w = Arc::new(WorktreeIndex::open(
-            root,
-            &self.config,
-            &self.model_id,
-            self.dim,
-        )?);
+        let w = Arc::new(self.load(root)?);
         map.insert(root.to_path_buf(), w.clone());
         Ok(w)
+    }
+
+    fn load(&self, root: &Path) -> anyhow::Result<WorktreeIndex> {
+        WorktreeIndex::open(root, &self.config, &self.model_id, self.dim)
+    }
+
+    /// The open index handle for a canonical root, else one loaded for this call only.
+    fn peek(&self, root: &Path) -> anyhow::Result<Arc<WorktreeIndex>> {
+        let open = self
+            .worktrees
+            .read()
+            .map_err(|_| anyhow::anyhow!("poisoned"))?
+            .get(root)
+            .cloned();
+        open.map_or_else(|| self.load(root).map(Arc::new), Ok)
+    }
+
+    /// Closes every open index that is neither in `keep` nor in use (watched, indexing or
+    /// serving a request); the next use loads it again.
+    pub fn close_unused(&self, keep: &BTreeSet<PathBuf>) {
+        if let Ok(mut open) = self.worktrees.write() {
+            open.retain(|root, w| keep.contains(root) || Arc::strong_count(w) > 1);
+        }
     }
 
     /// Resolves the `repo` argument: a registered name, a path (canonicalized here), or — when
@@ -708,7 +726,7 @@ impl Engine {
         let mut repos = Vec::new();
         let mut failed = Vec::new();
         for e in self.registry_file().repos {
-            match self.open_canonical(&e.root) {
+            match self.peek(&e.root) {
                 Ok(w) => repos.push(self.status_of(&w)),
                 Err(err) => failed.push(RepoFailure {
                     name: e.name,
