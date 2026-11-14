@@ -578,17 +578,15 @@ fn watcher_indexes_only_files_a_full_scan_would() {
     let home = tempdir();
     // The global excludes file, set explicitly so the machine's git config cannot interfere.
     write(&home, "global-ignore", "scratch/\n");
+    // `ignore` expands every `~` in the path, and Windows temp dirs can be 8.3 short names
+    // (`RUNNER~1`); canonicalizing resolves them. Git config reads `\` as an escape.
+    let excludes = fs::canonicalize(home.join("global-ignore")).unwrap();
+    let excludes = excludes.to_string_lossy();
+    let excludes = excludes.strip_prefix(r"\\?\").unwrap_or(&excludes);
     write(
         &home,
         "gitconfig",
-        &format!(
-            "[core]\n\texcludesFile = {}\n",
-            // Git config reads `\` as an escape.
-            home.join("global-ignore")
-                .display()
-                .to_string()
-                .replace('\\', "/")
-        ),
+        &format!("[core]\n\texcludesFile = {}\n", excludes.replace('\\', "/")),
     );
     let d = Daemon::start_with_env(&home, 0, &[("GIT_CONFIG_GLOBAL", &home.join("gitconfig"))]);
     d.post("/v1/register", json!({ "path": root.to_string_lossy() }));
