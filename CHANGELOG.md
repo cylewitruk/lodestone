@@ -21,7 +21,7 @@ candle (Metal on macOS, CPU elsewhere; feature `candle`), fastembed/ONNX Runtime
 - Runtime grammar via `tree-sitter-loader`: tree-sitter-c, pointed to by a tree-sitter
   `config.json` `parser-directories` entry, is compiled by the loader and tags a sample file
   (`ring_push` as `function`, `ring` as `class`) with no lodestone code changes
-  (`tests/external_grammar.rs`, run with `LODESTONE_TEST_PARSER_DIR`).
+  (`tests/it/external_grammar.rs`, run with `LODESTONE_TEST_PARSER_DIR`).
 - Whole corpus chunks in 4.4 s single-threaded (27,150 tagged definitions, 183 prose chunks);
   every `eval/questions.json` answer is extracted.
 
@@ -151,7 +151,7 @@ filtering, 60 s poll fallback, `gitdir:` worktrees), REST (§6.2), MCP streamabl
 exactly two tools (§6.1), and CLI fallback to HTTP when a daemon answers.
 
 Real-model measurements (CodeRankEmbed on Metal, daemon on a second worktree of stacks-core);
-the same scenarios also run as `tests/daemon.rs` with a deterministic embedder.
+the same scenarios also run as `tests/it/daemon.rs` with a deterministic embedder.
 
 | Criterion | Target | Measured | Result |
 | ---- | ---- | ---- | ---- |
