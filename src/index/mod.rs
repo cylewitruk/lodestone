@@ -9,6 +9,7 @@ pub mod vectors;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -107,7 +108,6 @@ struct WriterState {
     writer: IndexWriter,
     manifest: Manifest,
     next_id: u64,
-    repaired: bool,
 }
 
 pub struct WorktreeIndex {
@@ -121,6 +121,8 @@ pub struct WorktreeIndex {
     lexical: Lexical,
     snapshot: ArcSwap<Snapshot>,
     writer: tokio::sync::Mutex<Option<WriterState>>,
+    /// Whether a writer has checked consistency (see `repair`) since this index was opened.
+    repaired: AtomicBool,
     progress: Mutex<Progress>,
     last_report: Mutex<Option<IndexReport>>,
 }
@@ -314,6 +316,7 @@ impl WorktreeIndex {
             lexical,
             snapshot: ArcSwap::from_pointee(snap),
             writer: tokio::sync::Mutex::new(None),
+            repaired: AtomicBool::new(false),
             progress: Mutex::new(Progress::default()),
             last_report: Mutex::new(None),
         })
@@ -358,6 +361,14 @@ impl WorktreeIndex {
 
     pub fn is_writing(&self) -> bool {
         self.writer.try_lock().is_err()
+    }
+
+    /// Drops the writer (lexical writer threads and buffers, items connection) unless a pass is
+    /// running; the next pass opens it again.
+    pub fn release_writer(&self) {
+        if let Ok(mut writer) = self.writer.try_lock() {
+            *writer = None;
+        }
     }
 
     /// Marks the current snapshot stale (e.g. watcher saw changes not yet indexed).
@@ -443,7 +454,6 @@ impl WorktreeIndex {
                     ..Manifest::default()
                 }),
                 next_id,
-                repaired: false,
             });
         }
         let st = guard.as_mut().expect("writer state initialized");
@@ -519,7 +529,7 @@ impl WorktreeIndex {
             snap.updated_at,
             stale,
         );
-        st.repaired = true;
+        self.repaired.store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -559,9 +569,9 @@ impl WorktreeIndex {
                 0,
                 vec!["indexing from scratch".into()],
             );
-            st.repaired = true;
+            self.repaired.store(true, Ordering::Relaxed);
         }
-        if !st.repaired {
+        if !self.repaired.load(Ordering::Relaxed) {
             self.repair(st, ctx)?;
         }
         ctx.cache.register_model(&model_id, self.dim, None)?;
