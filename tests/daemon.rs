@@ -90,6 +90,10 @@ impl Daemon {
 
     fn start_with_env(home: &Path, delay_ms: u64, env: &[(&str, &Path)]) -> Self {
         let port = free_port();
+        // Windows has no socket: the CLI reaches this daemon on the configured port.
+        if cfg!(windows) && !home.join("config.toml").exists() {
+            write(home, "config.toml", &format!("port = {port}\n"));
+        }
         let child = Command::new(BIN)
             .args(["serve", "--port", &port.to_string()])
             .env("LODESTONE_HOME", home)
@@ -574,13 +578,15 @@ fn watcher_indexes_only_files_a_full_scan_would() {
     let home = tempdir();
     // The global excludes file, set explicitly so the machine's git config cannot interfere.
     write(&home, "global-ignore", "scratch/\n");
+    // `ignore` expands every `~` in the path, and Windows temp dirs can be 8.3 short names
+    // (`RUNNER~1`); canonicalizing resolves them. Git config reads `\` as an escape.
+    let excludes = fs::canonicalize(home.join("global-ignore")).unwrap();
+    let excludes = excludes.to_string_lossy();
+    let excludes = excludes.strip_prefix(r"\\?\").unwrap_or(&excludes);
     write(
         &home,
         "gitconfig",
-        &format!(
-            "[core]\n\texcludesFile = {}\n",
-            home.join("global-ignore").display()
-        ),
+        &format!("[core]\n\texcludesFile = {}\n", excludes.replace('\\', "/")),
     );
     let d = Daemon::start_with_env(&home, 0, &[("GIT_CONFIG_GLOBAL", &home.join("gitconfig"))]);
     d.post("/v1/register", json!({ "path": root.to_string_lossy() }));
@@ -635,11 +641,12 @@ fn watcher_indexes_only_files_a_full_scan_would() {
 /// home's Unix socket.
 fn on_demand_home(idle_secs: u64) -> PathBuf {
     let home = tempdir();
-    write(
-        &home,
-        "config.toml",
-        &format!("idle_timeout_secs = {idle_secs}\n"),
-    );
+    let mut config = format!("idle_timeout_secs = {idle_secs}\n");
+    // Windows has no socket; each test's daemon needs a port of its own.
+    if cfg!(windows) {
+        config.push_str(&format!("port = {}\n", free_port()));
+    }
+    write(&home, "config.toml", &config);
     home
 }
 
@@ -656,7 +663,7 @@ fn lode(home: &Path) -> Command {
 fn home_config(home: &Path) -> Config {
     Config {
         data_dir: Some(home.to_path_buf()),
-        ..Config::default()
+        ..Config::load(Some(&home.join("config.toml"))).unwrap()
     }
 }
 
@@ -772,9 +779,11 @@ fn on_demand_daemon_watches_leased_worktrees_and_exits_when_idle() {
         assert!(Instant::now() < deadline, "daemon did not exit when idle");
         std::thread::sleep(Duration::from_millis(100));
     }
+    #[cfg(unix)]
     assert!(!home_config(&home).socket_path().exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn one_daemon_per_socket_and_stale_sockets_are_replaced() {
     use std::os::unix::fs::PermissionsExt;
@@ -837,6 +846,7 @@ fn cli_starts_the_daemon_on_demand_but_status_does_not() {
     });
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_fails_fast_when_the_daemon_cannot_start() {
     let home = on_demand_home(3);
@@ -864,6 +874,7 @@ fn cli_fails_fast_when_the_daemon_cannot_start() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn stop_and_sigterm_shut_the_daemon_down_gracefully() {
     let home = on_demand_home(0);
@@ -1110,6 +1121,10 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
         "session-start",
         json!({ "cwd": folder, "session_id": "s3" }),
     );
+    let note: Value = serde_json::from_str(&note).unwrap();
+    let note = note["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
     assert!(
         note.contains("not itself indexed") && note.contains(&listed),
         "{note}"

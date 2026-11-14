@@ -42,7 +42,36 @@ pub fn start_daemon(config: &Config, config_path: Option<&Path>) -> anyhow::Resu
         .stderr(log);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        keep_std_handles();
+    }
     cmd.spawn().context("starting the lodestone daemon")
+}
+
+/// Stops this process's standard handles from being inherited. Windows gives a child every
+/// inheritable handle, so the daemon would hold the caller's output pipe open, and whoever reads
+/// it (a harness running a hook, `lode mcp`'s client) would wait for the daemon to exit.
+#[cfg(windows)]
+fn keep_std_handles() {
+    use windows_sys::Win32::Foundation::{
+        HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: Win32 calls on this process's own standard handles; a missing one is skipped.
+        unsafe {
+            let h = GetStdHandle(id);
+            if !h.is_null() && h != INVALID_HANDLE_VALUE {
+                SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
 }
 
 /// Whether some daemon holds the socket's lock, i.e. is running or still loading its model.
