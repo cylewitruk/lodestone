@@ -92,6 +92,8 @@ lode uninstall                    # same flags; --dry-run prints the steps only
   doesn't run SessionStart hooks at startup, so Claude also gets `lode hook prompt-submit`, which
   adds the reminder on a session's first prompt unless a SessionStart hook already ran. Both
   keep a marker per session in `~/.lodestone/hook-sessions/` with the session's directory.
+  Claude's subagents see none of their session's reminders, so `lode hook subagent-start` adds
+  it to each one.
 - **Deferred tools:** Claude Code defers MCP tools behind ToolSearch. The search tools ask to load
   upfront (`_meta["anthropic/alwaysLoad"]`, Claude Code v2.1.285 or later); where they are still
   deferred, the reminder and the skill say to load them with ToolSearch (`+lodestone search`).
@@ -166,8 +168,12 @@ lode transcript-stats --codex ~/elsewhere --repo stacks-core --since 2026-11-01 
   reads; no other content.
 - **Reported** per repository and harness: sessions that searched, whether the first search came
   before the first grep, searches with a result later read, with no results, and failed (or
-  denied), latency, and grep / glob / read calls. Codex shell commands count by Codex's own
-  classification (`read`, `search`, `list_files`). `--since` counts calls from that date;
+  denied), latency, and grep / glob / read calls. Claude Code transcripts also say whether a
+  session had the search tools loaded or only deferred, so the report gives the share of
+  sessions with them loaded and how many of those searched (`-` for Codex, which does not
+  record its tools). A Claude shell command counts as a grep when `rg`, `grep` or `git grep`
+  searches files, not when it filters another command's output (`cargo test | grep FAILED`).
+  Codex shell commands count by Codex's own classification (`read`, `search`, `list_files`). `--since` counts calls from that date;
   `--queries` lists every search; `--json` for machines.
 
 ## Daemon

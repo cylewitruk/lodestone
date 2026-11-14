@@ -52,6 +52,12 @@ pub struct Group {
     pub harness: String,
     pub sessions: usize,
     pub sessions_searched: usize,
+    /// Sessions whose transcript says how lodestone's search tools were listed.
+    pub sessions_tools_known: usize,
+    /// Of those, sessions that had the tools loaded rather than deferred.
+    pub sessions_tools_loaded: usize,
+    /// Sessions with the tools loaded that searched.
+    pub loaded_searched: usize,
     /// Sessions whose first lodestone search came before their first text search, if any.
     pub searched_before_grep: usize,
     pub semantic: usize,
@@ -155,9 +161,13 @@ fn tally(
     calls: &[&CallRow],
 ) {
     g.sessions += 1;
+    let loaded = s.tools_loaded == Some(true);
+    g.sessions_tools_known += usize::from(s.tools_loaded.is_some());
+    g.sessions_tools_loaded += usize::from(loaded);
     let first = |p: &dyn Fn(Kind) -> bool| calls.iter().find(|c| p(c.kind)).map(|c| c.ts);
     if let Some(search) = first(&Kind::is_lodestone) {
         g.sessions_searched += 1;
+        g.loaded_searched += usize::from(loaded);
         if first(&|k| k == Kind::Grep).is_none_or(|grep| search <= grep) {
             g.searched_before_grep += 1;
         }
@@ -223,6 +233,12 @@ impl Report {
             let rows = vec![
                 row("", &|g| g.harness.clone()),
                 row("sessions", &|g| g.sessions.to_string()),
+                row("  with the tools loaded", &|g| {
+                    share(g.sessions_tools_loaded, g.sessions_tools_known)
+                }),
+                row("  searched, of those", &|g| {
+                    share(g.loaded_searched, g.sessions_tools_loaded)
+                }),
                 row("sessions that searched", &|g| {
                     share(searched(g), g.sessions)
                 }),

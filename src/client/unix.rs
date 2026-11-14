@@ -49,6 +49,15 @@ fn io_error(e: io::Error, reason: Timeout) -> Error {
     }
 }
 
+/// The result of setting a socket timeout. macOS refuses (`EINVAL`) once the peer has closed,
+/// when a read returns what the peer sent, or the end of the stream, without waiting.
+fn timeout_set(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(e) if cfg!(target_os = "macos") && e.kind() == io::ErrorKind::InvalidInput => Ok(()),
+        r => r,
+    }
+}
+
 impl Transport for UnixTransport {
     fn buffers(&mut self) -> &mut dyn Buffers {
         &mut self.buffers
@@ -56,8 +65,10 @@ impl Transport for UnixTransport {
 
     fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), Error> {
         let timeout = timeout.for_write();
-        self.stream
-            .set_write_timeout(timeout.not_zero().map(|t| *t))?;
+        timeout_set(
+            self.stream
+                .set_write_timeout(timeout.not_zero().map(|t| *t)),
+        )?;
         self.stream
             .write_all(&self.buffers.output()[..amount])
             .map_err(|e| io_error(e, timeout.reason))
@@ -65,8 +76,7 @@ impl Transport for UnixTransport {
 
     fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, Error> {
         let timeout = timeout.for_read();
-        self.stream
-            .set_read_timeout(timeout.not_zero().map(|t| *t))?;
+        timeout_set(self.stream.set_read_timeout(timeout.not_zero().map(|t| *t)))?;
         let input = self.buffers.input_append_buf();
         let amount = loop {
             match self.stream.read(input) {
@@ -88,5 +98,22 @@ impl Transport for UnixTransport {
             Err(e) if e.kind() == io::ErrorKind::WouldBlock
         );
         self.stream.set_nonblocking(false).is_ok() && open
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn a_response_is_read_after_the_peer_closed() {
+        let (mut ours, mut peer) = UnixStream::pair().unwrap();
+        peer.write_all(b"x").unwrap();
+        drop(peer);
+        timeout_set(ours.set_read_timeout(Some(Duration::from_secs(1)))).unwrap();
+        let mut buf = [0; 2];
+        assert_eq!(ours.read(&mut buf).unwrap(), 1);
     }
 }

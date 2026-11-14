@@ -1163,3 +1163,28 @@ Transcript stats after the reminder fix showed four problems.
 - For older versions, or a configuration that defers the server, the reminder and the skill also
   say to load the tools with ToolSearch (`+lodestone search`, which matches the plugin's prefixed
   names too) when they are listed only as deferred.
+
+## Cues that fit the session, and stats that separate exposure from choice
+
+Transcripts after the upfront-loading change still showed no Claude searches. Reading them:
+
+- **Exposure.** Before `50a6882` every Claude session had the search tools deferred, and desktop
+  sessions often got the reminder only at a resume or compaction. Two sessions have had both the
+  tools and the reminder from the start; neither searched.
+- **Wording.** The reminder named a `Grep` tool the desktop app does not have (its searches are
+  `grep` in Bash), led with reuse before writing code when most sessions investigate or review,
+  and in a folder of checkouts opened with "not itself indexed". It now leads with locating
+  code by behaviour instead of `grep -r` with guessed names, says "text search (grep, rg)", and
+  opens the folder variant with what is indexed. The skill says the same.
+- **Subagents.** About a third of the grep commands ran in subagents, which have the tools but
+  none of the session's reminders. `lode install` adds a `SubagentStart` hook for Claude
+  (`lode hook subagent-start`, also in the plugin) that adds the reminder to each one and leaves
+  the session's marker alone.
+- **Stats.** A Claude shell command counted as a grep whenever `grep` appeared in a pipeline;
+  roughly a quarter of those filtered test or build output. Only a search over files counts now.
+  The report also gives, from Claude's `prompt_snapshot` and `deferred_tools_delta` attachments,
+  the share of sessions with the search tools loaded and how many of those searched. The parser
+  version is bumped, so transcripts are read again once.
+- Checked: unit tests for the shell classification and the attachments; the transcript test
+  counts a session listed as deferred then loaded, and skips a piped grep; the daemon test
+  reminds a subagent twice in a session already reminded; the install test writes the hook.

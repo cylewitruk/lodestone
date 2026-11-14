@@ -173,6 +173,25 @@ fn reads_sessions_in_registered_repositories_incrementally() {
                     json!({ "file_path": s.repo.join("core/src/a.rs") }),
                 ),
             ),
+            // Listed as deferred, then loaded: the session had the tools.
+            json!({ "type": "attachment", "sessionId": "s1", "cwd": s.repo, "timestamp": ts(6),
+                "attachment": { "type": "deferred_tools_delta",
+                    "addedNames": ["mcp__plugin_lodestone_lodestone__semantic_code_search"] } }),
+            json!({ "type": "attachment", "sessionId": "s1", "cwd": s.repo, "timestamp": ts(6),
+                "attachment": { "type": "prompt_snapshot",
+                    "tools": [{ "name": "mcp__plugin_lodestone_lodestone__semantic_code_search" }] } }),
+            // A filter on another command's output is not a search of the code.
+            claude_line(
+                "s1",
+                &s.repo,
+                7,
+                "assistant",
+                tool_use(
+                    "b9",
+                    "Bash",
+                    json!({ "command": "cargo test 2>&1 | grep FAILED" }),
+                ),
+            ),
         ],
     );
     // A subagent of s1, in its own file.
@@ -244,6 +263,14 @@ fn reads_sessions_in_registered_repositories_incrementally() {
         (c.sessions, c.sessions_searched, c.searched_before_grep),
         (1, 1, 0)
     );
+    assert_eq!(
+        (
+            c.sessions_tools_known,
+            c.sessions_tools_loaded,
+            c.loaded_searched
+        ),
+        (1, 1, 1)
+    );
     assert_eq!((c.semantic, c.similar, c.search), (1, 0, 0));
     assert_eq!((c.greps, c.globs, c.reads), (1, 1, 1));
     assert_eq!((c.searches_read, c.searches_empty), (1, 0));
@@ -254,6 +281,8 @@ fn reads_sessions_in_registered_repositories_incrementally() {
         (1, 1, 1)
     );
     assert_eq!((x.similar, x.greps, x.reads, x.searches_read), (1, 1, 1, 1));
+    // Codex transcripts do not record the tools.
+    assert_eq!((x.sessions_tools_known, x.sessions_tools_loaded), (0, 0));
     assert_eq!(x.latency_ms_median, Some(2000));
     let queries: Vec<&str> = r.searches.iter().map(|q| q.query.as_str()).collect();
     assert_eq!(queries, ["fn a() {}", "parse a duration [parse_duration]"]);

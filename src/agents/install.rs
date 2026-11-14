@@ -39,10 +39,14 @@ impl Harness {
     }
 
     /// The hooks that add the reminder. Claude Code in the desktop app skips SessionStart hooks
-    /// at startup, so Claude also gets the first-prompt hook.
+    /// at startup, so Claude also gets the first-prompt hook; its subagents get their own.
     fn hook_events(self) -> &'static [HookEvent] {
         match self {
-            Harness::Claude => &[HookEvent::SessionStart, HookEvent::UserPromptSubmit],
+            Harness::Claude => &[
+                HookEvent::SessionStart,
+                HookEvent::UserPromptSubmit,
+                HookEvent::SubagentStart,
+            ],
             Harness::Codex => &[HookEvent::SessionStart],
         }
     }
@@ -580,6 +584,11 @@ mod tests {
             }] }])
         );
         assert_eq!(prompt_hook(".codex/hooks.json"), Value::Null);
+        assert_eq!(
+            read_json(&home.join(".claude/settings.json"))["hooks"]["SubagentStart"][0]["hooks"][0]
+                ["command"],
+            "'/opt/bin/lode' hook subagent-start"
+        );
 
         run_all(&uninstall(&[Harness::Claude], &t));
         assert!(skill.exists(), "Codex still reads the shared skill");

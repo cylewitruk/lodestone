@@ -1055,6 +1055,17 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
     );
     assert_eq!(prompt(Some("s2")), "");
     assert_eq!(prompt(None), "");
+    // Each subagent is reminded, whatever its session has had.
+    for _ in 0..2 {
+        let sub = hook(
+            "subagent-start",
+            json!({ "cwd": core, "session_id": "s1", "agent_type": "Explore" }),
+        );
+        assert!(
+            sub.contains("additionalContext") && sub.contains("SubagentStart"),
+            "{sub}"
+        );
+    }
 
     // A session in the worktree searches the worktree's own index, registered on first use.
     let search = |dir: &Path, query: &str| {
@@ -1126,7 +1137,7 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
         .as_str()
         .unwrap();
     assert!(
-        note.contains("not itself indexed") && note.contains(&listed),
+        note.contains("indexes these repositories") && note.contains(&listed),
         "{note}"
     );
     let (err, text) = relay_call_in(

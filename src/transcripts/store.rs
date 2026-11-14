@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::{Call, Kind};
 
 /// Bumped when parsing or the schema changes, so every transcript is read again.
-const PARSER_VERSION: &str = "3";
+const PARSER_VERSION: &str = "4";
 
 const META: &str = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);";
 
@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS files (
     offset INTEGER NOT NULL, head_len INTEGER NOT NULL, head BLOB NOT NULL,
     session TEXT, cwd TEXT);
 CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY, harness TEXT NOT NULL, repo TEXT, started INTEGER NOT NULL);
+    id TEXT PRIMARY KEY, harness TEXT NOT NULL, repo TEXT, started INTEGER NOT NULL,
+    tools_loaded INTEGER);
 CREATE TABLE IF NOT EXISTS calls (
     file TEXT NOT NULL, id TEXT NOT NULL, session TEXT NOT NULL, repo TEXT, kind TEXT NOT NULL,
     ts INTEGER NOT NULL, query TEXT, path TEXT, done_ts INTEGER, results TEXT,
@@ -45,6 +46,9 @@ pub struct SessionRow {
     /// The registered repository its working directory is in, if any.
     pub repo: Option<String>,
     pub started: i64,
+    /// Whether lodestone's search tools were loaded (else deferred); unknown when the harness
+    /// does not record its tools.
+    pub tools_loaded: Option<bool>,
 }
 
 pub struct CallRow {
@@ -179,6 +183,15 @@ impl Store {
         Ok(())
     }
 
+    /// Records how a session lists lodestone's search tools; once loaded, it stays loaded.
+    pub fn set_tools(&self, id: &str, loaded: bool) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET tools_loaded = max(coalesce(tools_loaded, 0), ?2) WHERE id = ?1",
+            params![id, loaded],
+        )?;
+        Ok(())
+    }
+
     pub fn add_call(
         &self,
         file: &str,
@@ -233,13 +246,14 @@ impl Store {
     pub fn sessions(&self) -> anyhow::Result<Vec<SessionRow>> {
         let mut st = self
             .conn
-            .prepare("SELECT id, harness, repo, started FROM sessions")?;
+            .prepare("SELECT id, harness, repo, started, tools_loaded FROM sessions")?;
         let rows = st.query_map([], |r| {
             Ok(SessionRow {
                 id: r.get(0)?,
                 harness: r.get(1)?,
                 repo: r.get(2)?,
                 started: r.get(3)?,
+                tools_loaded: r.get(4)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)

@@ -118,6 +118,11 @@ pub enum Event {
         ts: i64,
     },
     Call(Call),
+    /// Session `id` lists lodestone's search tools: loaded, or deferred behind a tool search.
+    Tools {
+        id: String,
+        loaded: bool,
+    },
     /// The result of call `id` arrived.
     Done {
         id: String,
@@ -260,6 +265,9 @@ fn read_file(
                         let repo = repo.map(|r| r.to_string_lossy().into_owned());
                         store.add_call(&key, id, repo.as_deref(), &c)?;
                     }
+                }
+                Event::Tools { id, loaded } => {
+                    store.set_tools(&format!("{}:{id}", harness.program()), loaded)?;
                 }
                 Event::Done {
                     id,
