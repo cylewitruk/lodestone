@@ -11,22 +11,29 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_CONFIG: --config .github/cargo-ci.toml
+  # Pull requests restore the caches `main` saves.
+  CACHE_SAVE: ${{ github.ref == 'refs/heads/main' }}
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+          build-warnings: warn
+          cache-save-if: ${{ env.CACHE_SAVE }}
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo clippy --all-targets --locked $CARGO_CONFIG -- -D warnings
 
   test:
     strategy:
@@ -36,17 +43,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          build-warnings: warn
+          cache-save-if: ${{ env.CACHE_SAVE }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - run: cargo nextest run --locked --no-fail-fast
+      - run: cargo nextest run --locked --no-fail-fast $CARGO_CONFIG
 
   package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo package --locked
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          cache: false
+      # `cargo publish` runs the verify build.
+      - run: cargo package --locked --no-verify
