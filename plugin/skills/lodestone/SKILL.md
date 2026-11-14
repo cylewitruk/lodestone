@@ -1,12 +1,12 @@
 ---
 name: lodestone
-description: Use when asked to write, add or implement a function, helper, type or feature in this repository, or to review, refactor or deduplicate code. Finds existing code that already does it (Grep only finds names you already know) and shows which lodestone search to use and how to phrase it.
+description: Use when asked to write, add or implement a function, helper, type or feature in this repository, or to review, refactor or deduplicate code. Finds existing code that already does it (a text search only finds names you already know) and shows which lodestone search to use and how to phrase it.
 ---
 
 # lodestone
 
 lodestone (MCP server `lodestone`) is a semantic index of this repository's definitions with two
-search tools. Both find code by what it does, which Grep cannot when you do not know the name. A
+search tools. Both find code by what it does, which a text search cannot when you do not know the name. A
 search takes about 10 ms and returns definitions with their location. If the tools are listed only
 as deferred tools, load them first with ToolSearch (query `+lodestone search`).
 
@@ -19,8 +19,9 @@ as deferred tools, load them first with ToolSearch (query `+lodestone search`).
 | Refactoring | `similar_code_search`, once, with the functions you consolidate, move or rewrite | each one's code, one per entry |
 | Locating behaviour | `semantic_code_search`, when a report describes behaviour | the behaviour |
 
-Use Grep instead for exact strings: a quoted log or error message, a known identifier, a config
-key. Grep the literal first and search only if it finds nothing.
+Use a text search (grep, rg) instead for exact strings: a quoted log or error message, a known
+identifier, a config key. Search for the literal first and use lodestone only if that finds
+nothing.
 
 ## semantic_code_search
 

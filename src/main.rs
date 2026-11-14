@@ -183,6 +183,8 @@ enum HookCmd {
     SessionStart,
     /// The same, on a session's first prompt only, unless a session-start hook already ran.
     PromptSubmit,
+    /// The same, for each subagent.
+    SubagentStart,
 }
 
 /// How long `lode stop` waits for the daemon to exit.
@@ -360,6 +362,7 @@ fn main() -> anyhow::Result<()> {
             let event = match cmd {
                 HookCmd::SessionStart => HookEvent::SessionStart,
                 HookCmd::PromptSubmit => HookEvent::UserPromptSubmit,
+                HookCmd::SubagentStart => HookEvent::SubagentStart,
             };
             let input = HookInput::read()?;
             let out = agents::hook(
