@@ -32,23 +32,12 @@ Pull requests run `dist plan` only, which catches config errors without building
 Binaries use the default features (no fastembed) and the `dist` profile, which is the release
 profile (fat LTO, stripped). Ubuntu 22.04 keeps the glibc requirement at 2.35.
 
-## One-time setup
+## Requirements
 
-1. **GitHub App** (tags pushed with `GITHUB_TOKEN` start no workflows, so release-plz needs its own
-   token): create an App under your account settings with repository permissions *Contents* and
-   *Pull requests* set to read and write, no webhook, and install it on this repository. Add
-   repository secrets `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` (a generated private key).
-2. **First release by hand**, since crates.io trusted publishing needs the crate to exist. From an
-   up-to-date `main`:
-
-   ```bash
-   cargo publish --locked
-   git tag v0.1.0 && git push origin v0.1.0
-   ```
-
-   The tag builds and publishes the v0.1.0 GitHub Release.
-3. **Trusted publisher:** on crates.io, under the crate's settings, add GitHub repository
-   `cylewitruk/lodestone` with workflow `release-plz.yml`.
+- **Secrets** `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`: a GitHub App installed on the
+  repository with *Contents* and *Pull requests* read and write. release-plz pushes the tag with
+  its token, since tags pushed with `GITHUB_TOKEN` start no workflows.
+- **crates.io trusted publisher** for workflow `release-plz.yml`, so no API token is stored.
 
 ## Changing the dist config
 
