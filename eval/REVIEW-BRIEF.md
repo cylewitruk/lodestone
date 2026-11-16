@@ -150,7 +150,7 @@ measured. Not yet fixed.
 
 | Path | Contents |
 | ---- | ---- |
-| `CHANGELOG.md` | all results and decisions; sections "Model comparison", "Settings sweep", "Hard question set", "Agent situations and the lodestone plugin" |
+| `docs/decision-log.md` | all results and decisions; sections "Model comparison", "Settings sweep", "Hard question set", "Agent situations and the lodestone plugin" |
 | `eval/README.md` | question sets, hard-set method |
 | `eval/questions-hard-*.json`, `eval/variants/` | hard set (criteria, near misses, review notes) and rewrites, incl. `hard-recall-*` |
 | `eval/compare.py`, `eval/variants/build.py` | paired comparison; per-style question files |

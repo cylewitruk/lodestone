@@ -134,7 +134,7 @@ pub struct RerankConfig {
     /// Hugging Face repo of the cross-encoder for the candle backends.
     pub hf_repo: String,
     /// Candidates passed to the cross-encoder. 20 suits strong embedders; weaker ones gain from
-    /// 50 (see CHANGELOG, model comparison).
+    /// 50 (see docs/decision-log.md, model comparison).
     pub candidates: usize,
     /// Token budget per (query, document) pair.
     pub max_tokens: usize,
@@ -147,7 +147,7 @@ impl Default for RerankConfig {
     fn default() -> Self {
         Self {
             // Off by default: on the hard question set it lowers well-phrased queries' scores and
-            // costs ~0.4 s per search on Metal, ~2.6 s on CPU (see CHANGELOG).
+            // costs ~0.4 s per search on Metal, ~2.6 s on CPU (see docs/decision-log.md).
             enabled: false,
             model: "bge-reranker-base".into(),
             hf_repo: "Alibaba-NLP/gte-reranker-modernbert-base".into(),

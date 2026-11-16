@@ -21,18 +21,35 @@ does X?" over MCP and HTTP in well under a second.
 
 ## Quick start
 
-Requires a stable Rust toolchain (edition 2024) and a C compiler. This installs the `lode`
-binary:
+Install a prebuilt `lode` (macOS and Linux on x86_64 or arm64, Windows on x86_64):
 
 ```bash
-cargo install --locked --git https://github.com/cylewitruk/lodestone
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/cylewitruk/lodestone/releases/latest/download/lodestone-cli-installer.sh | sh
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/cylewitruk/lodestone/releases/latest/download/lodestone-cli-installer.ps1 | iex"
+```
+
+Archives and checksums for each platform are on the
+[releases page](https://github.com/cylewitruk/lodestone/releases). Then:
+
+```bash
 lode register ~/src/my-repo       # index a repository
 lode install                      # wire up Claude Code and/or Codex
 lode search "retry an HTTP call with exponential backoff"
 ```
 
-Release builds use fat LTO, so the install takes a few minutes. Add `--features fastembed` for the
-ONNX Runtime backend (see [Configuration](#configuration)).
+**From source** (stable Rust, edition 2024, and a C compiler; release builds use fat LTO, so
+this takes a few minutes):
+
+```bash
+cargo install --locked lodestone-cli                       # or --git https://github.com/cylewitruk/lodestone
+cargo install --locked lodestone-cli --features fastembed  # adds the ONNX Runtime backend
+```
+
+**Upgrading:** run `lode stop` after installing a new version, so the next command starts the new
+daemon.
 
 There is nothing to start: `lode` and agent sessions start the daemon on demand, and it exits
 when they are done (see [Daemon](#daemon)). Models download on first use into `~/.lodestone/models`.
@@ -323,8 +340,8 @@ identifier_lexical_weight = 0.0
   `embeddinggemma-2`, `nomic-text-v1.5`, `bge-small`, `minilm-l6`, and `jina-code-0.5b`
   (non-commercial licence).
 - **Rerankers:** any Hugging Face cross-encoder repo in `[rerank] hf_repo` on candle, or a
-  fastembed reranker named in `[rerank] model` on fastembed. The CHANGELOG compares the ones
-  measured.
+  fastembed reranker named in `[rerank] model` on fastembed. The
+  [decision log](docs/decision-log.md) compares the ones measured.
 - **Switching models** needs a full re-index (`lode index --force`). The cache keeps each model's
   vectors apart.
 
@@ -369,20 +386,16 @@ lode bench eval --hard q06,q07,q08,q18
 Agent evaluations (headless Claude Code) live in [eval/harness/](eval/harness/README-lode.md)
 and [eval/situations/](eval/situations/README.md). Question sets and corpora are described in
 [eval/README.md](eval/README.md). Measured results and decisions are in
+[docs/decision-log.md](docs/decision-log.md); user-facing changes per release in
 [CHANGELOG.md](CHANGELOG.md).
 
 ## Releasing
 
-Pushing a `v*` tag runs CI and publishes to crates.io through trusted publishing (no stored
-token). Bump `version` in `Cargo.toml`, then:
-
-```bash
-git tag v0.2.0 && git push origin v0.2.0
-```
-
-The first release has to be published by hand (`cargo publish`), since crates.io only accepts a
-trusted publisher for a crate that exists. After it, add one under the crate's settings on
-crates.io: repository `cylewitruk/lodestone`, workflow `publish.yml`.
+[release-plz](https://release-plz.dev) keeps a release PR open with the next version and its
+[CHANGELOG.md](CHANGELOG.md) entry. Merging it publishes to crates.io, tags `vX.Y.Z` and starts
+[dist](https://github.com/axodotdev/cargo-dist), which builds the binaries and installers and
+creates the GitHub Release. Setup, the first release and package-manager plans are in
+[docs/releasing.md](docs/releasing.md).
 
 ## License
 
