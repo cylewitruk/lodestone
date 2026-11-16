@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tantivy::{IndexWriter, Searcher};
 
 use crate::cache::{CacheKey, EmbeddingCache, cache_key};
-use crate::chunk::Chunker;
+use crate::chunk::{Chunker, extension_of};
 use crate::config::{Config, Precision};
 use crate::embed::{Embedder, InputKind};
 use crate::graph::ProjectGraph;
@@ -575,9 +575,22 @@ impl WorktreeIndex {
             self.repair(st, ctx)?;
         }
         ctx.cache.register_model(&model_id, self.dim, None)?;
+        // Re-chunk unchanged files whose chunking changed since the last full pass: every file
+        // for a settings change, else those of extensions whose language, queries or mapping
+        // changed. Embeddings stay cached.
         let chunker_fp = ctx.chunker.fingerprint();
-        // Chunking settings or queries changed: re-chunk everything (embeddings stay cached).
-        let rechunk = opts.paths.is_none() && st.manifest.chunker != chunker_fp;
+        let extension_fps = ctx.chunker.registry().extension_fingerprints();
+        let full = opts.paths.is_none();
+        let rechunk_all = full && st.manifest.chunker != chunker_fp;
+        let rechunk_extensions: HashSet<String> = extension_fps
+            .iter()
+            .filter(|(ext, fp)| full && st.manifest.extensions.get(*ext) != Some(fp))
+            .map(|(ext, _)| ext.clone())
+            .collect();
+        let rechunk = |rel: &str| {
+            rechunk_all
+                || extension_of(Path::new(rel)).is_some_and(|e| rechunk_extensions.contains(&e))
+        };
         let graph = Arc::new(ProjectGraph::build(&self.root));
         fs::write(self.dir.join("graph.json"), serde_json::to_vec(&*graph)?)?;
         let registry = ctx.chunker.registry().clone();
@@ -630,7 +643,7 @@ impl WorktreeIndex {
             let Some((size, mtime)) = meta else { continue };
             match st.manifest.files.get(&rel) {
                 Some(e)
-                    if !rechunk
+                    if !rechunk(&rel)
                         && e.size == size
                         && e.mtime == mtime
                         && indexed_paths.contains(rel.as_str()) == !e.chunk_ids.is_empty() => {}
@@ -680,7 +693,7 @@ impl WorktreeIndex {
             for (rel, size, mtime, hash, bytes) in read {
                 match st.manifest.files.get_mut(&rel) {
                     Some(e)
-                        if !rechunk
+                        if !rechunk(&rel)
                             && e.file_hash == hash
                             && (indexed_paths.contains(rel.as_str()) || e.chunk_ids.is_empty()) =>
                     {
@@ -756,8 +769,9 @@ impl WorktreeIndex {
                     .then(|| (elapsed / p.files_done as f64 * left as f64) as u64);
             });
         }
-        if opts.paths.is_none() {
+        if full {
             st.manifest.chunker = chunker_fp;
+            st.manifest.extensions = extension_fps;
         }
         st.manifest.updated_at = now_secs();
         st.manifest.save(&self.dir.join("manifest.json"))?;

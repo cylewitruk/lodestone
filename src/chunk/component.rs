@@ -10,6 +10,9 @@ use std::ops::Range;
 
 use tree_sitter::{Language as Grammar, Node, Parser};
 
+/// Languages a component's script blocks are tagged with, by [`Parts::script_language`].
+pub const SCRIPT_LANGUAGES: [&str; 2] = ["typescript", "javascript"];
+
 /// A component file format.
 pub struct Component {
     pub name: &'static str,
@@ -25,6 +28,18 @@ pub struct Parts {
     pub typescript: bool,
     /// The markup: script and style blocks blanked.
     pub markup: Vec<u8>,
+}
+
+impl Parts {
+    /// The language the script blocks are tagged with, one of [`SCRIPT_LANGUAGES`].
+    pub fn script_language(&self) -> &'static str {
+        let [typescript, javascript] = SCRIPT_LANGUAGES;
+        if self.typescript {
+            typescript
+        } else {
+            javascript
+        }
+    }
 }
 
 impl Component {

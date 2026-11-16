@@ -35,6 +35,7 @@ ignore = "0.4.34"
 notify = "8.2.1"
 notify-debouncer-full = "0.7.0"
 rayon = "1.12.0"
+regex = "1.13.1"
 rmcp = { version = "3.9.0", features = ["transport-streamable-http-server", "transport-io"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 schemars = "1.2.3"
@@ -49,13 +50,22 @@ toml = "1.2.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tree-sitter = "0.27.2"
+tree-sitter-c = { version = "0.24.2", optional = true }
+tree-sitter-c-sharp = { version = "0.23.5", optional = true }
+tree-sitter-cpp = { version = "0.23.4", optional = true }
+tree-sitter-elixir = { version = "0.3.5", optional = true }
 tree-sitter-go = { version = "0.25.0", optional = true }
+tree-sitter-java = { version = "0.23.5", optional = true }
 tree-sitter-language = { version = "0.1.9", optional = true }
 tree-sitter-javascript = { version = "0.25.0", optional = true }
 tree-sitter-loader = "0.27.2"
+tree-sitter-lua = { version = "0.5.0", optional = true }
 tree-sitter-md = { version = "0.5.4", optional = true }
+tree-sitter-php = { version = "0.25.1", optional = true }
 tree-sitter-python = { version = "0.25.0", optional = true }
+tree-sitter-ruby = { version = "0.23.1", optional = true }
 tree-sitter-rust = { version = "0.24.2", optional = true }
+tree-sitter-swift = { version = "0.7.4", optional = true }
 tree-sitter-tags = "0.27.2"
 tree-sitter-typescript = { version = "0.23.2", optional = true }
 ureq = { version = "3.5.1", features = ["json"] }
@@ -77,13 +87,22 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Syste
 cc = "1.2"
 
 [features]
-default = ["lang-rust", "lang-python", "lang-typescript", "lang-svelte", "lang-go", "lang-markdown", "lang-clarity", "candle", "fastembed"]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-svelte", "lang-go", "lang-java", "lang-c", "lang-cpp", "lang-csharp", "lang-ruby", "lang-php", "lang-lua", "lang-elixir", "lang-swift", "lang-markdown", "lang-clarity", "candle"]
 lang-rust = ["dep:tree-sitter-rust"]
 lang-python = ["dep:tree-sitter-python"]
 lang-typescript = ["dep:tree-sitter-typescript", "dep:tree-sitter-javascript"]
 # Svelte components: their `<script>` blocks are tagged as TypeScript or JavaScript.
 lang-svelte = ["lang-typescript", "dep:tree-sitter-svelte-ng"]
 lang-go = ["dep:tree-sitter-go"]
+lang-java = ["dep:tree-sitter-java"]
+lang-c = ["dep:tree-sitter-c"]
+lang-cpp = ["dep:tree-sitter-cpp"]
+lang-csharp = ["dep:tree-sitter-c-sharp"]
+lang-ruby = ["dep:tree-sitter-ruby"]
+lang-php = ["dep:tree-sitter-php"]
+lang-lua = ["dep:tree-sitter-lua"]
+lang-elixir = ["dep:tree-sitter-elixir"]
+lang-swift = ["dep:tree-sitter-swift"]
 lang-markdown = ["dep:tree-sitter-md"]
 # Vendored in `vendor/tree-sitter-clarity` (not on crates.io), compiled by `build.rs`.
 lang-clarity = ["dep:tree-sitter-language"]
@@ -91,7 +110,9 @@ candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:to
 fastembed = ["dep:fastembed", "dep:ort"]
 
 [profile.release]
-debug = "line-tables-only"
+lto = "fat"
+codegen-units = 1
+strip = true
 
 [profile.dev.package."*"]
 opt-level = 3

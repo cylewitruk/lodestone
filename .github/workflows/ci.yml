@@ -33,7 +33,7 @@ jobs:
           build-warnings: warn
           cache-save-if: ${{ env.CACHE_SAVE }}
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets --locked $CARGO_CONFIG -- -D warnings
+      - run: cargo clippy --all-targets --all-features --locked $CARGO_CONFIG -- -D warnings
 
   test:
     strategy:
