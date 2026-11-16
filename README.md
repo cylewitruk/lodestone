@@ -392,9 +392,9 @@ and [eval/situations/](eval/situations/README.md). Question sets and corpora are
 ## Releasing
 
 [release-plz](https://release-plz.dev) keeps a release PR open with the next version and its
-[CHANGELOG.md](CHANGELOG.md) entry. Merging it publishes to crates.io and tags `vX.Y.Z`; the tag
-starts [dist](https://github.com/axodotdev/cargo-dist), which builds the binaries and installers
-and creates the GitHub Release. Setup, the first release and package-manager plans are in
+[CHANGELOG.md](CHANGELOG.md) entry. Merging it publishes to crates.io, tags `vX.Y.Z` and starts
+[dist](https://github.com/axodotdev/cargo-dist), which builds the binaries and installers and
+creates the GitHub Release. Setup, the first release and package-manager plans are in
 [docs/releasing.md](docs/releasing.md).
 
 ## License

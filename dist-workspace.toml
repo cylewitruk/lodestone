@@ -17,3 +17,4 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+dispatch-releases = true

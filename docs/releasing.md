@@ -12,12 +12,23 @@
 2. Edit the PR before merging: tidy the changelog entry, and pick the version. release-plz bumps
    the patch version for `area: summary` commits; for a minor bump, run
    `release-plz set-version lodestone-cli@0.X.0` on the PR branch and push.
-3. Merging it publishes `lodestone-cli` to crates.io (trusted publishing) and pushes the tag.
-4. The tag starts `release.yml`: dist builds each target, then creates the GitHub Release with the
-   archives, checksums, the shell and PowerShell installers, and the version's `CHANGELOG.md`
-   section as notes.
+3. Merging it publishes `lodestone-cli` to crates.io (trusted publishing), pushes the tag and
+   dispatches `release.yml` for it. A tag pushed with `GITHUB_TOKEN` starts no workflow, but a
+   dispatch does, so no other credential is needed.
+4. `release.yml`: dist builds each target, then creates the GitHub Release with the archives,
+   checksums, the shell and PowerShell installers, and the version's `CHANGELOG.md` section as
+   notes.
 
-Pull requests run `dist plan` only, which catches config errors without building.
+The release PR is opened with `GITHUB_TOKEN`, so CI doesn't run on it; it only changes the
+version and the changelog. Pull requests run `dist plan`, which catches config errors without
+building.
+
+To build or release by hand:
+
+```bash
+gh workflow run release.yml -f tag=dry-run                  # build every target, publish nothing
+gh workflow run release.yml --ref v0.1.0 -f tag=v0.1.0      # release an existing tag
+```
 
 ## Targets
 
@@ -34,9 +45,8 @@ profile (fat LTO, stripped). Ubuntu 22.04 keeps the glibc requirement at 2.35.
 
 ## Requirements
 
-- **Secrets** `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`: a GitHub App installed on the
-  repository with *Contents* and *Pull requests* read and write. release-plz pushes the tag with
-  its token, since tags pushed with `GITHUB_TOKEN` start no workflows.
+- **Repository setting** *Actions → General → Allow GitHub Actions to create and approve pull
+  requests*, for the release PR.
 - **crates.io trusted publisher** for workflow `release-plz.yml`, so no API token is stored.
 
 ## Changing the dist config

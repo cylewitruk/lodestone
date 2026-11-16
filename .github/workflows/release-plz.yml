@@ -1,8 +1,8 @@
 name: Release-plz
 
 # On every push to main: keep a release PR open with the next version and changelog. When that
-# PR is merged: publish to crates.io and push the `v*` tag, which starts release.yml (dist).
-# The tag must be pushed with the App token: tags pushed with GITHUB_TOKEN start no workflows.
+# PR is merged: publish to crates.io, push the `v*` tag, and dispatch release.yml (dist) for it.
+# Tags pushed with GITHUB_TOKEN start no workflows, but a workflow_dispatch from it does.
 
 on:
   push:
@@ -18,27 +18,29 @@ jobs:
     permissions:
       contents: write
       id-token: write # crates.io trusted publishing
+      actions: write # dispatch release.yml
     steps:
-      - id: token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ steps.token.outputs.token }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: false
           build-warnings: warn
-      - uses: release-plz/action@v0.5
+      - id: release
+        uses: release-plz/action@v0.5
         with:
           command: release
           version: 0.4.3
         env:
-          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build binaries and the GitHub Release
+        if: steps.release.outputs.releases_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ fromJSON(steps.release.outputs.releases)[0].tag }}
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG" -f tag="$TAG"
 
   release-pr:
     name: Release PR
@@ -51,16 +53,9 @@ jobs:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false
     steps:
-      # The App token also lets CI run on the release PR.
-      - id: token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ steps.token.outputs.token }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
@@ -71,4 +66,4 @@ jobs:
           command: release-pr
           version: 0.4.3
         env:
-          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
