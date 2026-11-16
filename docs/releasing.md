@@ -42,6 +42,8 @@ gh workflow run release.yml --ref v0.1.0 -f tag=v0.1.0      # release an existin
 
 Binaries use the default features (no fastembed) and the `dist` profile, which is the release
 profile (fat LTO, stripped). Ubuntu 22.04 keeps the glibc requirement at 2.35.
+On Linux arm64, usearch is built without numkong (SIMD distance kernels), which doesn't compile
+with Ubuntu 22.04's GCC and binutils; see `Cargo.toml`.
 
 ## Requirements
 
