@@ -5,397 +5,119 @@
   </picture>
 </p>
 
-Local semantic code search for coding agents. One daemon per machine indexes any number of
-repositories and worktrees, keeps them fresh from file events, and answers "what in this codebase
-does X?" over MCP and HTTP in well under a second.
+Ask "where in this codebase do we do X?" and get the function, not a grep hit. lodestone indexes
+your repositories locally and gives Claude Code, Codex and you semantic code search in well under
+a second.
 
-- **Definitions, not chunks:** tree-sitter tags queries for Rust, Python, TypeScript/JavaScript,
-  Svelte, Go, Java, C, C++, C#, Ruby, PHP, Lua, Elixir, Swift, Clarity and Markdown; any other
-  grammar through tree-sitter's own config.
-- **Embeddings:** jina-embeddings-v2-base-code, on the GPU (Metal) on macOS and on the CPU
-  elsewhere. A reranker and BM25 fusion are available but off by default.
-- **Shared cache:** a content-addressed embedding cache, so another worktree of the same
-  repository costs only chunking and hashing.
-- **Agent-ready:** MCP tools, a skill and a session reminder for Claude Code and Codex, installed
-  with one command.
+## Features
 
-## Quick start
+- **Finds definitions:** results are functions, types and methods, parsed with tree-sitter.
+- **16 languages built in:** Rust, Python, TypeScript/JavaScript, Svelte, Go, Java, C, C++, C#,
+  Ruby, PHP, Lua, Elixir, Swift, Clarity and Markdown. Add more without code.
+- **Runs locally:** embeddings are computed on your machine (Metal GPU on macOS), so your code
+  stays there.
+- **Always fresh:** a background daemon re-indexes on file changes, for every repository and
+  worktree.
+- **Cheap worktrees:** a shared embedding cache means a new worktree re-embeds only what changed.
+- **Agent-ready:** one command sets up Claude Code and Codex: MCP tools, a skill and reminders.
 
-Install a prebuilt `lode` (macOS and Linux on x86_64 or arm64, Windows on x86_64):
+## Install
+
+macOS and Linux (x86_64, arm64):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/cylewitruk/lodestone/releases/latest/download/lodestone-cli-installer.sh | sh
 ```
 
+Windows (x86_64):
+
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/cylewitruk/lodestone/releases/latest/download/lodestone-cli-installer.ps1 | iex"
 ```
 
-Archives and checksums for each platform are on the
-[releases page](https://github.com/cylewitruk/lodestone/releases). Then:
+With Cargo ([crates.io](https://crates.io/crates/lodestone-cli); needs a C compiler and takes a few
+minutes):
 
 ```bash
-lode register ~/src/my-repo       # index a repository
-lode install                      # wire up Claude Code and/or Codex
+cargo install --locked lodestone-cli
+```
+
+Archives and checksums are on the [releases page](https://github.com/cylewitruk/lodestone/releases).
+
+**Upgrading:** install the new version the same way, then run `lode stop` so the next command
+starts the new daemon.
+
+## Quick start
+
+```bash
+lode register ~/src/my-repo        # index a repository
+lode install                       # set up Claude Code and/or Codex
 lode search "retry an HTTP call with exponential backoff"
 ```
 
-**From source** (stable Rust, edition 2024, and a C compiler; release builds use fat LTO, so
-this takes a few minutes):
-
-```bash
-cargo install --locked lodestone-cli                       # or --git https://github.com/cylewitruk/lodestone
-cargo install --locked lodestone-cli --features fastembed  # adds the ONNX Runtime backend
-```
-
-**Upgrading:** run `lode stop` after installing a new version, so the next command starts the new
-daemon.
-
-There is nothing to start: `lode` and agent sessions start the daemon on demand, and it exits
-when they are done (see [Daemon](#daemon)). Models download on first use into `~/.lodestone/models`.
+There is nothing to keep running: the daemon starts when needed and exits when idle. The model
+(about 300 MB) downloads on first use.
 
 ## Writing queries
 
-Describe what the code does in one sentence, and guess a few function or type names in the
-codebase's naming style. Wrong guesses still help.
-
-Agents pass these as separate fields of `semantic_code_search`:
-
-```json
-{
-  "query": "parse a duration such as \"5m\" or \"2h\" into seconds",
-  "example_identifiers": ["parse_duration", "duration_from_str", "to_secs"]
-}
-```
-
-`lode search` and `/v1/search` take one string: the sentence, then the names.
+Describe what the code does in one sentence, then guess a few names in the codebase's style.
+Wrong guesses still help.
 
 ```bash
-lode search 'parse a duration such as "5m" or "2h" into seconds. parse_duration duration_from_str'
+lode search 'parse a duration such as "5m" into seconds. parse_duration duration_from_str'
 ```
 
-To find code that does the same job as code you have, use `similar_code_search` instead (see
-[MCP tools](#mcp-tools)).
-
-## Agent integration
-
-```bash
-lode install                      # every harness whose CLI is on PATH, user scope
-lode install --client codex       # one harness (repeat --client for several)
-lode install --scope project      # files to commit in the current repository
-lode uninstall                    # same flags; --dry-run prints the steps only
-```
-
-| Part | User scope | Project scope |
-| ---- | ---- | ---- |
-| Skill | `~/.agents/skills/lodestone/`, linked from `~/.claude/skills/` | `.agents/skills/lodestone/`, linked from `.claude/skills/` |
-| MCP server (`lode mcp`) | `claude mcp add` / `~/.codex/config.toml` | `.mcp.json` / `.codex/config.toml` |
-| Reminder hooks | `~/.claude/settings.json` / `~/.codex/hooks.json` | `.claude/settings.json` / `.codex/hooks.json` |
-
-- **Skill location:** the shared `.agents/skills/`. Claude Code doesn't read a repository's
-  `.agents/skills`, so it gets a symlink from `.claude/skills/`.
-- **MCP server:** `lode mcp`, a stdio relay the harness starts per session. It starts the daemon
-  if needed and searches the session's repository when a call names none. Claude Code in the
-  desktop app starts it in the main checkout even for a worktree session, so for a Claude session
-  (`CLAUDE_CODE_SESSION_ID`) it uses the directory the session's hooks recorded in
-  `~/.lodestone/hook-sessions/`. A session in a folder that holds indexed repositories (e.g. a
-  directory of several checkouts) must pass `repo`; the error for a call without one lists them.
-- **New worktrees:** the first search in a worktree that has never been indexed, such as one an
-  agent just created, waits up to 30 s for its first index instead of answering from an empty
-  one.
-- **Approval:** the tools only read the index and are marked read-only (`readOnlyHint`). For
-  Codex, `lode install` sets `default_tools_approval_mode = "approve"` on the server, so its
-  approver doesn't stop each search. When embeddings are computed on this machine (any backend but
-  a `remote` endpoint on another host), the search tools' descriptions also say that nothing is
-  sent elsewhere, for approvers that judge whether a call exports code.
-- **Reminder:** `lode hook session-start` prints it only in a registered repository, or in a
-  folder that holds some (then naming them, to pass as `repo`), and starts the daemon early so the model loads while the session starts. Claude Code in the desktop app
-  doesn't run SessionStart hooks at startup, so Claude also gets `lode hook prompt-submit`, which
-  adds the reminder on a session's first prompt unless a SessionStart hook already ran. Both
-  keep a marker per session in `~/.lodestone/hook-sessions/` with the session's directory.
-  Claude's subagents see none of their session's reminders, so `lode hook subagent-start` adds
-  it to each one.
-- **Deferred tools:** Claude Code defers MCP tools behind ToolSearch. The search tools ask to load
-  upfront (`_meta["anthropic/alwaysLoad"]`, Claude Code v2.1.285 or later); where they are still
-  deferred, the reminder and the skill say to load them with ToolSearch (`+lodestone search`).
-- **First use:** Codex asks you to trust the hook once (`/hooks`). At project scope, Codex must
-  trust the project and Claude Code asks you to approve the `.mcp.json` server.
-- **Plugin:** `plugin/` bundles the same skill, server and hooks as a Claude Code plugin
-  (`claude --plugin-dir plugin`); its hooks need `lode` on PATH.
-
-**Measured effect** (Opus 5.5, details in [eval/situations/README.md](eval/situations/README.md)):
-
-- 28 tasks on stacks-core and LibreChat, 48 runs per arm: correct 27/48 with no help, 37/48 with
-  advice alone, 43/48 with the plugin, with 7% shorter runs.
-- On a private repository the model has never seen: half the tool calls to find the answer.
-
-### MCP tools
-
-| Tool | Input | Use |
-| ---- | ---- | ---- |
-| `semantic_code_search` | `query` (one sentence), `example_identifiers` (guessed names) | find code by what it does |
-| `similar_code_search` | `code` (a list: each function or type to check; diff `+` prefixes are stripped) | find code that does the same job, e.g. for every function a diff adds, in one call |
-| `status` | `repo` | index freshness |
-
-- **Optional inputs:** both searches take `repo`, `from_unit` (only code a given unit may depend
-  on, per the build graph), `language`, `paths` and `include_tests`.
-- **`paths`:** repo-relative globs, e.g. `["crates/foo", "!**/generated/**"]`. `*` stays within one
-  directory and `**` crosses them, a pattern also matches everything under a directory it names,
-  and a leading `!` excludes. The CLI takes `--path`, repeatable.
-- **Filters** apply inside the vector and BM25 searches, so a narrow scope still returns a full
-  set of results rather than what survived of the unfiltered top candidates.
-- **Results:** 24 per search, with no `top_k` (agents asked for too few). REST and the CLI keep
-  `top_k`, also 24 by default.
-- **Several definitions:** `similar_code_search` searches each separately and returns a section
-  per definition: 24 results for one, fewer each for several (at least 5). It leaves out each
-  passed definition's own match. A single string is still accepted.
-
-### Result format
-
-One line per item:
+Results, one per line:
 
 ```text
 stacks-common/src/util/retry.rs:25:12  lines 25-29  pub struct RetryReader<'a, R: Read>  — Wrap a Read so that we store a copy of what was read.
 ```
 
-| Part | Meaning |
+## With coding agents
+
+```bash
+lode install                       # every agent CLI on PATH, for your user
+lode install --scope project       # files to commit in this repository instead
+```
+
+Agents get three MCP tools:
+
+| Tool | Finds |
 | ---- | ---- |
-| `path:25:12` | the name's line and column, compiler style |
-| `lines 25-29` | the definition's inclusive line range, doc comments above it excluded |
-| rest | kind, name and signature, then the doc comment's first line |
+| `semantic_code_search` | code by what it does |
+| `similar_code_search` | code that does the same job as given code, e.g. before writing a helper |
+| `status` | how fresh the index is |
 
-All numbers are 1-based, and columns count characters. Language servers count from 0, so
-subtract 1 from both. JSON results carry `line`, `line_end`, `name_line` and `name_column`.
+In our evaluation (28 tasks, 48 runs per setup), Opus 5.5 got 43/48 right with lodestone and
+27/48 without. See [docs/agents.md](docs/agents.md) for what `lode install` changes,
+the tool inputs and `lode transcript-stats`.
 
-### Usage statistics
+## Commands
 
-How agents actually use lodestone, from their own transcripts:
-
-```bash
-lode transcript-stats --claude --codex      # ~/.claude/projects and ~/.codex/sessions
-lode transcript-stats --codex ~/elsewhere --repo stacks-core --since 2026-11-01 --queries
-```
-
-- **Sources:** name at least one; a flag without a directory uses the harness's default.
-- **Scope:** every transcript is read; each call counts towards the registered repository it
-  worked in, by its `repo` argument, file path or command directory, else the session's working
-  directory. A linked worktree counts towards its repository. Calls elsewhere are not kept;
-  registering another repository re-reads everything.
-- **Incremental:** `~/.lodestone/transcripts.sqlite` keeps, per transcript, the byte offset of
-  the last complete line read, its size and mtime, and a hash of its start. Unchanged files are
-  not opened, grown ones are read from the offset, rewritten ones from the start. What was
-  extracted is kept after the harnesses delete old transcripts.
-- **Stored:** call kinds and times, lodestone queries and result paths, and the paths of file
-  reads; no other content.
-- **Reported** per repository and harness: sessions that searched, whether the first search came
-  before the first grep, searches with a result later read, with no results, and failed (or
-  denied), latency, and grep / glob / read calls. Claude Code transcripts also say whether a
-  session had the search tools loaded or only deferred, so the report gives the share of
-  sessions with them loaded and how many of those searched (`-` for Codex, which does not
-  record its tools). A Claude shell command counts as a grep when `rg`, `grep` or `git grep`
-  searches files, not when it filters another command's output (`cargo test | grep FAILED`).
-  Codex shell commands count by Codex's own classification (`read`, `search`, `list_files`). `--since` counts calls from that date;
-  `--queries` lists every search; `--json` for machines.
-
-## Daemon
-
-One daemon per user keeps the model loaded and serves every repository. It runs in one of two
-modes:
-
-| | On demand (default) | Always on |
-| ---- | ---- | ---- |
-| Started by | `lode search`, `register` or `index`, `lode mcp`, or the session hook, like sccache | you: `lode serve` |
-| Watches | only repositories an agent session is in | every registered repository |
-| Stops | `idle_timeout_secs` (30 min) after the last session or command, once indexing is done, or `lode stop` | `lode stop`, Ctrl-C or SIGTERM |
-
-- **Sessions:** each `lode mcp` holds a lease on its session's repository, renewed every 30 s,
-  and on every repository its searches name with `repo` (a Codex session started elsewhere). A
-  CLI or REST search takes a shorter one.
-- **Catching up:** a repository is re-scanned when a session starts using it, so changes made
-  while it wasn't watched are picked up.
-- **Socket:** the daemon listens on `~/.lodestone/daemon.sock` (mode `0600`), so only you can
-  reach it. A lock file keeps it to one daemon: a second one, such as from two sessions starting
-  together, exits before loading the model.
-- **TCP:** off unless `port` is set (or `LODESTONE_PORT`, `lode serve --port N`), for HTTP MCP
-  clients and tools that can't use a socket. Windows always uses TCP, on 4600 by default.
-- **Log:** an auto-started daemon logs to `~/.lodestone/daemon.log`.
-
-## How it works
-
-- **Registering:** `lode register` canonicalizes the path, adds it to
-  `~/.lodestone/registry.json`, then starts watching and indexing it.
-- **One index per worktree:** results never mix worktrees. The embedding cache they share maps
-  text to vectors, so a second worktree costs little but sees only its own code.
-- **Which worktree:** a session or command uses the worktree it runs in (`repo` overrides it).
-  A linked git worktree (`git worktree add`, e.g. under `.claude/worktrees/` or `.worktrees/`) of
-  a registered repository is registered on first use, named `<repository>:<worktree>` (e.g.
-  `concurro:limits-cleanup`), and gets its own index; once its directory is deleted, the daemon
-  unregisters it and deletes its index. Any search starts indexing the worktree it names, however
-  it reaches the daemon. A checkout nobody registered gets
-  an error asking for `lode register`, never another checkout's results. Only outside any checkout
-  does a single registered repository serve by default.
-- **CLI:** `search`, `register` and `index` use the daemon, starting it if needed. `status` uses
-  a running daemon and otherwise reads the indexes in-process, so it never starts one. `--local`
-  runs everything in-process.
-- **Chunking changes:** a full scan re-chunks only the files whose chunking changed. A change to
-  a language's queries (including your own in `~/.lodestone/queries/`) or to `[languages]`
-  re-chunks that language's extensions; a chunking setting such as `chunk_tokens` re-chunks
-  everything. Unchanged text reuses its cached embeddings.
-- **Stale indexes:** searches never index. A stale index answers from what it has, and
-  `lode status` says why it is stale.
-- **Ignored files:** full scans and watched changes follow the same rules: `.gitignore` at every
-  level, `.git/info/exclude`, the global git excludes file (`core.excludesFile`, or
-  `~/.config/git/ignore`), `.ignore` and `.lodestoneignore`. Hidden files, symlinks and
-  directories containing `CACHEDIR.TAG`, such as Cargo's `target/`, are skipped.
-- **Linux:** large trees may need a higher `fs.inotify.max_user_watches`. If the watcher fails,
-  lodestone falls back to a 60 s rescan and reports it in `status`.
-
-## CLI
-
-| Command | Purpose |
+| Command | Does |
 | ---- | ---- |
-| `lode serve [--port N]` | run the daemon in the foreground, always on; `--port` adds TCP |
-| `lode stop` | stop the running daemon gracefully |
-| `lode mcp` | MCP server over stdio; starts the daemon on demand |
-| `lode register [path]` | add, watch and index a worktree (default: the current directory's checkout) |
-| `lode index [path] [--force]` | re-index the registered worktree containing `path` (default: the current directory; incremental unless `--force`) |
-| `lode search <query>` | search a registered worktree |
-| `lode status [--repo name\|path] [--json]` | index freshness of the named or current worktree; elsewhere, a summary of every registered repository |
-| `lode install` / `lode uninstall` | wire up Claude Code and Codex |
-| `lode transcript-stats --claude --codex` | how agents use lodestone, from their transcripts |
-| `lode models` | configured models and available backends |
-| `lode languages` | grammars and the extension map |
-| `lode bench <eval-dir>` | retrieval quality, index time and latency |
+| `lode register [path]` | add, watch and index a repository or worktree |
+| `lode search <query>` | search the current repository |
+| `lode status` | index freshness |
+| `lode index [--force]` | re-index the current repository |
+| `lode install` / `uninstall` | set up or remove the agent integration |
+| `lode stop` | stop the daemon |
+| `lode serve` | run the daemon in the foreground, always on |
+| `lode models` / `languages` | list models and grammars |
 
-## REST
+`lode <command> --help` for the details.
 
-Over the socket (`curl --unix-socket ~/.lodestone/daemon.sock http://localhost/v1/repos`), or on
-`127.0.0.1:<port>` when TCP is on. MCP over HTTP is at `/mcp`.
+## Documentation
 
-```text
-GET  /v1/search?q=&repo=&from_unit=&language=&path=&top_k=&include_tests=&with_body=&format=text|json
-POST /v1/search   {query, repo, from_unit, language, paths, top_k, include_tests, kinds, with_body}
-GET  /v1/status?repo=&format=text|json
-GET  /v1/status/all?format=text|json
-POST /v1/register {path}
-POST /v1/index    {repo, force}
-GET  /v1/repos
-```
-
-Used by `lode mcp`, the session hook and `lode stop`:
-
-```text
-POST   /v1/sessions        {id, cwd, ttl_secs}   lease the worktree containing cwd
-DELETE /v1/sessions/{id}                         release it
-POST   /v1/shutdown                              stop gracefully (`lode stop`)
-POST   /v1/tool            {name, arguments, session, cwd}   run an MCP tool
-```
-
-## Configuration
-
-`~/.lodestone/config.toml`. Every key is optional, and `LODESTONE_HOME` moves the data directory.
-
-```toml
-# socket = "/path/to/daemon.sock"  # default: <data dir>/daemon.sock
-port = 4600                 # also listen on 127.0.0.1:4600; off by default
-idle_timeout_secs = 1800    # on-demand daemon: exit this long after the last session; 0 = never
-model = "jina-code-v2"      # alias into [models]; see `lode models`
-backend = "candle-metal"    # candle-metal | candle-cpu | fastembed | remote
-batch_size = 64
-cache_max_gb = 4
-chunk_tokens = 200
-vector_precision = "f32"    # f32 | f16
-doc_vectors = false         # also embed each item's doc comment; used only with the reranker
-
-[languages]
-tree_sitter_config = "~/.config/tree-sitter/config.json"
-extensions = { "cljc" = "clojure" }
-index_untagged_as_text = ["md", "txt", "adoc", "rst"]  # indexed as plain text when no grammar claims them
-
-[rerank]
-enabled = false             # ~0.4 s per search on Metal, ~2.6 s on CPU; hurts well-phrased queries
-hf_repo = "Alibaba-NLP/gte-reranker-modernbert-base"
-candidates = 20             # 50 for weaker embedding models such as coderank
-max_tokens = 192
-
-[search]
-lexical_weight = 0.0        # BM25 fusion (reciprocal rank); off by default
-identifier_lexical_weight = 0.0
-```
-
-**Backends:**
-
-- **macOS:** the default build runs models on the GPU through candle and Metal (`candle-metal`).
-- **Elsewhere:** candle on the CPU (`candle-cpu`); there is no GPU backend for Linux or Windows.
-- **fastembed (ONNX Runtime):** opt-in (`--features fastembed`, about 20 MB more), CPU only;
-  `LODESTONE_FASTEMBED_EP=coreml` routes it through CoreML on macOS. Select it for the models it
-  ships (`lode models` lists them). A build without the feature refuses `backend = "fastembed"`.
-- **remote:** any OpenAI-compatible embeddings endpoint, set in `[remote]` (`url`, and
-  `api_key_env` naming the variable that holds the key).
-
-**Models:**
-
-- **Built in (`lode models`):** `jina-code-v2` (default), `qwen3-0.6b`, `harrier-0.6b`,
-  `coderank`, `gte-modernbert`, `granite-r2`, `granite-small-r2`, `ultrabert-150m`,
-  `embeddinggemma-2`, `nomic-text-v1.5`, `bge-small`, `minilm-l6`, and `jina-code-0.5b`
-  (non-commercial licence).
-- **Rerankers:** any Hugging Face cross-encoder repo in `[rerank] hf_repo` on candle, or a
-  fastembed reranker named in `[rerank] model` on fastembed. The
-  [decision log](docs/decision-log.md) compares the ones measured.
-- **Switching models** needs a full re-index (`lode index --force`). The cache keeps each model's
-  vectors apart.
-
-**Languages:**
-
-- **Built-in grammars** are Cargo features, all on by default: `lang-rust`, `lang-python`,
-  `lang-typescript`, `lang-svelte`, `lang-go`, `lang-java`, `lang-c`, `lang-cpp`, `lang-csharp`,
-  `lang-ruby`, `lang-php`, `lang-lua`, `lang-elixir`, `lang-swift`, `lang-markdown`,
-  `lang-clarity`. Clarity's grammar isn't on crates.io, so it is vendored as generated C in
-  `vendor/tree-sitter-clarity/`.
-- **`.h` headers** are C unless they use C++-only syntax (a class, template, namespace, access
-  specifier, `std::`, or a standard header such as `<string>`), then C++. Mapping `h` under
-  `[languages] extensions` turns this off.
-- **Svelte components:** each `<script>` block is indexed per definition with the TypeScript
-  grammar (`lang="ts"`) or the JavaScript one, the markup as text, and `<style>` not at all.
-  Items keep the component's line numbers and have language `svelte`.
-- **Adding one needs no code:** clone a grammar into one of tree-sitter's `parser-directories` and
-  its `queries/tags.scm` is used.
-- **Extra queries** (`tags.scm`, `tests.scm`) go in `~/.lodestone/queries/<language>/`.
-
-## Evaluation
-
-Fetch the example corpus:
-
-```bash
-git clone https://github.com/stacks-network/stacks-core eval/corpus && git -C eval/corpus checkout 95c6a45eed
-```
-
-Measure retrieval:
-
-```bash
-lode bench eval --hard q06,q07,q08,q18
-```
-
-- **Agent view (first line):** the share of questions whose answer is in the top 24 results.
-- **Ranking accuracy:** rank@1/5/10 and MRR.
-- **Comparing setups:** use `--model` and `--backend`; `--rerank`, `--reranker` or
-  `--rerank-candidates` turn on the reranker.
-- **Other repositories:** pass `--corpus` and `--questions`, with questions shaped
-  `[{id, kind, question, answers: [{path, symbol}]}]`.
-
-Agent evaluations (headless Claude Code) live in [eval/harness/](eval/harness/README-lode.md)
-and [eval/situations/](eval/situations/README.md). Question sets and corpora are described in
-[eval/README.md](eval/README.md). Measured results and decisions are in
-[docs/decision-log.md](docs/decision-log.md); user-facing changes per release in
-[CHANGELOG.md](CHANGELOG.md).
-
-## Releasing
-
-[release-plz](https://release-plz.dev) keeps a release PR open with the next version and its
-[CHANGELOG.md](CHANGELOG.md) entry. Merging it publishes to crates.io, tags `vX.Y.Z` and starts
-[dist](https://github.com/axodotdev/cargo-dist), which builds the binaries and installers and
-creates the GitHub Release. Setup, the first release and package-manager plans are in
-[docs/releasing.md](docs/releasing.md).
+| Page | Covers |
+| ---- | ---- |
+| [Agents](docs/agents.md) | `lode install`, MCP tools, result format, usage statistics |
+| [Configuration](docs/configuration.md) | `config.toml`, models, backends, languages |
+| [Daemon](docs/daemon.md) | lifecycle, worktrees, ignored files, REST API |
+| [Evaluation](docs/evaluation.md) | measuring retrieval and agent quality |
+| [Releasing](docs/releasing.md) | how versions are published |
+| [Changelog](CHANGELOG.md) | changes per release |
+| [Decision log](docs/decision-log.md) | measurements and design decisions |
 
 ## License
 
