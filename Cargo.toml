@@ -69,7 +69,8 @@ tree-sitter-swift = { version = "0.7.4", optional = true }
 tree-sitter-tags = "0.27.2"
 tree-sitter-typescript = { version = "0.23.2", optional = true }
 ureq = { version = "3.5.1", features = ["json"] }
-usearch = "2.26.6"
+# SIMD distance kernels (numkong) are enabled per target below.
+usearch = { version = "2.26.6", default-features = false }
 tree-sitter-svelte-ng = { version = "1.0.2", optional = true }
 
 
@@ -79,6 +80,11 @@ candle-nn = { version = "0.11.1", optional = true, features = ["metal"] }
 candle-transformers = { version = "0.11.1", optional = true, features = ["metal"] }
 # Same prerelease fastembed resolves to; only adds the CoreML execution provider.
 ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["coreml"] }
+
+# numkong doesn't compile with the GCC/binutils of Ubuntu 22.04 on arm64; usearch falls back to
+# auto-vectorized distance loops there.
+[target.'cfg(not(all(target_os = "linux", target_arch = "aarch64")))'.dependencies]
+usearch = { version = "2.26.6", features = ["numkong"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
