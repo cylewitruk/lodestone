@@ -46,7 +46,7 @@ fn search_properties(first: Value) -> Value {
     props.insert("repo".into(), repo_property());
     props.extend(object(json!({
         "from_unit": { "type": "string", "description": "a package, crate or module name from the repo's build graph: searches that unit and everything it may depend on. For only a unit's own files, use `paths`." },
-        "language": { "type": "string", "description": "one language, e.g. rust, python, javascript, typescript, tsx, go, svelte or markdown; `text` for plain prose files. Case-insensitive; a name no item has returns nothing." },
+        "language": { "type": "string", "description": "one language, e.g. rust, python, javascript, typescript, tsx, go, java, c, cpp, csharp, ruby, php, lua, elixir, swift, svelte or markdown; `text` for plain prose files. Case-insensitive; a name no item has returns nothing." },
         "paths": { "type": "array", "items": { "type": "string" }, "description": "repo-relative globs: `*` stays within a directory and `**` crosses them, a directory matches everything under it, and a leading `!` excludes, e.g. [\"crates/foo\", \"!**/generated/**\"]" },
         "include_tests": { "type": "boolean", "default": false, "description": "include test functions and test modules, ranked below other code" }
     })));

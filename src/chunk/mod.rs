@@ -17,7 +17,7 @@ use tree_sitter::{Parser, QueryCursor, StreamingIterator};
 use tree_sitter_tags::TagsContext;
 
 use component::Component;
-pub use languages::{Language, LanguageInfo, LanguageRegistry};
+pub use languages::{Language, LanguageInfo, LanguageRegistry, extension_of};
 
 /// Kind assigned to prose chunks.
 pub const TEXT_KIND: &str = "text";
@@ -114,14 +114,12 @@ impl Chunker {
         self
     }
 
-    /// Changes whenever chunk output for unchanged files could change.
+    /// Changes whenever chunk output for unchanged files of every language could change. What
+    /// changes one extension's output is in [`LanguageRegistry::extension_fingerprints`].
     pub fn fingerprint(&self) -> String {
         let key = format!(
-            "{ITEM_FORMAT}|{}|{}|{}|{}",
-            self.registry.fingerprint(),
-            self.max_chars,
-            self.module_chunks,
-            self.summary_only
+            "{ITEM_FORMAT}|{}|{}|{}",
+            self.max_chars, self.module_chunks, self.summary_only
         );
         blake3::hash(key.as_bytes()).to_hex()[..16].to_string()
     }
@@ -136,7 +134,7 @@ impl Chunker {
         if let Some(c) = self.registry.component_for(path) {
             return self.chunk_component(rel_path, c, source);
         }
-        if let Some(lang) = self.registry.for_path(path) {
+        if let Some(lang) = self.registry.for_file(path, source) {
             let items = self.chunk_tagged(rel_path, &lang.name, lang, source, source);
             if !items.is_empty() {
                 return items;
@@ -155,14 +153,9 @@ impl Chunker {
         let Some(parts) = PARSER.with(|p| c.split(&mut p.borrow_mut(), source)) else {
             return self.chunk_text(rel_path, c.name, source);
         };
-        let guest = if parts.typescript {
-            "typescript"
-        } else {
-            "javascript"
-        };
         let mut items = self
             .registry
-            .by_name(guest)
+            .by_name(parts.script_language())
             .map(|lang| self.chunk_tagged(rel_path, c.name, lang, &parts.script, source))
             .unwrap_or_default();
         if items.is_empty() {
@@ -480,46 +473,16 @@ fn slice(text: &str, r: Range<usize>) -> &str {
 
 /// One-line signature: the definition's text up to its body opener — `{` or `;` at bracket
 /// depth 0, or a line ending in `:` — with whitespace collapsed. Falls back to the first line
-/// when a blank line comes first.
+/// when a blank line comes first, or when the definition closes with an `end` line (Ruby, Lua),
+/// whose header has no opener.
 pub fn signature(def_text: &str) -> String {
-    let mut depth: i32 = 0;
-    let mut end = def_text.len();
-    let bytes = def_text.as_bytes();
-    let mut i = 0;
-    let mut prev = b' ';
-    while i < bytes.len() && i < 600 {
-        let b = bytes[i];
-        match b {
-            b'(' | b'[' => depth += 1,
-            b')' | b']' => depth -= 1,
-            b'<' => depth += 1,
-            b'>' if prev != b'-' && prev != b'=' => depth -= 1,
-            b'{' | b';' if depth <= 0 => {
-                end = i;
-                break;
-            }
-            b':' if depth <= 0 => {
-                let rest = &def_text[i + 1..];
-                if rest.starts_with('\n') || rest.starts_with("\r\n") || rest.is_empty() {
-                    end = i;
-                    break;
-                }
-            }
-            b'\n' => {
-                let rest = &def_text[i + 1..];
-                if rest.trim_start_matches([' ', '\t', '\r']).starts_with('\n') {
-                    end = def_text.find('\n').unwrap_or(def_text.len());
-                    break;
-                }
-            }
-            _ => {}
-        }
-        prev = b;
-        i += 1;
-    }
-    if i >= 600 {
-        end = def_text.find('\n').unwrap_or(def_text.len());
-    }
+    let first_line = def_text.find('\n').unwrap_or(def_text.len());
+    let closes_with_end = def_text.trim_end().rsplit('\n').next().map(str::trim) == Some("end");
+    let end = if closes_with_end {
+        first_line
+    } else {
+        header_end(def_text).unwrap_or(first_line)
+    };
     let mut s = slice(def_text, 0..end)
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -528,6 +491,38 @@ pub fn signature(def_text: &str) -> String {
         s = s.chars().take(240).collect();
     }
     s
+}
+
+/// Byte offset of the body opener [`signature`] looks for, the whole text when it has none, or
+/// `None` to fall back to the first line.
+fn header_end(def_text: &str) -> Option<usize> {
+    let mut depth: i32 = 0;
+    let bytes = def_text.as_bytes();
+    let mut prev = b' ';
+    for (i, &b) in bytes.iter().enumerate().take(600) {
+        match b {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b'<' => depth += 1,
+            b'>' if prev != b'-' && prev != b'=' => depth -= 1,
+            b'{' | b';' if depth <= 0 => return Some(i),
+            b':' if depth <= 0 => {
+                let rest = &def_text[i + 1..];
+                if rest.starts_with('\n') || rest.starts_with("\r\n") || rest.is_empty() {
+                    return Some(i);
+                }
+            }
+            b'\n' => {
+                let rest = &def_text[i + 1..];
+                if rest.trim_start_matches([' ', '\t', '\r']).starts_with('\n') {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+        prev = b;
+    }
+    (bytes.len() < 600).then_some(def_text.len())
 }
 
 /// Truncates to at most `max` bytes on a char boundary.
@@ -673,6 +668,468 @@ async fn async_test() {}
         assert_eq!(bar.kind, "method");
         assert_eq!(bar.doc, "Do bar.");
         assert!(items.iter().find(|i| i.name == "test_x").unwrap().is_test);
+    }
+
+    /// The item named `name`, or a panic listing all items.
+    fn item<'a>(items: &'a [Item], name: &str) -> &'a Item {
+        items
+            .iter()
+            .find(|i| i.name == name)
+            .unwrap_or_else(|| panic!("{name} missing: {items:#?}"))
+    }
+
+    #[cfg(feature = "lang-java")]
+    #[test]
+    fn java_definitions_docs_and_tests() {
+        let src = br#"/** License header. */
+
+/**
+ * A widget.
+ * Second line.
+ */
+@Deprecated
+public class Widget extends Base {
+    /** Make one. */
+    public Widget() {}
+
+    // Runs it.
+    @Override
+    public void run() {}
+
+    enum Mode { A, B }
+
+    record Point(int x, int y) {}
+
+    @interface Marker {}
+}
+
+class WidgetTest {
+    @ParameterizedTest
+    @ValueSource(ints = {1})
+    void param(int x) {}
+}
+"#;
+        let items = chunker().chunk("src/Widget.java", src);
+        let w = item(&items, "Widget");
+        assert_eq!(
+            (w.kind.as_str(), w.doc.as_str()),
+            ("class", "A widget.\nSecond line.")
+        );
+        assert_eq!(w.signature, "@Deprecated public class Widget extends Base");
+        let ctor = items
+            .iter()
+            .find(|i| i.qualified_name == "Widget::Widget")
+            .unwrap();
+        assert_eq!(
+            (ctor.kind.as_str(), ctor.doc.as_str()),
+            ("method", "Make one.")
+        );
+        assert_eq!(item(&items, "run").doc, "Runs it.");
+        assert_eq!(item(&items, "Mode").kind, "class");
+        assert_eq!(item(&items, "Point").kind, "class");
+        assert_eq!(item(&items, "Marker").kind, "interface");
+        assert!(!w.is_test);
+        assert!(item(&items, "WidgetTest").is_test);
+        assert!(item(&items, "param").is_test);
+    }
+
+    #[cfg(feature = "lang-c")]
+    #[test]
+    fn c_definitions_span_bodies_with_docs() {
+        let src = br#"/* Copyright header. */
+
+#ifndef POINT_H
+#define POINT_H
+#define BUF_SIZE 64
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+
+/** A point. */
+struct point {
+    int x;
+};
+
+typedef enum { RED, GREEN } color_t;
+
+/* Add two numbers. */
+int add(int a, int b);
+
+/**
+ * Add two numbers.
+ */
+int add(int a, int b) {
+    return a + b;
+}
+
+static char **names(void) { return 0; }
+
+void test_add(void) {}
+#endif
+"#;
+        let items = chunker().chunk("src/point.c", src);
+        let p = item(&items, "point");
+        assert_eq!((p.kind.as_str(), p.doc.as_str()), ("class", "A point."));
+        assert_eq!(item(&items, "color_t").kind, "type");
+        assert_eq!(item(&items, "MAX").kind, "macro");
+        assert_eq!(item(&items, "BUF_SIZE").kind, "constant");
+        assert!(items.iter().all(|i| i.name != "POINT_H"), "{items:#?}");
+        let adds: Vec<_> = items.iter().filter(|i| i.name == "add").collect();
+        assert_eq!(adds.len(), 2, "prototype and definition");
+        let def = adds.iter().find(|i| i.line_end > i.line_start).unwrap();
+        assert_eq!(def.doc, "Add two numbers.");
+        assert_eq!(def.signature, "int add(int a, int b)");
+        assert!(def.text.contains("return a + b;"));
+        assert_eq!(item(&items, "names").signature, "static char **names(void)");
+        assert!(item(&items, "test_add").is_test);
+        assert!(!def.is_test);
+    }
+
+    #[cfg(feature = "lang-cpp")]
+    #[test]
+    fn cpp_members_templates_and_namespaces() {
+        let src = br#"/// Geometry helpers.
+namespace geo {
+
+/// A shape.
+class Shape {
+public:
+    /// Area.
+    virtual double area() const = 0;
+    int sides() const { return n_; }
+    bool operator==(const Shape& o) const;
+    ~Shape();
+private:
+    int n_;
+};
+
+/// Max of two.
+template <typename T>
+T max_of(T a, T b) { return a > b ? a : b; }
+
+// Out of line.
+double Shape::area() const { return 0; }
+
+}  // namespace geo
+
+TEST(ShapeTest, Sides) { EXPECT_EQ(1, 1); }
+"#;
+        let items = chunker().chunk("src/shape.cpp", src);
+        let ns = item(&items, "geo");
+        assert_eq!(
+            (ns.kind.as_str(), ns.doc.as_str()),
+            ("module", "Geometry helpers.")
+        );
+        let shape = item(&items, "Shape");
+        assert_eq!(
+            (shape.kind.as_str(), shape.doc.as_str()),
+            ("class", "A shape.")
+        );
+        let area = items
+            .iter()
+            .find(|i| i.qualified_name == "geo::Shape::area")
+            .unwrap();
+        assert_eq!((area.kind.as_str(), area.doc.as_str()), ("method", "Area."));
+        for m in ["sides", "operator==", "~Shape"] {
+            assert_eq!(item(&items, m).qualified_name, format!("geo::Shape::{m}"));
+        }
+        let out_of_line = items
+            .iter()
+            .find(|i| i.qualified_name == "geo::area")
+            .unwrap();
+        assert_eq!(out_of_line.kind, "method");
+        assert_eq!(out_of_line.doc, "Out of line.");
+        let max = item(&items, "max_of");
+        assert_eq!(
+            (max.kind.as_str(), max.doc.as_str()),
+            ("function", "Max of two.")
+        );
+        assert_eq!(max.signature, "template <typename T> T max_of(T a, T b)");
+        assert!(item(&items, "TEST").is_test);
+        assert!(!max.is_test);
+    }
+
+    #[cfg(all(feature = "lang-c", feature = "lang-cpp"))]
+    #[test]
+    fn headers_are_c_unless_they_use_cpp_syntax() {
+        let c = b"/* Ring buffer. */\n#include <stddef.h>\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n/* Push a value; `class` in a comment is not C++. */\nint ring_push(struct ring *new, int v);\n\n#ifdef __cplusplus\n}\n#endif\n";
+        let class = b"#pragma once\n\nclass Shape {\npublic:\n    double area() const;\n};\n";
+        let std_only = b"#include <string>\n\nstd::string greet(const std::string& who);\n";
+        let chunker = chunker();
+        let languages = |src: &[u8]| -> Vec<String> {
+            chunker
+                .chunk("include/x.h", src)
+                .into_iter()
+                .map(|i| i.language)
+                .collect()
+        };
+        assert!(languages(c).iter().all(|l| l == "c"), "{:?}", languages(c));
+        assert_eq!(
+            item(&chunker.chunk("include/ring.h", c), "ring_push").signature,
+            "int ring_push(struct ring *new, int v)"
+        );
+        assert!(languages(class).iter().all(|l| l == "cpp"));
+        let shape = chunker.chunk("include/shape.h", class);
+        assert_eq!(item(&shape, "area").qualified_name, "Shape::area");
+        assert!(languages(std_only).iter().all(|l| l == "cpp"));
+        assert_eq!(
+            item(&chunker.chunk("include/greet.h", std_only), "greet").signature,
+            "std::string greet(const std::string& who)"
+        );
+    }
+
+    #[cfg(all(feature = "lang-c", feature = "lang-cpp"))]
+    #[test]
+    fn mapped_headers_are_not_sniffed() {
+        let mut cfg = LanguagesConfig {
+            tree_sitter_config: None,
+            ..LanguagesConfig::default()
+        };
+        cfg.extensions.insert("H".into(), "c".into());
+        let reg = LanguageRegistry::load(&cfg, Path::new("/nonexistent"));
+        let class = b"class Shape {};\n";
+        assert_eq!(reg.for_file(Path::new("x.h"), class).unwrap().name, "c");
+        let sniffing = chunker().registry().extension_fingerprints();
+        assert_ne!(reg.extension_fingerprints()["h"], sniffing["h"]);
+    }
+
+    #[cfg(feature = "lang-php")]
+    #[test]
+    fn php_definitions_docs_and_tests() {
+        let src = br#"<?php
+/**
+ * A widget.
+ */
+class Widget
+{
+    const MAX = 10;
+
+    /** Make one. */
+    public function __construct(int $n) {}
+}
+
+/** Mode values. */
+enum Mode: string { case A = 'a'; }
+
+class WidgetTest extends TestCase
+{
+    /** @test */
+    public function it_runs(): void {}
+}
+"#;
+        let items = chunker().chunk("src/Widget.php", src);
+        let w = item(&items, "Widget");
+        assert_eq!((w.kind.as_str(), w.doc.as_str()), ("class", "A widget."));
+        let ctor = item(&items, "__construct");
+        assert_eq!(
+            (
+                ctor.kind.as_str(),
+                ctor.doc.as_str(),
+                ctor.qualified_name.as_str()
+            ),
+            ("method", "Make one.", "Widget::__construct")
+        );
+        assert_eq!(item(&items, "MAX").kind, "constant");
+        assert_eq!(item(&items, "Mode").doc, "Mode values.");
+        assert!(item(&items, "it_runs").is_test);
+        assert!(!w.is_test);
+    }
+
+    #[cfg(feature = "lang-lua")]
+    #[test]
+    fn lua_definitions_and_docs() {
+        let src = b"--- Push a value.\n-- @param v the value\nfunction M.push(r, v)\n  r.head = r.head + 1\nend\n\n-- Size of the ring.\nfunction M:size()\n  return 0\nend\n\nfunction TestRing:test_push() end\n";
+        let items = chunker().chunk("lua/ring.lua", src);
+        let push = item(&items, "push");
+        assert_eq!(push.doc, "Push a value.\n@param v the value");
+        assert_eq!(push.signature, "function M.push(r, v)");
+        let size = item(&items, "size");
+        assert_eq!(
+            (size.kind.as_str(), size.doc.as_str()),
+            ("method", "Size of the ring.")
+        );
+        assert!(item(&items, "test_push").is_test);
+        assert!(!push.is_test);
+    }
+
+    #[cfg(feature = "lang-elixir")]
+    #[test]
+    fn elixir_definitions_docs_and_tests() {
+        let src = br#"defmodule MyApp.Widget do
+  @moduledoc """
+  Widgets.
+  """
+
+  @doc """
+  Runs it.
+  """
+  @spec run(integer) :: integer
+  def run(x) when is_integer(x) do
+    x
+  end
+
+  defp helper(a), do: a
+end
+
+defimpl MyApp.Size, for: Map do
+  def size(m), do: map_size(m)
+end
+
+defmodule MyApp.WidgetTest do
+  use ExUnit.Case
+  def setup_thing, do: :ok
+end
+"#;
+        let items = chunker().chunk("lib/widget.ex", src);
+        let modules: Vec<_> = items.iter().filter(|i| i.name == "MyApp.Widget").collect();
+        assert_eq!(modules.len(), 1, "{items:#?}");
+        assert_eq!(
+            (modules[0].kind.as_str(), modules[0].doc.as_str()),
+            ("module", "Widgets.")
+        );
+        let run = item(&items, "run");
+        assert_eq!(run.doc, "Runs it.");
+        assert_eq!(run.qualified_name, "MyApp.Widget::run");
+        assert_eq!(run.signature, "def run(x) when is_integer(x) do");
+        assert_eq!(item(&items, "helper").kind, "function");
+        assert_eq!(item(&items, "MyApp.Size").kind, "impl");
+        assert!(item(&items, "setup_thing").is_test);
+        assert!(!run.is_test);
+    }
+
+    #[cfg(feature = "lang-swift")]
+    #[test]
+    fn swift_definitions_docs_and_tests() {
+        let src = br#"/// A widget.
+public class Widget {
+    /// The count.
+    var count = 0
+
+    /// Make one.
+    init(n: Int) {}
+
+    func run() -> Int {
+        let local = 1
+        return local
+    }
+}
+
+extension Widget {
+    func extra() {}
+}
+
+/// Shapes.
+protocol Shape {
+    func area() -> Double
+}
+
+/// Add two numbers.
+func add(_ a: Int, _ b: Int) -> Int { a + b }
+
+@Test func addsNumbers() {}
+"#;
+        let items = chunker().chunk("Sources/Widget.swift", src);
+        let w = items
+            .iter()
+            .find(|i| i.name == "Widget" && i.kind == "class")
+            .unwrap();
+        assert_eq!(w.doc, "A widget.");
+        let count = item(&items, "count");
+        assert_eq!(
+            (count.kind.as_str(), count.doc.as_str()),
+            ("property", "The count.")
+        );
+        assert!(items.iter().all(|i| i.name != "local"), "{items:#?}");
+        let init = item(&items, "init");
+        assert_eq!(
+            (init.kind.as_str(), init.doc.as_str()),
+            ("method", "Make one.")
+        );
+        assert_eq!(item(&items, "run").qualified_name, "Widget::run");
+        assert!(items.iter().any(|i| i.name == "Widget" && i.kind == "impl"));
+        assert_eq!(item(&items, "area").qualified_name, "Shape::area");
+        assert_eq!(item(&items, "Shape").kind, "interface");
+        let add = item(&items, "add");
+        assert_eq!(
+            (add.kind.as_str(), add.doc.as_str()),
+            ("function", "Add two numbers.")
+        );
+        assert!(item(&items, "addsNumbers").is_test);
+        assert!(!add.is_test);
+    }
+
+    #[cfg(feature = "lang-csharp")]
+    #[test]
+    fn csharp_definitions_docs_and_tests() {
+        let src = br#"namespace Acme.Widgets
+{
+    /// <summary>
+    /// A widget.
+    /// </summary>
+    [Serializable]
+    public class Widget
+    {
+        /// <summary>The count.</summary>
+        public int Count { get; set; }
+
+        public void Run() {}
+    }
+
+    public enum Mode { A, B }
+
+    public interface IRunnable { void Run(); }
+
+    public class Plain
+    {
+        [Theory]
+        [InlineData(1)]
+        public void Param(int x) {}
+
+        public void Helper() {}
+    }
+}
+"#;
+        let items = chunker().chunk("src/Widget.cs", src);
+        assert_eq!(item(&items, "Acme.Widgets").kind, "module");
+        let w = item(&items, "Widget");
+        assert_eq!((w.kind.as_str(), w.doc.as_str()), ("class", "A widget."));
+        assert_eq!(w.qualified_name, "Acme.Widgets::Widget");
+        let count = item(&items, "Count");
+        assert_eq!(
+            (count.kind.as_str(), count.doc.as_str()),
+            ("property", "The count.")
+        );
+        assert_eq!(item(&items, "Mode").kind, "type");
+        assert_eq!(item(&items, "IRunnable").kind, "interface");
+        assert!(item(&items, "Param").is_test);
+        assert!(!item(&items, "Helper").is_test);
+    }
+
+    #[cfg(feature = "lang-ruby")]
+    #[test]
+    fn ruby_definitions_docs_and_tests() {
+        let src = br#"# A widget.
+class Widget < Base
+  # Make one.
+  def initialize(n)
+    @n = n
+  end
+
+  def self.build; end
+end
+
+class WidgetTest < Minitest::Test
+  def test_runs
+  end
+end
+"#;
+        let items = chunker().chunk("lib/widget.rb", src);
+        let w = item(&items, "Widget");
+        assert_eq!((w.kind.as_str(), w.doc.as_str()), ("class", "A widget."));
+        let init = item(&items, "initialize");
+        assert_eq!(init.doc, "Make one.");
+        assert_eq!(init.signature, "def initialize(n)");
+        assert_eq!(item(&items, "build").qualified_name, "Widget::build");
+        assert!(item(&items, "test_runs").is_test);
+        assert!(!w.is_test);
     }
 
     #[cfg(feature = "lang-clarity")]
@@ -837,6 +1294,11 @@ async fn async_test() {}
         assert_eq!(signature("def f(a, b):\n    return a"), "def f(a, b)");
         assert_eq!(signature("# Heading\n\nbody text"), "# Heading");
         assert_eq!(signature("const X: u64 = 5;"), "const X: u64 = 5");
+        assert_eq!(
+            signature("def initialize(n)\n  @n = n\nend"),
+            "def initialize(n)"
+        );
+        assert_eq!(signature("def self.build; end"), "def self.build");
     }
 
     #[cfg(feature = "lang-svelte")]

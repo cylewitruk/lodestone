@@ -10,9 +10,10 @@ repositories and worktrees, keeps them fresh from file events, and answers "what
 does X?" over MCP and HTTP in well under a second.
 
 - **Definitions, not chunks:** tree-sitter tags queries for Rust, Python, TypeScript/JavaScript,
-  Svelte, Go, Clarity and Markdown; any other grammar through tree-sitter's own config.
-- **Embeddings:** jina-embeddings-v2-base-code on GPU (Metal) or CPU. A reranker and BM25 fusion
-  are available but off by default.
+  Svelte, Go, Java, C, C++, C#, Ruby, PHP, Lua, Elixir, Swift, Clarity and Markdown; any other
+  grammar through tree-sitter's own config.
+- **Embeddings:** jina-embeddings-v2-base-code, on the GPU (Metal) on macOS and on the CPU
+  elsewhere. A reranker and BM25 fusion are available but off by default.
 - **Shared cache:** a content-addressed embedding cache, so another worktree of the same
   repository costs only chunking and hashing.
 - **Agent-ready:** MCP tools, a skill and a session reminder for Claude Code and Codex, installed
@@ -29,6 +30,9 @@ lode register ~/src/my-repo       # index a repository
 lode install                      # wire up Claude Code and/or Codex
 lode search "retry an HTTP call with exponential backoff"
 ```
+
+Release builds use fat LTO, so the install takes a few minutes. Add `--features fastembed` for the
+ONNX Runtime backend (see [Configuration](#configuration)).
 
 There is nothing to start: `lode` and agent sessions start the daemon on demand, and it exits
 when they are done (see [Daemon](#daemon)). Models download on first use into `~/.lodestone/models`.
@@ -216,6 +220,10 @@ modes:
 - **CLI:** `search`, `register` and `index` use the daemon, starting it if needed. `status` uses
   a running daemon and otherwise reads the indexes in-process, so it never starts one. `--local`
   runs everything in-process.
+- **Chunking changes:** a full scan re-chunks only the files whose chunking changed. A change to
+  a language's queries (including your own in `~/.lodestone/queries/`) or to `[languages]`
+  re-chunks that language's extensions; a chunking setting such as `chunk_tokens` re-chunks
+  everything. Unchanged text reuses its cached embeddings.
 - **Stale indexes:** searches never index. A stale index answers from what it has, and
   `lode status` says why it is stale.
 - **Ignored files:** full scans and watched changes follow the same rules: `.gitignore` at every
@@ -263,7 +271,7 @@ Used by `lode mcp`, the session hook and `lode stop`:
 POST   /v1/sessions        {id, cwd, ttl_secs}   lease the worktree containing cwd
 DELETE /v1/sessions/{id}                         release it
 POST   /v1/shutdown                              stop gracefully (`lode stop`)
-POST   /v1/tool            {name, arguments, session}   run an MCP tool
+POST   /v1/tool            {name, arguments, session, cwd}   run an MCP tool
 ```
 
 ## Configuration
@@ -285,7 +293,7 @@ doc_vectors = false         # also embed each item's doc comment; used only with
 [languages]
 tree_sitter_config = "~/.config/tree-sitter/config.json"
 extensions = { "cljc" = "clojure" }
-index_untagged_as_text = ["md", "txt", "adoc", "rst"]
+index_untagged_as_text = ["md", "txt", "adoc", "rst"]  # indexed as plain text when no grammar claims them
 
 [rerank]
 enabled = false             # ~0.4 s per search on Metal, ~2.6 s on CPU; hurts well-phrased queries
@@ -300,9 +308,11 @@ identifier_lexical_weight = 0.0
 
 **Backends:**
 
-- **macOS:** the default build runs models on the GPU through candle and Metal.
-- **Elsewhere:** candle on the CPU.
-- **fastembed (ONNX Runtime):** built by default; select it for the models it ships.
+- **macOS:** the default build runs models on the GPU through candle and Metal (`candle-metal`).
+- **Elsewhere:** candle on the CPU (`candle-cpu`); there is no GPU backend for Linux or Windows.
+- **fastembed (ONNX Runtime):** opt-in (`--features fastembed`, about 20 MB more), CPU only;
+  `LODESTONE_FASTEMBED_EP=coreml` routes it through CoreML on macOS. Select it for the models it
+  ships (`lode models` lists them). A build without the feature refuses `backend = "fastembed"`.
 - **remote:** any OpenAI-compatible embeddings endpoint, set in `[remote]` (`url`, and
   `api_key_env` naming the variable that holds the key).
 
@@ -312,7 +322,8 @@ identifier_lexical_weight = 0.0
   `coderank`, `gte-modernbert`, `granite-r2`, `granite-small-r2`, `ultrabert-150m`,
   `embeddinggemma-2`, `nomic-text-v1.5`, `bge-small`, `minilm-l6`, and `jina-code-0.5b`
   (non-commercial licence).
-- **Rerankers:** any Hugging Face repo in `[rerank] hf_repo`. The CHANGELOG compares the ones
+- **Rerankers:** any Hugging Face cross-encoder repo in `[rerank] hf_repo` on candle, or a
+  fastembed reranker named in `[rerank] model` on fastembed. The CHANGELOG compares the ones
   measured.
 - **Switching models** needs a full re-index (`lode index --force`). The cache keeps each model's
   vectors apart.
@@ -320,8 +331,13 @@ identifier_lexical_weight = 0.0
 **Languages:**
 
 - **Built-in grammars** are Cargo features, all on by default: `lang-rust`, `lang-python`,
-  `lang-typescript`, `lang-svelte`, `lang-go`, `lang-markdown`, `lang-clarity`. Clarity's grammar
-  isn't on crates.io, so it is vendored as generated C in `vendor/tree-sitter-clarity/`.
+  `lang-typescript`, `lang-svelte`, `lang-go`, `lang-java`, `lang-c`, `lang-cpp`, `lang-csharp`,
+  `lang-ruby`, `lang-php`, `lang-lua`, `lang-elixir`, `lang-swift`, `lang-markdown`,
+  `lang-clarity`. Clarity's grammar isn't on crates.io, so it is vendored as generated C in
+  `vendor/tree-sitter-clarity/`.
+- **`.h` headers** are C unless they use C++-only syntax (a class, template, namespace, access
+  specifier, `std::`, or a standard header such as `<string>`), then C++. Mapping `h` under
+  `[languages] extensions` turns this off.
 - **Svelte components:** each `<script>` block is indexed per definition with the TypeScript
   grammar (`lang="ts"`) or the JavaScript one, the markup as text, and `<style>` not at all.
   Items keep the component's line numbers and have language `svelte`.

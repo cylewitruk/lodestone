@@ -581,6 +581,45 @@ fn chunking_settings_change_rechunks() {
     assert_eq!(again.files_changed, 0);
 }
 
+/// A change to one extension's chunking (a user query overlay, a remapped extension) re-chunks
+/// only that extension's files on the next full index.
+#[test]
+fn language_change_rechunks_only_its_files() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    drop((e, w));
+
+    write(&data, "queries/python/tags.scm", "; user overlay\n");
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    let r = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert_eq!(r.files_changed, 1, "only tools/gen.py: {r:?}");
+    drop((e, w));
+
+    let mut config = Config {
+        data_dir: Some(data.clone()),
+        ..Config::default()
+    };
+    config.rerank.enabled = false;
+    config
+        .languages
+        .extensions
+        .insert("txt".into(), "python".into());
+    let e = Engine::with_embedder(config, Arc::new(hash_embedder())).unwrap();
+    let w = e.register(&root).unwrap();
+    let r = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert_eq!(r.files_changed, 1, "only notes.txt: {r:?}");
+    assert!(
+        w.snapshot()
+            .items
+            .values()
+            .any(|i| i.item.rel_path == "notes.txt" && i.item.language == "python")
+    );
+}
+
 fn hash_embedder() -> HashEmbedder {
     HashEmbedder {
         dim: 64,

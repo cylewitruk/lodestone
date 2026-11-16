@@ -1,6 +1,6 @@
 //! A grammar that is not compiled in, loaded through tree-sitter's own config, tags files with
 //! no lodestone code changes. Set `LODESTONE_TEST_PARSER_DIR` to a directory containing a
-//! grammar checkout (e.g. a clone of tree-sitter-c); skipped otherwise.
+//! grammar checkout (e.g. a clone of tree-sitter-scala); skipped otherwise.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -35,20 +35,24 @@ fn loader_grammar_tags_sample_file() {
         reg.issues
     );
     println!("external grammars: {external:?}");
-    let c = reg
-        .for_path(Path::new("x.c"))
-        .expect("c grammar registered for .c");
-    assert_eq!(c.name, "c");
+    let scala = reg
+        .for_path(Path::new("x.scala"))
+        .expect("scala grammar registered for .scala");
+    assert_eq!(scala.name, "scala");
     let chunker = Chunker::new(Arc::new(reg), 300);
     let items = chunker.chunk(
-        "src/ring.c",
-        b"/* Ring buffer. */\nstruct ring { int head; int tail; };\n\nint ring_push(struct ring *r, int v) {\n  return r->head++;\n}\n",
+        "src/Ring.scala",
+        b"// Ring buffer.\nclass Ring {\n  def push(v: Int): Unit = {}\n}\n\ntrait Sized {\n  def size: Int\n}\n",
     );
     println!("{items:#?}");
     assert!(
         items
             .iter()
-            .any(|i| i.name == "ring_push" && i.kind == "function" && i.tagged)
+            .any(|i| i.qualified_name == "Ring::push" && i.kind == "function" && i.tagged)
     );
-    assert!(items.iter().any(|i| i.name == "ring" && i.kind == "class"));
+    assert!(
+        items
+            .iter()
+            .any(|i| i.name == "Sized" && i.kind == "interface")
+    );
 }

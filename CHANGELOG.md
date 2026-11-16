@@ -1188,3 +1188,101 @@ Transcripts after the upfront-loading change still showed no Claude searches. Re
 - Checked: unit tests for the shell classification and the attachments; the transcript test
   counts a session listed as deferred then loaded, and skips a piped grep; the daemon test
   reminds a subagent twice in a session already reminded; the install test writes the hook.
+
+## Java, C, C++, C# and Ruby
+
+- Five more built-in grammars, each a default-on feature: `lang-java`, `lang-c`, `lang-cpp`,
+  `lang-csharp`, `lang-ruby`.
+- Java and Ruby keep their grammar's tags query, with an overlay for doc comments, constructors,
+  enums, records and annotation types (Java) and the first method's comment in a class body
+  (Ruby). C, C++ and C# use lodestone's own: the C/C++ upstream queries tag only a function's
+  declarator, not its body, and the C# one does not compile under tree-sitter-tags (a bare
+  `@module` capture).
+- Tests queries: JUnit/TestNG annotations and `*Test(s)` classes; `test_*` C functions;
+  GoogleTest, Catch2, doctest and Boost.Test macros; NUnit, xUnit and MSTest attributes;
+  Minitest `test_*` methods and `*Test` classes, and RSpec blocks.
+- Signatures of definitions closed by an `end` line (Ruby, Lua) are their first line; before,
+  they ran into the body (`def initialize(n) @n = n end`).
+- Size: the release `lode` binary grows from 76.2 MB to 88.2 MB (+12.0 MB, +16%), and from
+  54.1 MB to 66.1 MB stripped (+22%); nearly all of it is `__TEXT` (parse tables). By grammar,
+  from the unlinked objects: C# 5.2 MB, C++ 3.4, Ruby 2.1, C 0.6, Java 0.4.
+- The external-grammar test (`LODESTONE_TEST_PARSER_DIR`) now uses tree-sitter-lua, since C is
+  built in and the loader skips it.
+- Checked: a unit test per language (kinds, nesting, docs, signatures, tests flags); the
+  external-grammar test against a vendored tree-sitter-lua 0.5.0.
+
+## Re-chunking per extension
+
+- A full index used to re-chunk every file whenever any language changed: the manifest kept one
+  fingerprint over all languages' queries and the extension map, which also numbered languages
+  by load order, so adding a grammar shifted every mapping.
+- The manifest now keeps, per extension, a fingerprint of what chunks it: the language's
+  queries, the text rule, or a component and its script languages' queries. A full pass
+  re-chunks only files of extensions whose fingerprint changed; the chunker's own fingerprint
+  (item format, chunk size, module chunks, summary-only) still re-chunks everything.
+- Indexes from before this change re-chunk once, since their manifest has no per-extension
+  fingerprints. Grammar crate upgrades are still not detected: only queries are fingerprinted.
+- Checked: a user query overlay for Python, then mapping `.txt` to Python, each re-chunk one
+  file of the fixture; a TypeScript overlay changes the fingerprints of `ts`, `mts`, `cts` and
+  `svelte` only.
+
+## C or C++ headers, per file
+
+- Config is global, so one `[languages] extensions` mapping for `.h` cannot serve C and C++
+  projects indexed by the same daemon. A header is now C unless it uses C++-only syntax: a line
+  starting a class, `enum class`, template, namespace, `using` or access specifier, `std::`, or
+  `#include` of a standard header without `.h`. A header with none of these parses as C either
+  way; `extern "C"` guards and C++ keywords in comments do not count.
+- The rule is data (`CONTENT_RULES` in the registry): it is part of `.h`'s extension
+  fingerprint, applies only when both languages are registered, and is off when the user maps
+  the extension. With only `lang-cpp`, `.h` is C++.
+- Checked: a C header with an `extern "C"` guard and `new` as a parameter name stays C; a class
+  header and a `std::`-only header are C++ with their definitions tagged; mapping `h` to C
+  disables the rule and changes the fingerprint.
+
+## PHP, Lua, Elixir and Swift
+
+- Four more built-in grammars, default-on: `lang-php`, `lang-lua`, `lang-elixir`, `lang-swift`.
+- PHP and Lua keep their grammar's tags query, with an overlay for doc comments (PHP docblocks,
+  Lua `--`/`---` comments) and, for PHP, methods as `method`, enums and class constants.
+- Elixir and Swift use lodestone's own. Elixir's upstream query has `@ignore` patterns for module
+  attributes that flush a module's tag before a documented version of it arrives, leaving the
+  module twice; lodestone's takes `@doc`/`@moduledoc` strings (also with `@spec` in between) and
+  adds `defimpl`. Swift's upstream query tags a whole class as each of its methods and every
+  local `let` as a property; lodestone's tags members, extensions (`impl`), protocols, type
+  aliases and member properties, with `///` docs.
+- tree-sitter-tags accepts only its own capture names, so the Elixir predicates capture with
+  `@ignore` (before `@name`, since it doubles as the name) and `@local.reference`, which tags
+  patterns otherwise ignore.
+- Tests queries: PHPUnit `test*` methods, `@test` docblocks, `*Test` classes and Pest blocks;
+  busted blocks and `test*` Lua functions; ExUnit `test`/`describe` and `*Test` modules; XCTest
+  `test*` methods and `*Tests` classes, Swift Testing `@Test` and `@Suite`.
+- The external-grammar test now uses tree-sitter-scala (Lua is built in).
+- Size: the release `lode` binary grows from 88.2 MB to 95.0 MB (+6.8 MB, +8%), and from
+  66.1 MB to 72.8 MB stripped (+10%). By grammar, from the unlinked objects: Swift 4.0 MB,
+  PHP 2.0, Elixir 1.3, Lua 0.05.
+- Checked: a unit test per language (kinds, nesting, docs, tests flags, Elixir's module tagged
+  once); the external-grammar test against tree-sitter-scala 0.26.13.
+
+## Smaller release binary
+
+Measured against the release `lode` before this change: 95.0 MB, 72.8 MB stripped.
+
+| Change | Size | Stripped | Note |
+| ---- | ---- | ---- | ---- |
+| `strip = true` | −22.2 MB | — | `strip = "debuginfo"` alone saves 3.7 MB |
+| fastembed opt-in | −28.6 MB | −19.7 MB | candle is the default backend everywhere |
+| `lto = "fat"`, `codegen-units = 1` | −13.1 MB | −5.4 MB | `lto = "thin"`: +0.4 MB |
+| fastembed without `image-models` | −0.03 MB | — | the linker already drops unused code |
+
+- `[profile.release]` now strips symbols and uses fat LTO with one codegen unit; panic
+  backtraces lose function names. Release builds take longer, `cargo install` included.
+- `fastembed` is no longer a default feature: candle runs every built-in model on every
+  platform and fastembed was the slower CPU fallback. Configs selecting `backend = "fastembed"`
+  need a `--features fastembed` build; without it lodestone says so. CI lints with
+  `--all-features` so that code stays checked.
+- ONNX Runtime's prebuilt macOS library calls `__isPlatformVersionAtLeast`, which is undefined
+  under LTO; `build.rs` links clang's runtime (`libclang_rt.osx.a`) for fastembed builds on
+  macOS.
+- Result: the default release `lode` is 48.0 MB (−49%); with `--features fastembed`, 67.5 MB.
+  A release build from scratch takes about 4 minutes on the M4 Max.
