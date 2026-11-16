@@ -8,7 +8,7 @@ repository = "https://github.com/cylewitruk/lodestone"
 readme = "README.md"
 keywords = ["code-search", "semantic-search", "mcp", "embeddings", "tree-sitter"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = ["/eval", "/examples", "/PLAN.md", "/.github", "/assets"]
+exclude = ["/eval", "/examples", "/PLAN.md", "/.github", "/assets", "/docs", "/dist-workspace.toml", "/release-plz.toml"]
 
 [lib]
 name = "lodestone"
@@ -116,3 +116,7 @@ strip = true
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# dist builds release binaries with this profile.
+[profile.dist]
+inherits = "release"

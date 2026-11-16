@@ -79,7 +79,7 @@ pub struct Chunker {
     max_chars: usize,
     /// Also emit one `module` item per tagged file summarising its top-level definitions.
     module_chunks: bool,
-    /// Embed only header + doc + signature (experiment; see CHANGELOG).
+    /// Embed only header + doc + signature (experiment; see docs/decision-log.md).
     summary_only: bool,
 }
 

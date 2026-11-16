@@ -1,0 +1,74 @@
+name: Release-plz
+
+# On every push to main: keep a release PR open with the next version and changelog. When that
+# PR is merged: publish to crates.io and push the `v*` tag, which starts release.yml (dist).
+# The tag must be pushed with the App token: tags pushed with GITHUB_TOKEN start no workflows.
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  release:
+    name: Release
+    if: github.repository_owner == 'cylewitruk'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write # crates.io trusted publishing
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          cache: false
+          build-warnings: warn
+      - uses: release-plz/action@v0.5
+        with:
+          command: release
+          version: 0.4.3
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+
+  release-pr:
+    name: Release PR
+    if: github.repository_owner == 'cylewitruk'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      # The App token also lets CI run on the release PR.
+      - id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          cache: false
+          build-warnings: warn
+      - uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+          version: 0.4.3
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
