@@ -94,8 +94,8 @@ carry `line`, `line_end`, `name_line` and `name_column`.
 - **Nudge:** for Claude, `lode hook pre-tool-use` runs before each shell command. When it searches
   a directory tree lodestone serves for three or more names (`grep -rn 'a\|b\|c' .`), it adds a
   line pointing at `semantic_code_search`, with `repo` when the search is in another checkout.
-  It says nothing for any other command and never blocks one: the installed command ends in
-  `|| true`.
+  It says nothing for any other command, such as a `git grep` over another revision, and never
+  blocks one: the installed command ends in `|| true`.
 - **Your hooks:** `lode install` and `uninstall` change only the hook commands lodestone wrote; a
   hook of yours that runs `lode` stays.
 - **Deferred tools:** the search tools ask Claude Code to load them upfront
@@ -120,6 +120,7 @@ calls from a date, `--queries` lists every search, `--json` is for machines.
 - searches whose results were later read, that returned nothing, or that failed or were denied
 - latency, and grep / glob / read calls
 - for Claude Code, the share of sessions with the tools loaded rather than deferred
+- for Claude Code, grep nudges, and how many a lodestone search followed within 5 minutes
 
 **What counts:**
 

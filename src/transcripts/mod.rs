@@ -43,6 +43,8 @@ pub enum Kind {
     Grep,
     Glob,
     Read,
+    /// lodestone's hook pointed a shell search at `semantic_code_search`.
+    Nudge,
 }
 
 impl Kind {
@@ -54,6 +56,7 @@ impl Kind {
             Kind::Grep => "grep",
             Kind::Glob => "glob",
             Kind::Read => "read",
+            Kind::Nudge => "nudge",
         }
     }
 
@@ -65,6 +68,7 @@ impl Kind {
             Kind::Grep,
             Kind::Glob,
             Kind::Read,
+            Kind::Nudge,
         ]
         .into_iter()
         .find(|k| k.as_str() == s)
@@ -106,6 +110,8 @@ pub enum Target {
     Repo(String),
     /// A file or directory it read, searched or ran in.
     Path(PathBuf),
+    /// Wherever the shell searches of tool call `0` in the same transcript counted.
+    Searches(String),
 }
 
 /// What a parser extracts from one transcript line.
@@ -260,6 +266,9 @@ fn read_file(
                     // `repo` argument says, else in the session's repository.
                     let repo = match &c.target {
                         Some(Target::Path(p)) if p.is_absolute() => repos.of_path(p),
+                        Some(Target::Searches(call)) => {
+                            store.searches_repo(&key, call)?.map(PathBuf::from)
+                        }
                         t => t
                             .as_ref()
                             .and_then(|t| repos.of(t))

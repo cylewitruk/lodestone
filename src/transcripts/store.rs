@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::{Call, Kind};
 
 /// Bumped when parsing or the schema changes, so every transcript still on disk is read again.
-const PARSER_VERSION: u32 = 5;
+const PARSER_VERSION: u32 = 6;
 
 /// The parser version that last changed the schema; what an older one extracted is dropped.
 const SCHEMA_SINCE: u32 = 4;
@@ -242,6 +242,20 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// The repository the shell searches of tool call `call` in transcript `file` counted towards.
+    pub fn searches_repo(&self, file: &str, call: &str) -> anyhow::Result<Option<String>> {
+        let repo = self
+            .conn
+            .query_row(
+                "SELECT repo FROM calls WHERE file = ?1 AND kind = 'grep' AND repo IS NOT NULL
+                     AND substr(id, 1, length(?2)) = ?2 ORDER BY id LIMIT 1",
+                params![file, format!("{call}:g")],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(repo)
     }
 
     /// Records a lodestone search's result; other calls' results are not kept.

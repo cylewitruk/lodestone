@@ -664,3 +664,56 @@ fn shell_commands_count_as_the_searches_and_reads_they_make() {
     assert_eq!((c.semantic, c.searches_read), (1, 1));
     assert_eq!((c.greps, c.reads), (1, 1));
 }
+
+#[test]
+fn counts_nudges_where_the_nudged_search_counts() {
+    let s = Setup::new();
+    // The session starts above the repository and searches it after `cd`.
+    let top = s.repo.parent().unwrap();
+    let nudge = |call: &str, timestamp: String, text: &str| {
+        json!({ "type": "attachment", "sessionId": "s1", "cwd": top, "timestamp": timestamp,
+            "attachment": { "type": "hook_additional_context", "hookEvent": "PreToolUse",
+                "hookName": "PreToolUse:Bash", "toolUseID": call, "content": [text] } })
+    };
+    let grep = |n: u32, id: &str, dir: &str| {
+        let input = json!({ "command": format!("cd {dir} && grep -rn 'a\\|b\\|c' .") });
+        claude_line("s1", top, n, "assistant", tool_use(id, "Bash", input))
+    };
+    append(
+        &s.claude_file(top, "s1.jsonl"),
+        &[
+            grep(1, "b1", "repo"),
+            nudge("b1", ts(1), "This search tries 3 names. lodestone's …"),
+            claude_line(
+                "s1",
+                top,
+                3,
+                "assistant",
+                tool_use(
+                    "q1",
+                    "mcp__lodestone__semantic_code_search",
+                    json!({ "query": "a" }),
+                ),
+            ),
+            // Another hook's context is not a nudge.
+            nudge("b1", ts(1), "Some other hook's context"),
+            // Nudged later, with no search after it.
+            grep(5, "b2", "repo"),
+            nudge(
+                "b2",
+                "2026-11-11T10:20:00.000Z".into(),
+                "This search tries 4 names.",
+            ),
+            // A search in no registered repository, like its nudge, is not kept.
+            grep(6, "b3", "other"),
+            nudge("b3", ts(6), "This search tries 3 names."),
+        ],
+    );
+    s.scan();
+    let r = s.report();
+    assert_eq!(r.groups.len(), 1, "{:#?}", r.groups);
+    let c = group(&r, "claude");
+    assert_eq!(c.repo, s.repo.to_string_lossy());
+    assert_eq!((c.nudges, c.nudges_searched), (2, 1));
+    assert_eq!((c.greps, c.semantic), (2, 1));
+}

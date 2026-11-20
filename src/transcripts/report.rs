@@ -9,6 +9,9 @@ use super::store::{CallRow, SessionRow};
 use super::{Kind, time};
 use crate::text::table;
 
+/// How soon after a nudge a lodestone search counts as following it.
+const NUDGE_WINDOW_MS: i64 = 5 * 60 * 1000;
+
 #[derive(Clone, Debug, Default)]
 pub struct Filter {
     /// Harnesses to include (`claude`, `codex`).
@@ -73,6 +76,10 @@ pub struct Group {
     pub greps: usize,
     pub globs: usize,
     pub reads: usize,
+    /// Shell searches lodestone's hook pointed at `semantic_code_search`.
+    pub nudges: usize,
+    /// Nudges followed by a lodestone search in the same session within [`NUDGE_WINDOW_MS`].
+    pub nudges_searched: usize,
     pub latency_ms_median: Option<i64>,
     pub latency_ms_p90: Option<i64>,
 }
@@ -180,6 +187,13 @@ fn tally(
             Kind::Grep => g.greps += 1,
             Kind::Glob => g.globs += 1,
             Kind::Read => g.reads += 1,
+            Kind::Nudge => {
+                g.nudges += 1;
+                let followed = calls.iter().any(|o| {
+                    o.kind.is_lodestone() && (c.ts..=c.ts + NUDGE_WINDOW_MS).contains(&o.ts)
+                });
+                g.nudges_searched += usize::from(followed);
+            }
         }
         if !c.kind.is_lodestone() {
             continue;
@@ -265,6 +279,10 @@ impl Report {
                 ),
                 row("grep / glob / read calls", &|g| {
                     format!("{} / {} / {}", g.greps, g.globs, g.reads)
+                }),
+                row("grep nudges", &|g| g.nudges.to_string()),
+                row("  searched within 5 min", &|g| {
+                    share(g.nudges_searched, g.nudges)
                 }),
             ];
             out.push(repo.to_string());
