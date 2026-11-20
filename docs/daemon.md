@@ -30,8 +30,10 @@ One daemon per user keeps the model loaded and serves every registered repositor
 - **Which one:** a session or command uses the worktree it runs in; `repo` overrides it. An
   unregistered checkout gets an error asking for `lode register`, never another checkout's
   results.
-- **Stale indexes:** searches never index. A stale index answers from what it has, and
-  `lode status` says why.
+- **Searching keeps a worktree fresh:** a search that names a worktree has the daemon watch it,
+  catch it up and index it if new. The search itself answers from the index as it is: a stale
+  index answers from what it has and `lode status` says why. An MCP search in a never-indexed
+  worktree waits up to 30 s for its first index.
 - **Chunking changes:** a full scan re-chunks only files whose chunking changed (a language's
   queries, `[languages]`, or `chunk_tokens`). Unchanged text reuses cached embeddings.
 

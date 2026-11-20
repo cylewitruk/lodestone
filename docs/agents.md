@@ -102,20 +102,6 @@ carry `line`, `line_end`, `name_line` and `name_column`.
   (`_meta["anthropic/alwaysLoad"]`, v2.1.285 or later). Where they're still deferred, the reminder
   and skill say to load them with ToolSearch (`+lodestone search`).
 
-## Measured effect
-
-Opus 5.5 on 28 tasks from stacks-core and LibreChat, 48 runs per arm
-([details](../eval/situations/README.md)):
-
-| Setup | Correct |
-| ---- | ---- |
-| No help | 27/48 |
-| Advice only | 37/48 |
-| lodestone plugin | 43/48, 7% shorter runs |
-
-On a private repository the model had never seen, it needed half the tool calls to find the
-answer.
-
 ## Usage statistics
 
 How agents actually use lodestone, from their own transcripts:
