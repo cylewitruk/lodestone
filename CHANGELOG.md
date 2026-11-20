@@ -5,6 +5,13 @@ User-facing changes per release. Measurements and design decisions are in
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/cylewitruk/lodestone/compare/v0.1.0...v0.1.1) - 2026-11-20
+
+### Changed
+
+- nudge at a guessed-name grep; stats follow shell commands ([#41](https://github.com/cylewitruk/lodestone/pull/41))
+- apply global git excludes relative to the indexed checkout ([#40](https://github.com/cylewitruk/lodestone/pull/40))
+
 ## [0.1.0] - 2026-11-16
 
 First release.
