@@ -120,6 +120,7 @@ calls from a date, `--queries` lists every search, `--json` is for machines.
 - searches whose results were later read, that returned nothing, or that failed or were denied
 - latency, and grep / glob / read calls
 - for Claude Code, the share of sessions with the tools loaded rather than deferred
+- for Claude Code, grep nudges, and how many a lodestone search followed within 5 minutes
 
 **What counts:**
 

@@ -75,6 +75,8 @@ impl Repos {
                 self.of_path(self.names.get(r).map_or(Path::new(r), PathBuf::as_path))
             }
             Target::Path(p) => self.of_path(p),
+            // Placed by what was recorded (see `Store::searches_repo`).
+            Target::Searches(_) => None,
         }
     }
 

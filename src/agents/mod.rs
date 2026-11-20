@@ -33,6 +33,9 @@ const TOOLS: &str = "The `semantic_code_search` tool finds code by what it does,
 /// Alternatives in a tree search's pattern from which it reads as guessing at names.
 const GUESSES: usize = 3;
 
+/// How [`nudge`] text starts; transcript statistics recognise it by this.
+pub const NUDGE_OPENING: &str = "This search tries ";
+
 /// What lodestone serves a session's directory.
 #[derive(Debug, PartialEq)]
 enum Served {
@@ -181,7 +184,7 @@ pub fn nudge(
         ),
     };
     let context = format!(
-        "This search tries {} names. lodestone's `semantic_code_search` finds code by what it does, without the name: describe the behaviour in `query` and give the guesses as `example_identifiers`.{repo} A text search suits exact strings.",
+        "{NUDGE_OPENING}{} names. lodestone's `semantic_code_search` finds code by what it does, without the name: describe the behaviour in `query` and give the guesses as `example_identifiers`.{repo} A text search suits exact strings.",
         search.alternatives
     );
     Some(output(HookEvent::PreToolUse, &context))

@@ -3,14 +3,15 @@
 //! working directory and timestamp. Tool calls are `tool_use` blocks and their results
 //! `tool_result` blocks. A `Bash` call counts as the searches and file reads its command makes
 //! (see [`shell`]). Attachments list the tools a session has: `prompt_snapshot` those loaded,
-//! `deferred_tools_delta` those deferred behind ToolSearch.
+//! `deferred_tools_delta` those deferred behind ToolSearch. A `hook_additional_context` attachment
+//! holding lodestone's nudge counts as a [`Kind::Nudge`] call.
 
 use std::path::Path;
 
 use serde_json::Value;
 
 use super::{Call, Event, Kind, Target, query_of, text_of, time};
-use crate::shell;
+use crate::{agents, shell};
 
 pub fn parse(line: &str) -> Vec<Event> {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
@@ -34,6 +35,18 @@ pub fn parse(line: &str) -> Vec<Event> {
     out.extend(tools(&v["attachment"]).map(|loaded| Event::Tools {
         id: session.to_string(),
         loaded,
+    }));
+    out.extend(nudged(&v["attachment"]).map(|call| {
+        Event::Call(Call {
+            id: format!("{call}:n"),
+            session: session.to_string(),
+            kind: Kind::Nudge,
+            ts,
+            query: None,
+            path: None,
+            target: Some(Target::Searches(call.to_string())),
+            done: None,
+        })
     }));
     for b in v["message"]["content"].as_array().into_iter().flatten() {
         match b["type"].as_str() {
@@ -117,6 +130,20 @@ fn lodestone_tool(name: &str) -> Option<Kind> {
         .rsplit("__")
         .next()?;
     Kind::lodestone(tool)
+}
+
+/// The call a `PreToolUse` hook's context attachment nudged, when the context is lodestone's nudge.
+fn nudged(attachment: &Value) -> Option<&str> {
+    let a = attachment;
+    (a["type"] == "hook_additional_context"
+        && a["hookEvent"] == "PreToolUse"
+        && a["content"]
+            .as_array()?
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|c| c.starts_with(agents::NUDGE_OPENING)))
+    .then(|| a["toolUseID"].as_str())
+    .flatten()
 }
 
 /// Whether an attachment lists a lodestone search tool as loaded (`true`) or deferred (`false`).
