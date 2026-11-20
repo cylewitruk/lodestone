@@ -18,7 +18,6 @@ use serde_json::{Map, Value, json};
 use super::{HookEvent, SKILL};
 
 const NAME: &str = "lodestone";
-const SESSION_START_MATCHER: &str = "startup|resume|clear|compact";
 const HOOK_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -39,13 +38,15 @@ impl Harness {
     }
 
     /// The hooks that add the reminder. Claude Code in the desktop app skips SessionStart hooks
-    /// at startup, so Claude also gets the first-prompt hook; its subagents get their own.
+    /// at startup, so Claude also gets the first-prompt hook; its subagents get their own, and
+    /// its shell commands the nudge.
     fn hook_events(self) -> &'static [HookEvent] {
         match self {
             Harness::Claude => &[
                 HookEvent::SessionStart,
                 HookEvent::UserPromptSubmit,
                 HookEvent::SubagentStart,
+                HookEvent::PreToolUse,
             ],
             Harness::Codex => &[HookEvent::SessionStart],
         }
@@ -130,9 +131,16 @@ impl Target {
 
     fn hook_command(&self, event: HookEvent) -> String {
         let args = event.args();
+        // A harness takes exit status 2 from this hook as "block the tool call", and that is
+        // what a `lode` too old to know the subcommand exits with.
+        let guard = if event == HookEvent::PreToolUse {
+            " || true"
+        } else {
+            ""
+        };
         match self.scope {
-            Scope::User => format!("'{}' {args}", self.program()),
-            Scope::Project => format!("{} {args}", self.program()),
+            Scope::User => format!("'{}' {args}{guard}", self.program()),
+            Scope::Project => format!("{} {args}{guard}", self.program()),
         }
     }
 }
@@ -405,7 +413,7 @@ fn edit_json(path: &Path, edit: impl FnOnce(&mut Map<String, Value>)) -> anyhow:
 fn is_ours(hook: &Value, event: HookEvent) -> bool {
     hook["command"]
         .as_str()
-        .is_some_and(|c| c.contains("lode") && c.ends_with(event.args()))
+        .is_some_and(|c| c.contains("lode") && c.contains(event.args()))
 }
 
 /// Replaces our `event` hook with one running `command`, or removes it; other hooks stay.
@@ -427,8 +435,8 @@ fn set_hook(doc: &mut Map<String, Value>, event: HookEvent, command: Option<&str
     groups.retain(|g| g["hooks"].as_array().is_none_or(|l| !l.is_empty()));
     if let Some(command) = command {
         let mut group = Map::new();
-        if event == HookEvent::SessionStart {
-            group.insert("matcher".into(), SESSION_START_MATCHER.into());
+        if let Some(matcher) = event.matcher() {
+            group.insert("matcher".into(), matcher.into());
         }
         group.insert(
             "hooks".into(),
@@ -588,6 +596,14 @@ mod tests {
             read_json(&home.join(".claude/settings.json"))["hooks"]["SubagentStart"][0]["hooks"][0]
                 ["command"],
             "'/opt/bin/lode' hook subagent-start"
+        );
+        assert_eq!(
+            read_json(&home.join(".claude/settings.json"))["hooks"]["PreToolUse"],
+            json!([{ "matcher": "Bash", "hooks": [{
+                "type": "command",
+                "command": "'/opt/bin/lode' hook pre-tool-use || true",
+                "timeout": HOOK_TIMEOUT_SECS,
+            }] }])
         );
 
         run_all(&uninstall(&[Harness::Claude], &t));

@@ -16,6 +16,7 @@ use crate::api::types::SessionRequest;
 use crate::client::{Client, start_daemon};
 use crate::config::Config;
 use crate::registry;
+use crate::shell;
 
 /// How long the hook's lease keeps the session's worktree watched before the relay's takes over.
 const HOOK_LEASE_SECS: u64 = 300;
@@ -28,6 +29,9 @@ const ADVICE: &str = "To locate the code behind a described behaviour, search by
 
 /// The reminder's description of the tools, after what lodestone serves.
 const TOOLS: &str = "The `semantic_code_search` tool finds code by what it does, which a text search cannot when you do not know the name, and the `similar_code_search` tool finds code that does the same job as given functions; pass it every function a diff adds or a refactor moves, in one call (see the lodestone skill). If they are listed only as deferred tools, load them first with ToolSearch (query `+lodestone search`). Use a text search (grep, rg) for exact strings.";
+
+/// Alternatives in a tree search's pattern from which it reads as guessing at names.
+const GUESSES: usize = 3;
 
 /// What lodestone serves a session's directory.
 #[derive(Debug, PartialEq)]
@@ -59,6 +63,8 @@ pub enum HookEvent {
     UserPromptSubmit,
     /// Every subagent start: a subagent sees none of its parent session's reminders.
     SubagentStart,
+    /// Each shell command; adds [`nudge`] to one that searches by guessed names.
+    PreToolUse,
 }
 
 impl HookEvent {
@@ -68,6 +74,7 @@ impl HookEvent {
             HookEvent::SessionStart => "SessionStart",
             HookEvent::UserPromptSubmit => "UserPromptSubmit",
             HookEvent::SubagentStart => "SubagentStart",
+            HookEvent::PreToolUse => "PreToolUse",
         }
     }
 
@@ -77,8 +84,29 @@ impl HookEvent {
             HookEvent::SessionStart => "hook session-start",
             HookEvent::UserPromptSubmit => "hook prompt-submit",
             HookEvent::SubagentStart => "hook subagent-start",
+            HookEvent::PreToolUse => "hook pre-tool-use",
         }
     }
+
+    /// What the harness matches before running the hook, if it runs for only some events.
+    pub fn matcher(self) -> Option<&'static str> {
+        match self {
+            HookEvent::SessionStart => Some("startup|resume|clear|compact"),
+            HookEvent::PreToolUse => Some("Bash"),
+            HookEvent::UserPromptSubmit | HookEvent::SubagentStart => None,
+        }
+    }
+}
+
+/// `context` as the hook output that adds it to the model's context.
+fn output(event: HookEvent, context: &str) -> String {
+    json!({
+        "hookSpecificOutput": {
+            "hookEventName": event.name(),
+            "additionalContext": context,
+        }
+    })
+    .to_string()
 }
 
 /// The hook's output for `event` in session `session` (the harness's id) in `dir`: the reminder
@@ -87,7 +115,8 @@ impl HookEvent {
 /// The session's own hooks keep its marker (see [`marker`]) current. `UserPromptSubmit` adds the
 /// reminder only when it writes a session's first marker, so never without a session id;
 /// `SessionStart` always adds it, since a compacted session has lost it. `SubagentStart` always
-/// adds it too, and leaves the marker to the session.
+/// adds it too, and leaves the marker to the session. `PreToolUse` adds nothing here (see
+/// [`nudge`]).
 pub fn hook(
     event: HookEvent,
     dir: &Path,
@@ -116,17 +145,51 @@ pub fn hook(
     let remind = match event {
         HookEvent::SessionStart | HookEvent::SubagentStart => true,
         HookEvent::UserPromptSubmit => path.is_some() && previous.is_none(),
+        HookEvent::PreToolUse => false,
     };
     let served = remind.then(|| serves(dir, config, config_path)).flatten()?;
-    Some(
-        json!({
-            "hookSpecificOutput": {
-                "hookEventName": event.name(),
-                "additionalContext": reminder(&served),
-            }
-        })
-        .to_string(),
-    )
+    Some(output(event, &reminder(&served)))
+}
+
+/// The `PreToolUse` hook's output for shell `command` run in `dir`: a pointer to
+/// `semantic_code_search` when the command searches a tree lodestone serves for [`GUESSES`] or
+/// more alternative names, otherwise `None`. It decides nothing about the command.
+pub fn nudge(
+    command: &str,
+    dir: &Path,
+    config: &Config,
+    config_path: Option<&Path>,
+) -> Option<String> {
+    let search = shell::analyse(command, Some(dir))
+        .searches
+        .into_iter()
+        .filter(|s| s.tree && s.alternatives >= GUESSES)
+        .max_by_key(|s| s.alternatives)?;
+    let target = search.target.as_deref().unwrap_or(dir);
+    let repo = match serves(target, config, config_path)? {
+        // A search in the session's own checkout needs no `repo`.
+        Served::Worktree
+            if registry::checkout_top(dir).is_some_and(|top| target.starts_with(top)) =>
+        {
+            String::new()
+        }
+        Served::Worktree => format!(
+            " Pass `repo`: `{}`.",
+            registry::checkout_top(target)
+                .as_deref()
+                .unwrap_or(target)
+                .display()
+        ),
+        Served::Inside(repos) => format!(
+            " Pass the repository as `repo`: {}.",
+            registry::listing(&repos)
+        ),
+    };
+    let context = format!(
+        "This search tries {} names. lodestone's `semantic_code_search` finds code by what it does, without the name: describe the behaviour in `query` and give the guesses as `example_identifiers`.{repo} A text search suits exact strings.",
+        search.alternatives
+    );
+    Some(output(HookEvent::PreToolUse, &context))
 }
 
 /// What the daemon serves `dir`, if anything.

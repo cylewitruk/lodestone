@@ -1,7 +1,7 @@
 //! `lode transcript-stats`: how agents use lodestone, from Claude Code and Codex transcripts.
 //!
-//! Each call counts towards the registered repository it worked in: the one its `repo` argument,
-//! file path or command directory points into, else the session's working directory. Calls in no
+//! Each call counts towards the registered repository it worked in: the one its file path or
+//! command directory is in, else the one its `repo` argument names, else the session's. Calls in no
 //! registered repository are not kept. Reading is incremental: `transcripts.sqlite` in the data
 //! directory keeps what was extracted and how far each transcript was read (byte offset of the
 //! last complete line, size, mtime and a hash of its first bytes), so a later run skips unchanged
@@ -254,11 +254,15 @@ fn read_file(
                     let Some((id, session_repo)) = &session else {
                         continue;
                     };
-                    let repo = c
-                        .target
-                        .as_ref()
-                        .and_then(|t| repos.of(t))
-                        .or_else(|| session_repo.clone());
+                    // A call on a known path counts where the path is; any other, where a
+                    // `repo` argument says, else in the session's repository.
+                    let repo = match &c.target {
+                        Some(Target::Path(p)) if p.is_absolute() => repos.of_path(p),
+                        t => t
+                            .as_ref()
+                            .and_then(|t| repos.of(t))
+                            .or_else(|| session_repo.clone()),
+                    };
                     // Calls in no registered repository are not kept, except lodestone searches,
                     // which the session's other calls may still place (see the report).
                     if repo.is_some() || c.kind.is_lodestone() {
