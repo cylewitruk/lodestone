@@ -212,46 +212,6 @@ answers checked by hand; no review-control run claimed false reuse, so pv3 passe
 
 ## Situational run: Opus 5.5, stacks-core and LibreChat (`sit-*.json`)
 
-**Corrected (LibreChat `shipped` re-run).** In the first run both batches ran at once and wrote
-their MCP config to the same file, so all 19 LibreChat lodestone searches went to the stacks-core
-daemon (the reminder, which reads its port from the environment, still fired). `run.py` now
-writes one MCP config per port, and the 28 LibreChat `shipped` runs were re-run; all 24 of their
-searches hit the LibreChat index. The tables below the corrected ones are the original, invalid
-pooled figures, kept for the record.
-
-| Positives correct (corrected) | none | remind | shipped |
-| ---- | ---- | ---- | ---- |
-| stacks-core | 17/24 | 22/24 | 23/24 |
-| LibreChat | 10/24 | 15/24 | **20/24** |
-| write | 3/12 | 7/12 | 9/12 |
-| review | 6/12 | 10/12 | 12/12 |
-| refactor | 6/12 | 8/12 | 10/12 |
-| locate | 12/12 | 12/12 | 12/12 |
-| **all** | **27/48** | **37/48** | **43/48** |
-
-Per task: **`shipped` vs `remind` +0.125 [+0.000, +0.271]** (5 gained, 1 lost); on LibreChat
-alone +0.208 [+0.042, +0.417] (4 gained, 0 lost). `shipped` vs none +0.333 [+0.167, +0.521];
-`remind` vs none +0.208 [+0.062, +0.375]. All 8 `shipped` control runs passed.
-
-| Efficiency (corrected) | none | remind | shipped |
-| ---- | ---- | ---- | ---- |
-| Cost, 56 runs | $10.35 | $10.23 | $9.92 |
-| Cost per correct answer | $0.296 | $0.227 | $0.194 |
-| Wall time, 56 runs | 1,801 s | 1,768 s | 1,677 s |
-| Answer seen in a tool result | 28/48 | 37/48 | 43/48 |
-| Median tokens until the answer was seen | 28k | 25k | 13k |
-
-Paired per task, `shipped` / `remind`: **wall time ×0.93 [×0.89, ×0.98]**, cost ×0.97 [×0.91,
-×1.03], tokens ×1.01 [×0.92, ×1.11], tool calls ×1.06 [×0.98, ×1.15], tokens until the answer was
-seen ×0.90 [×0.76, ×1.09].
-
-- **With lodestone working on both repositories, it adds correctness on top of the advice**:
-  +0.125 per task overall (the interval just touches zero) and +0.21 on LibreChat, where Claude
-  knows the code less well, with no task lost. Runs are 7% faster and cost per correct answer is
-  15% lower.
-
-Original, invalid figures:
-
 28 realistic tasks, 14 per repository (`sit-stacks.json` = the 9 pilot tasks plus 5;
 `sit-librechat.json`, LibreChat `0e719592`): 3 write, 3 review + 1 control, 3 refactor +
 1 control, 3 locate each, written with grep only and independently reviewed. Opus 5.5 at medium
@@ -268,45 +228,45 @@ Review and refactor positives were checked by hand (every mention of an answer p
 the existing equivalent); all 24 control runs passed (no false "use existing X"; the few
 suggestions pointed at real libraries such as chrono).
 
+The first run sent all LibreChat lodestone searches to the stacks-core daemon (both batches
+wrote their MCP config to one file); `run.py` now writes one per port, and the 28 LibreChat
+`shipped` runs were re-run. The figures below are from the corrected run.
+
 | Positives correct | none | remind | shipped |
 | ---- | ---- | ---- | ---- |
 | stacks-core | 17/24 | 22/24 | 23/24 |
-| LibreChat | 10/24 | 15/24 | 18/24 |
-| write | 3/12 | 7/12 | 8/12 |
-| review | 6/12 | 10/12 | **12/12** |
-| refactor | 6/12 | 8/12 | 9/12 |
+| LibreChat | 10/24 | 15/24 | **20/24** |
+| write | 3/12 | 7/12 | 9/12 |
+| review | 6/12 | 10/12 | 12/12 |
+| refactor | 6/12 | 8/12 | 10/12 |
 | locate | 12/12 | 12/12 | 12/12 |
-| **all** | **27/48** | **37/48** | **41/48** |
+| **all** | **27/48** | **37/48** | **43/48** |
 
-Per task (paired, 95% bootstrap over the 24 positive tasks): `remind` vs none +0.208
-[+0.062, +0.375] (6 tasks gained, 0 lost); `shipped` vs none +0.292 [+0.125, +0.479] (8, 0);
-**`shipped` vs `remind` +0.083 [−0.021, +0.229]** (3 gained: pw1, lv1, lr3; 1 lost: pw2).
+Per task: **`shipped` vs `remind` +0.125 [+0.000, +0.271]** (5 gained, 1 lost); on LibreChat
+alone +0.208 [+0.042, +0.417] (4 gained, 0 lost). `shipped` vs none +0.333 [+0.167, +0.521];
+`remind` vs none +0.208 [+0.062, +0.375]. All 8 `shipped` control runs passed.
 
 | Efficiency | none | remind | shipped |
 | ---- | ---- | ---- | ---- |
-| Cost, 56 runs | $10.35 | $10.23 | $10.28 |
-| Cost per correct answer | $0.296 | $0.227 | $0.210 |
-| Wall time, 56 runs | 1,801 s | 1,768 s | 1,747 s |
-| Answer seen in a tool result | 28/48 | 37/48 | 42/48 |
-| Median tokens until the answer was seen | 28k | 25k | 27k |
+| Cost, 56 runs | $10.35 | $10.23 | $9.92 |
+| Cost per correct answer | $0.296 | $0.227 | $0.194 |
+| Wall time, 56 runs | 1,801 s | 1,768 s | 1,677 s |
+| Answer seen in a tool result | 28/48 | 37/48 | 43/48 |
+| Median tokens until the answer was seen | 28k | 25k | 13k |
 
-Paired per task, `shipped` / `remind`: cost ×1.01 [×0.94, ×1.08], wall time ×0.97 [×0.92,
-×1.03], tokens ×1.10 [×0.98, ×1.22], tool calls ×1.12 [×1.01, ×1.23], tokens until the answer
-was seen ×1.22 [×0.95, ×1.58].
+Paired per task, `shipped` / `remind`: **wall time ×0.93 [×0.89, ×0.98]**, cost ×0.97 [×0.91,
+×1.03], tokens ×1.01 [×0.92, ×1.11], tool calls ×1.06 [×0.98, ×1.15], tokens until the answer was
+seen ×0.90 [×0.76, ×1.09].
 
-- **Lodestone adds a little correctness and no efficiency.** With identical advice, the plugin
-  solves 4 more of 48 than the advice alone (+0.08, not significant), mostly where guessing names
-  fails (lv1 was solved only with lodestone, pw1 only with lodestone here and in the pilot). It
-  costs and takes the same per task, uses a few more tool calls, and is not faster at finding the
-  answer. Cost per correct answer is 7% lower, from the extra correct answers alone.
-- **Most of the gain is the advice.** No lodestone → advice: +0.21; advice → advice + lodestone:
-  +0.08.
-- **Adoption on Opus is high**: the plugin's agents searched in all 28 stacks-core runs and 23 of
-  28 LibreChat runs, always with combined queries. No run used a subagent (0 of 168).
+- **With lodestone working on both repositories, it adds correctness on top of the advice**:
+  +0.125 per task overall (the interval just touches zero) and +0.21 on LibreChat, where Claude
+  knows the code less well, with no task lost. Runs are 7% faster and cost per correct answer is
+  15% lower.
 - **The repository's review skill is no longer crowded out**: `stacks-pr-review` loaded in 8 of 8
   stacks-core review runs in every arm (against 3–9 of 36 with the earlier reminder on Sonnet).
 - **Still at the ceiling:** locate (12/12 everywhere, even with the harder pl3 and LibreChat
   reports). Unsolved by every arm: lw3, lr1.
+- The plugin's agents searched in all 28 stacks-core runs, always with combined queries.
 
 ## Private repository: advice vs plugin (Opus 5.5)
 

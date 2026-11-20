@@ -1,4 +1,4 @@
-//! One test per invariant in PLAN.md §3.1, plus the end-to-end index/search path, using a
+//! One test per invariant in docs/architecture.md, plus the end-to-end index/search path, using a
 //! deterministic hash embedder so they run without model downloads.
 
 use std::collections::BTreeSet;

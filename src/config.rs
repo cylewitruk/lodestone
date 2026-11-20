@@ -134,7 +134,7 @@ pub struct RerankConfig {
     /// Hugging Face repo of the cross-encoder for the candle backends.
     pub hf_repo: String,
     /// Candidates passed to the cross-encoder. 20 suits strong embedders; weaker ones gain from
-    /// 50 (see docs/decision-log.md, model comparison).
+    /// 50 (see docs/decision-log.md, reranker).
     pub candidates: usize,
     /// Token budget per (query, document) pair.
     pub max_tokens: usize,

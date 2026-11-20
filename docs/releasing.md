@@ -61,20 +61,3 @@ cargo install --locked cargo-dist@0.34.0
 dist generate
 dist plan        # what a release would build
 ```
-
-## Package managers
-
-| Channel | Status | What it takes |
-| ---- | ---- | ---- |
-| Shell / PowerShell installer | done | dist |
-| crates.io (`cargo install`) | done | release-plz |
-| cargo-binstall | should work | dist's archive names follow binstall's defaults; check after the first release |
-| Homebrew | ready to enable | create `cylewitruk/homebrew-tap`, add a `HOMEBREW_TAP_TOKEN` secret (PAT with write access to the tap), then in `dist-workspace.toml` add `"homebrew"` to `installers`, `tap = "cylewitruk/homebrew-tap"` and `publish-jobs = ["homebrew"]` |
-| winget | not built in to dist | a custom publish job (`publish-jobs = ["./publish-winget"]`, a reusable workflow) running `komac` or `winget-releaser` against the Windows zip; the first manifest is a manual PR to `microsoft/winget-pkgs` |
-| Scoop | not built in to dist | a `scoop-bucket` repository with a manifest whose `autoupdate` points at the Windows zip |
-| Chocolatey | not built in to dist | a `.nuspec` package wrapping the Windows zip, pushed with an API key from a custom publish job; new packages go through moderation |
-| apt / `.deb` | not built in to dist | `cargo-deb` to build `.deb` files attached to the release; `apt install` additionally needs a signed, hosted repository |
-| npm | available | dist's `npm` installer, if a `npx` entry point is ever useful |
-
-Custom publish jobs run after the GitHub Release exists, so each can download its archive and
-checksum from the release.

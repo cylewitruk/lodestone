@@ -56,7 +56,8 @@ lode search "retry an HTTP call with exponential backoff"
 ```
 
 There is nothing to keep running: the daemon starts when needed and exits when idle. The model
-(about 300 MB) downloads on first use.
+(about 300 MB) downloads on first use. Every command is listed in [docs/daemon.md](docs/daemon.md#cli);
+`lode <command> --help` has the details.
 
 ## Writing queries
 
@@ -64,13 +65,15 @@ Describe what the code does in one sentence, then guess a few names in the codeb
 Wrong guesses still help.
 
 ```bash
-lode search 'parse a duration such as "5m" into seconds. parse_duration duration_from_str'
+lode search 'keep a copy of the bytes read from a stream so they can be read again. RecordingReader TeeReader replay_reader'
 ```
 
-Results, one per line:
+Results, one per line (here from [stacks-core](https://github.com/stacks-network/stacks-core)):
 
 ```text
 stacks-common/src/util/retry.rs:25:12  lines 25-29  pub struct RetryReader<'a, R: Read>  — Wrap a Read so that we store a copy of what was read.
+libsigner/src/tests/http.rs:128:8  lines 128-136  fn MockHTTPSocket::read(&mut self, buf: &mut [u8]) -> io::Result<usize>
+stacks-common/src/util/retry.rs:52:8  lines 52-57  fn RetryReader::read_and_buffer(&mut self, buf: &mut [u8]) -> io::Result<usize>
 ```
 
 ## With coding agents
@@ -88,24 +91,10 @@ Agents get three MCP tools:
 | `similar_code_search` | code that does the same job as given code, e.g. before writing a helper |
 | `status` | how fresh the index is |
 
-In our evaluation (28 tasks, 48 runs per setup), Opus 5.5 got 43/48 right with lodestone and
-27/48 without. See [docs/agents.md](docs/agents.md) for what `lode install` changes,
-the tool inputs and `lode transcript-stats`.
-
-## Commands
-
-| Command | Does |
-| ---- | ---- |
-| `lode register [path]` | add, watch and index a repository or worktree |
-| `lode search <query>` | search the current repository |
-| `lode status` | index freshness |
-| `lode index [--force]` | re-index the current repository |
-| `lode install` / `uninstall` | set up or remove the agent integration |
-| `lode stop` | stop the daemon |
-| `lode serve` | run the daemon in the foreground, always on |
-| `lode models` / `languages` | list models and grammars |
-
-`lode <command> --help` for the details.
+On 48 positive runs, Opus 5.5 solved 27 unaided, 37 with reuse advice, and 43 with the lodestone
+plugin ([results](eval/situations/README.md#situational-run-opus-55-stacks-core-and-librechat-sit-json)).
+See [docs/agents.md](docs/agents.md) for what `lode install` changes, the tool inputs and
+`lode transcript-stats`.
 
 ## Documentation
 
@@ -113,8 +102,10 @@ the tool inputs and `lode transcript-stats`.
 | ---- | ---- |
 | [Agents](docs/agents.md) | `lode install`, MCP tools, result format, usage statistics |
 | [Configuration](docs/configuration.md) | `config.toml`, models, backends, languages |
-| [Daemon](docs/daemon.md) | lifecycle, worktrees, ignored files, REST API |
+| [Daemon](docs/daemon.md) | every CLI command, lifecycle, worktrees, ignored files, REST API |
+| [Architecture](docs/architecture.md) | components, invariants, on-disk data, indexing and search |
 | [Evaluation](docs/evaluation.md) | measuring retrieval and agent quality |
+| [Contributing](CONTRIBUTING.md) | building, testing, code style |
 | [Releasing](docs/releasing.md) | how versions are published |
 | [Changelog](CHANGELOG.md) | changes per release |
 | [Decision log](docs/decision-log.md) | measurements and design decisions |
