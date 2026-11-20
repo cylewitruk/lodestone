@@ -645,17 +645,17 @@ fn shell_commands_count_as_the_searches_and_reads_they_make() {
                 "b1",
                 "sed -n 1,40p core/src/a.rs; grep -rn foo core | head".into(),
             ),
-            // Elsewhere: neither the search nor the read is the repository's.
+            // Elsewhere: neither the search nor the read is the repository's. (A relative `cd`,
+            // since Bash reads a Windows path's backslashes as escapes.)
             bash(
                 4,
                 "b2",
-                format!(
-                    "cd {} && grep -c foo notes.json; cat notes.json",
-                    s.other.display()
-                ),
+                "cd ../other && grep -c foo notes.json; cat notes.json".into(),
             ),
         ],
     );
+    // A file that exists, so `../other` resolves out of the repository.
+    fs::write(s.other.join("notes.json"), "{}").unwrap();
     s.scan();
     let r = s.report();
     assert_eq!(r.groups.len(), 1, "{:#?}", r.groups);
