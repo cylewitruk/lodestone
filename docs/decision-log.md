@@ -1289,3 +1289,49 @@ Measured against the release `lode` before this change: 95.0 MB, 72.8 MB strippe
   macOS.
 - Result: the default release `lode` is 48.0 MB (−49%); with `--features fastembed`, 67.5 MB.
   A release build from scratch takes about 4 minutes on the M4 Max.
+
+## A nudge at the grep, and stats that follow shell commands
+
+With the tools loaded and every session and subagent reminded, Claude made about one search per
+120 tree greps in indexed repositories, and its searches showed 0% "with a result read".
+
+- **Nudge.** A reminder at session start is far from the moment Claude greps. `lode install`
+  adds a `PreToolUse` hook on Claude's `Bash` tool (`lode hook pre-tool-use`, also in the
+  plugin): when a command searches a tree lodestone serves for three or more alternative names,
+  it adds one line pointing at `semantic_code_search`, naming `repo` when the search is outside
+  the session's checkout. It is silent for every other command and makes no permission decision.
+- **Failing open.** An older `lode` answers an unknown `hook` subcommand with exit status 2,
+  which Claude Code takes from a `PreToolUse` hook as "block the call": a project install or the
+  plugin running an older `lode` from PATH would have blocked every shell command. The installed
+  command ends in `|| true` (the plugin script in `|| exit 0`), and `lode hook` exits 0 for a
+  hook it does not know. With no daemon, an unreachable or hung one (0.1 s), an unregistered
+  directory or unreadable input, the hook exits 0, and silently unless the registry alone shows
+  the directory is served.
+- **Installer.** `lode install` and `uninstall` replace only the hook command they write, or one
+  an install from another path wrote (a quoted absolute path to `lode`), so a user's hook that
+  runs `lode` through a wrapper or alongside other commands stays.
+- **Shell commands.** `shell::analyse` reads a command's first pipeline stages, following `cd`
+  and `NAME=value`, skipping here-documents: its searches (target, tree or files, alternatives)
+  and its file reads. The nudge and the stats share it.
+- **Stats.**
+  - Claude reads mostly through the shell (875 `cat`/`sed -n`/`head` against 77 `Read` calls in
+    four sessions), so a search whose results it then read with `sed -n` counted as unread.
+    Shell reads now count as reads.
+  - A search naming a linked worktree as `repo` was grouped under the worktree while the same
+    session's greps and reads counted for the repository. It now counts for the repository,
+    also for a worktree since removed (by its `repo:worktree` name).
+  - Every shell grep counted for the session's repository; in one session about 890 of 990 ran
+    over scratch data. A call on a path outside every registered repository is no longer kept.
+  - A parser version bump dropped everything and read it again, losing what came from
+    transcripts the harnesses had since deleted (5 of the 11 Codex transcripts that searched
+    `concurro`). A bump, or registering a repository, now forgets only transcripts still on
+    disk. This bump reads those again once.
+  - A scan of one harness (`--codex`) after a bump dropped the other harness's calls until it
+    was scanned. A transcript's calls are now replaced in the transaction that reads it again.
+- Checked: unit tests for the command analysis; the transcript test counts a `sed -n` of a
+  result as read, drops a grep and a read elsewhere, and groups a worktree-named search with
+  its repository, and a scan of one harness keeps the other's calls; the daemon test nudges a
+  three-name tree grep, names a linked worktree searched from its main checkout, and is silent
+  for a one-name grep, a grep or `rg` of named files and a piped filter; the install tests write
+  the hook and keep a user's hook that runs `lode`. `eval/situations/score.py` counts shell text
+  searches as greps (`test_score.py`).
