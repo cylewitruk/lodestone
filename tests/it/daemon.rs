@@ -572,23 +572,31 @@ fn kill_mid_index_leaves_consistent_index() {
     );
 }
 
+/// Writes `home/gitconfig`, which makes the empty `home/git-ignore` the global git excludes file
+/// for a process given `GIT_CONFIG_GLOBAL` pointing at it, so the machine's git config cannot
+/// interfere. Returns the config's path.
+fn own_git_config(home: &Path) -> PathBuf {
+    write(home, "git-ignore", "");
+    // `ignore` expands every `~` in the path, and Windows temp dirs can be 8.3 short names
+    // (`RUNNER~1`); canonicalizing resolves them. Git config reads `\` as an escape.
+    let excludes = fs::canonicalize(home.join("git-ignore")).unwrap();
+    let excludes = excludes.to_string_lossy();
+    let excludes = excludes.strip_prefix(r"\\?\").unwrap_or(&excludes);
+    write(
+        home,
+        "gitconfig",
+        &format!("[core]\n\texcludesFile = {}\n", excludes.replace('\\', "/")),
+    );
+    home.join("gitconfig")
+}
+
 #[test]
 fn watcher_indexes_only_files_a_full_scan_would() {
     let root = repo(2);
     let home = tempdir();
-    // The global excludes file, set explicitly so the machine's git config cannot interfere.
-    write(&home, "global-ignore", "scratch/\n");
-    // `ignore` expands every `~` in the path, and Windows temp dirs can be 8.3 short names
-    // (`RUNNER~1`); canonicalizing resolves them. Git config reads `\` as an escape.
-    let excludes = fs::canonicalize(home.join("global-ignore")).unwrap();
-    let excludes = excludes.to_string_lossy();
-    let excludes = excludes.strip_prefix(r"\\?\").unwrap_or(&excludes);
-    write(
-        &home,
-        "gitconfig",
-        &format!("[core]\n\texcludesFile = {}\n", excludes.replace('\\', "/")),
-    );
-    let d = Daemon::start_with_env(&home, 0, &[("GIT_CONFIG_GLOBAL", &home.join("gitconfig"))]);
+    let gitconfig = own_git_config(&home);
+    write(&home, "git-ignore", "scratch/\n");
+    let d = Daemon::start_with_env(&home, 0, &[("GIT_CONFIG_GLOBAL", &gitconfig)]);
     d.post("/v1/register", json!({ "path": root.to_string_lossy() }));
     d.wait_fresh(Duration::from_secs(30));
     let before = d.status().files_indexed;
@@ -647,12 +655,15 @@ fn on_demand_home(idle_secs: u64) -> PathBuf {
         config.push_str(&format!("port = {}\n", free_port()));
     }
     write(&home, "config.toml", &config);
+    own_git_config(&home);
     home
 }
 
 fn lode(home: &Path) -> Command {
     let mut c = Command::new(BIN);
     c.env("LODESTONE_HOME", home)
+        // `own_git_config`'s, where the test wrote one; otherwise the machine's.
+        .env("GIT_CONFIG_GLOBAL", home.join("gitconfig"))
         .env("LODESTONE_TEST_EMBEDDER", "hash")
         .env_remove("LODESTONE_PORT")
         .env_remove("LODESTONE_SOCKET")
@@ -1166,6 +1177,57 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
     let registry = fs::read_to_string(home.join("registry.json")).unwrap();
     assert!(!registry.contains("feat"), "{registry}");
     assert!(!home.join("worktrees").join(&id).exists());
+    assert!(lode(&home).arg("stop").status().unwrap().success());
+}
+
+/// The global git excludes file applies relative to the checkout being indexed, as in git: a rule
+/// that hides nested checkouts from their parent does not hide a nested checkout's own files.
+#[test]
+fn global_excludes_apply_relative_to_the_indexed_checkout() {
+    let root = git_repo(3);
+    git(&root, &["worktree", "add", "-q", "trees/wt", "-b", "wt"]);
+    let wt = root.join("trees/wt").canonicalize().unwrap();
+    write(
+        &wt,
+        "core/src/only_wt.rs",
+        "/// Only in this worktree.\npub fn only_in_wt() {}\n",
+    );
+    let home = on_demand_home(60);
+    write(&home, "git-ignore", "**/trees/**\n");
+    // Indexed from outside both checkouts, as the daemon does.
+    let outside = tempdir();
+    let ok = lode(&home)
+        .args(["--local", "register"])
+        .arg(&root)
+        .current_dir(&outside)
+        .stdout(Stdio::null())
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    let search = |query: &str, repo: &Path| {
+        relay_call(
+            &home,
+            &outside,
+            "semantic_code_search",
+            json!({ "query": query, "repo": repo.to_string_lossy() }),
+        )
+    };
+
+    let (err, text) = search("only_in_wt", &root);
+    assert!(!err && !text.contains("only_wt.rs"), "{text}");
+    let (err, text) = search("only_in_wt", &wt);
+    assert!(!err && text.contains("core/src/only_wt.rs"), "{text}");
+
+    // A watched edit is filtered by the same rules.
+    write(
+        &wt,
+        "core/src/later.rs",
+        "/// Added after the first index.\npub fn added_later() {}\n",
+    );
+    wait_until("the edit", Duration::from_secs(30), || {
+        search("added_later", &wt).1.contains("core/src/later.rs")
+    });
     assert!(lode(&home).arg("stop").status().unwrap().success());
 }
 

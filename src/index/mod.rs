@@ -143,9 +143,9 @@ pub fn mtime_nanos(meta: &fs::Metadata) -> i64 {
 }
 
 /// Walks `root` respecting ignore files (`.gitignore` at every level, `.git/info/exclude`, the
-/// global git excludes file, `.ignore`, `.lodestoneignore`) and skipping hidden files, cache
-/// directories (`CACHEDIR.TAG`) and symlinks. Returns (accepted rel paths, skipped files per
-/// extension).
+/// global git excludes file relative to `root`, `.ignore`, `.lodestoneignore`) and skipping
+/// hidden files, cache directories (`CACHEDIR.TAG`) and symlinks. Returns (accepted rel paths,
+/// skipped files per extension).
 pub fn walk(
     root: &Path,
     accepts: &(dyn Fn(&Path) -> bool + Sync),
@@ -185,6 +185,8 @@ fn walk_within(
     let mut files = Vec::new();
     let mut skipped = BTreeMap::new();
     let walker = ignore::WalkBuilder::new(root)
+        // Global excludes match paths relative to this directory; the default is the process's.
+        .current_dir(root)
         .add_custom_ignore_filename(".lodestoneignore")
         .require_git(false)
         .filter_entry(move |e| {
