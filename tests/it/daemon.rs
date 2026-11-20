@@ -1077,6 +1077,41 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
             "{sub}"
         );
     }
+    // A tree search by guessed names is pointed at lodestone; other commands pass in silence.
+    let nudge = |command: &str| {
+        hook(
+            "pre-tool-use",
+            json!({ "cwd": core, "session_id": "s1", "tool_name": "Bash",
+                "tool_input": { "command": command } }),
+        )
+    };
+    let nudged = nudge("grep -rn 'fn a\\|fn b\\|fn c' . | head");
+    assert!(
+        nudged.contains("PreToolUse") && nudged.contains("semantic_code_search"),
+        "{nudged}"
+    );
+    assert!(!nudged.contains("`repo`"), "{nudged}");
+    assert_eq!(nudge("grep -rn 'fn a' ."), "");
+    assert_eq!(nudge("grep -n 'a\\|b\\|c' src/lib.rs"), "");
+    assert_eq!(nudge("cargo test 2>&1 | grep -E 'a|b|c'"), "");
+    assert_eq!(nudge("rg 'a|b|c' src/m1.rs"), "");
+    // From the main checkout into the linked worktree inside it, the nudge names the worktree.
+    let into_feat = hook(
+        "pre-tool-use",
+        json!({ "cwd": root, "session_id": "s1", "tool_name": "Bash",
+            "tool_input": { "command": "grep -rn 'fn a\\|fn b\\|fn c' .worktrees/feat/core" } }),
+    );
+    let context: Value = serde_json::from_str(&into_feat).unwrap();
+    let context = context["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    let named = context
+        .split_once("`repo`: `")
+        .and_then(|(_, rest)| rest.split_once('`'))
+        .map(|(path, _)| Path::new(path).canonicalize().unwrap());
+    assert_eq!(named.as_deref(), Some(feat.as_path()), "{context}");
+    // A hook from a newer install is not an error, which a harness could take as a refusal.
+    assert_eq!(hook("some-later-event", json!({ "cwd": core })), "");
 
     // A session in the worktree searches the worktree's own index, registered on first use.
     let search = |dir: &Path, query: &str| {

@@ -1,12 +1,16 @@
 //! Claude Code transcripts: `<projects>/<project>/<session>.jsonl`, plus subagents in
 //! `<session>/subagents/*.jsonl` under their parent's session id. Each line carries its session,
 //! working directory and timestamp. Tool calls are `tool_use` blocks and their results
-//! `tool_result` blocks. Attachments list the tools a session has: `prompt_snapshot` those loaded,
+//! `tool_result` blocks. A `Bash` call counts as the searches and file reads its command makes
+//! (see [`shell`]). Attachments list the tools a session has: `prompt_snapshot` those loaded,
 //! `deferred_tools_delta` those deferred behind ToolSearch.
+
+use std::path::Path;
 
 use serde_json::Value;
 
 use super::{Call, Event, Kind, Target, query_of, text_of, time};
+use crate::shell;
 
 pub fn parse(line: &str) -> Vec<Event> {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
@@ -19,7 +23,8 @@ pub fn parse(line: &str) -> Vec<Event> {
         return Vec::new();
     };
     let mut out = Vec::new();
-    if let Some(cwd) = v["cwd"].as_str() {
+    let cwd = v["cwd"].as_str();
+    if let Some(cwd) = cwd {
         out.push(Event::Session {
             id: session.to_string(),
             cwd: cwd.into(),
@@ -32,7 +37,11 @@ pub fn parse(line: &str) -> Vec<Event> {
     }));
     for b in v["message"]["content"].as_array().into_iter().flatten() {
         match b["type"].as_str() {
-            Some("tool_use") => out.extend(call(session, ts, b).map(Event::Call)),
+            Some("tool_use") => out.extend(
+                calls(session, ts, cwd.map(Path::new), b)
+                    .into_iter()
+                    .map(Event::Call),
+            ),
             Some("tool_result") => out.extend(b["tool_use_id"].as_str().map(|id| Event::Done {
                 id: id.to_string(),
                 ts,
@@ -45,29 +54,14 @@ pub fn parse(line: &str) -> Vec<Event> {
     out
 }
 
-fn call(session: &str, ts: i64, b: &Value) -> Option<Call> {
-    let input = &b["input"];
-    let path_of = |key: &str| input[key].as_str().map(|p| Target::Path(p.into()));
-    let (kind, query, path, target) = match b["name"].as_str()? {
-        "Grep" => (Kind::Grep, None, None, path_of("path")),
-        "Glob" => (Kind::Glob, None, None, path_of("path")),
-        "Read" => (
-            Kind::Read,
-            None,
-            input["file_path"].as_str().map(String::from),
-            path_of("file_path"),
-        ),
-        "Bash" if input["command"].as_str().is_some_and(is_shell_search) => {
-            (Kind::Grep, None, None, None)
-        }
-        name => {
-            let kind = lodestone_tool(name)?;
-            let target = input["repo"].as_str().map(|r| Target::Repo(r.into()));
-            (kind, Some(query_of(kind, input)), None, target)
-        }
+/// The calls a `tool_use` block counts as, made in `cwd`.
+fn calls(session: &str, ts: i64, cwd: Option<&Path>, b: &Value) -> Vec<Call> {
+    let (Some(id), Some(name)) = (b["id"].as_str(), b["name"].as_str()) else {
+        return Vec::new();
     };
-    Some(Call {
-        id: b["id"].as_str()?.to_string(),
+    let input = &b["input"];
+    let call = |id: String, kind, query, path: Option<String>, target| Call {
+        id,
         session: session.to_string(),
         kind,
         ts,
@@ -75,7 +69,43 @@ fn call(session: &str, ts: i64, b: &Value) -> Option<Call> {
         path,
         target,
         done: None,
-    })
+    };
+    let path_of = |key: &str| input[key].as_str().map(|p| Target::Path(p.into()));
+    let one = |kind, query, path, target| vec![call(id.to_string(), kind, query, path, target)];
+    match name {
+        "Grep" => one(Kind::Grep, None, None, path_of("path")),
+        "Glob" => one(Kind::Glob, None, None, path_of("path")),
+        "Read" => one(
+            Kind::Read,
+            None,
+            input["file_path"].as_str().map(String::from),
+            path_of("file_path"),
+        ),
+        "Bash" => {
+            let command = shell::analyse(input["command"].as_str().unwrap_or_default(), cwd);
+            let searches = command.searches.into_iter().enumerate().map(|(i, s)| {
+                let target = s.target.map(Target::Path);
+                call(format!("{id}:g{i}"), Kind::Grep, None, None, target)
+            });
+            let reads = command.reads.into_iter().enumerate().map(|(i, p)| {
+                let path = p.to_string_lossy().into_owned();
+                call(
+                    format!("{id}:r{i}"),
+                    Kind::Read,
+                    None,
+                    Some(path),
+                    Some(Target::Path(p)),
+                )
+            });
+            searches.chain(reads).collect()
+        }
+        name => lodestone_tool(name)
+            .map(|kind| {
+                let target = input["repo"].as_str().map(|r| Target::Repo(r.into()));
+                one(kind, Some(query_of(kind, input)), None, target)
+            })
+            .unwrap_or_default(),
+    }
 }
 
 /// The lodestone search an MCP tool name calls: `mcp__lodestone__…`, or
@@ -116,42 +146,9 @@ fn tools(attachment: &Value) -> Option<bool> {
         .then_some(loaded)
 }
 
-/// Whether a shell command runs a text search (`rg`, `grep`, `git grep`, …) over files. A search
-/// fed by a pipe filters another command's output and does not count.
-fn is_shell_search(cmd: &str) -> bool {
-    cmd.replace("||", ";").split([';', '&', '\n']).any(|part| {
-        let mut words = part
-            .split('|')
-            .next()
-            .unwrap_or_default()
-            .split_whitespace()
-            .skip_while(|w| w.contains('=') && !w.starts_with('-'));
-        match words.next().map(|w| w.rsplit('/').next().unwrap_or(w)) {
-            Some("rg" | "grep" | "egrep" | "ag" | "ack") => true,
-            Some("git") => words.next() == Some("grep"),
-            _ => false,
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn shell_searches() {
-        assert!(is_shell_search("cd repo && rg -n foo src"));
-        assert!(is_shell_search("LC_ALL=C grep -r foo ."));
-        assert!(is_shell_search("git grep -n foo"));
-        assert!(!is_shell_search("cargo nextest run"));
-        assert!(!is_shell_search("git log --grep foo"));
-        assert!(is_shell_search("grep -rn 'a\\|b' src | head"));
-        assert!(is_shell_search("test -d src || rg foo"));
-        assert!(!is_shell_search(
-            "cargo nextest run 2>&1 | grep -E 'FAIL|ok'"
-        ));
-        assert!(!is_shell_search("git show HEAD:a.rs | grep -n foo"));
-    }
 
     #[test]
     fn attachments_say_how_the_search_tools_are_listed() {

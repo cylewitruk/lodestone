@@ -4,7 +4,7 @@
 Usage: run.py <out-dir> --repo <corpus> --port <daemon port>
               [--situations write,review,refactor,locate] [--arms none,tools,skill]
               [--reps 3] [--jobs 4] [--model sonnet] [--effort medium] [--subagents]
-              [--only id,id] [--socket <daemon socket>]
+              [--only id,id] [--socket <daemon socket>] [--tools Bash,Read,Skill] [--allow Bash]
 
 Transcripts land in <out-dir>/<situation>/<arm>/<id>.r<rep>.jsonl; existing ones are skipped.
 """
@@ -86,7 +86,7 @@ def run_one(args, situation: str, arm: str, t: dict, rep: int) -> None:
         "claude", "-p", prompt(situation, t),
         "--model", args.model,
         "--output-format", "stream-json", "--verbose",
-        "--tools", TOOLS + (",Agent" if args.subagents else ""),
+        "--tools", args.tools + (",Agent" if args.subagents else ""),
         "--setting-sources", "project",
         "--settings", SETTINGS,
         "--strict-mcp-config", "--mcp-config", str(cfg),
@@ -95,8 +95,9 @@ def run_one(args, situation: str, arm: str, t: dict, rep: int) -> None:
     ]
     if args.effort:
         cmd += ["--effort", args.effort]
-    if lodestone:
-        cmd += ["--allowedTools", LODE_TOOLS]
+    allowed = ([LODE_TOOLS] if lodestone else []) + ([args.allow] if args.allow else [])
+    if allowed:
+        cmd += ["--allowedTools", ",".join(allowed)]
     if arm == "skill":
         cmd += ["--plugin-dir", str(PLUGIN_SKILL_ONLY)]
     elif arm == "hook":
@@ -133,6 +134,9 @@ def main() -> None:
     ap.add_argument("--effort", default="", help="default: the model's Claude Code default")
     ap.add_argument("--subagents", action="store_true", help="also allow the Agent tool (e.g. Explore)")
     ap.add_argument("--only", default="")
+    ap.add_argument("--tools", default=TOOLS, help="the built-in tools a run gets; `Bash,Read,Skill` "
+                    "is the desktop app's set, where searching is `grep` in Bash")
+    ap.add_argument("--allow", default="", help="more tools a run may use unasked, e.g. `Bash`")
     ap.add_argument("--plugin", type=Path, default=PLUGIN, help="plugin directory for arm `shipped`")
     ap.add_argument("--socket", type=Path, help="the daemon's socket, for the plugin's hook "
                     "(default: the configured one)")

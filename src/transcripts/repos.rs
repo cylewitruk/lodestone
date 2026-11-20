@@ -15,6 +15,9 @@ pub struct Repos {
     roots: Vec<PathBuf>,
     /// A repository's shared git directory → its registered root, the main checkout preferred.
     by_git: HashMap<PathBuf, PathBuf>,
+    /// A registered linked worktree → its repository's registered root, by its name
+    /// (`repo:worktree`), for a worktree that has since been removed.
+    main_of: HashMap<PathBuf, PathBuf>,
     /// Directory → repository, as resolved so far.
     seen: RefCell<HashMap<PathBuf, Option<PathBuf>>>,
 }
@@ -31,8 +34,17 @@ impl Repos {
                 }
             }
         }
+        let names: HashMap<String, PathBuf> = registered.iter().cloned().collect();
+        let main_of = registered
+            .iter()
+            .filter_map(|(name, root)| {
+                let main = names.get(name.split_once(':')?.0)?;
+                Some((root.clone(), main.clone()))
+            })
+            .collect();
         Self {
-            names: registered.iter().cloned().collect(),
+            main_of,
+            names,
             roots: registered.into_iter().map(|(_, r)| r).collect(),
             by_git: by_git.into_iter().map(|(g, (r, _))| (g, r)).collect(),
             seen: RefCell::new(HashMap::new()),
@@ -59,11 +71,9 @@ impl Repos {
 
     pub fn of(&self, t: &Target) -> Option<PathBuf> {
         match t {
-            Target::Repo(r) => self
-                .names
-                .get(r)
-                .cloned()
-                .or_else(|| self.of_path(Path::new(r))),
+            Target::Repo(r) => {
+                self.of_path(self.names.get(r).map_or(Path::new(r), PathBuf::as_path))
+            }
             Target::Path(p) => self.of_path(p),
         }
     }
@@ -76,7 +86,8 @@ impl Repos {
         }
         let repo = registry::git_repository(dir)
             .and_then(|(git, _)| self.by_git.get(&git).cloned())
-            .or_else(|| registry::root_of(&self.roots, dir));
+            .or_else(|| registry::root_of(&self.roots, dir))
+            .map(|root| self.main_of.get(&root).cloned().unwrap_or(root));
         self.seen
             .borrow_mut()
             .insert(dir.to_path_buf(), repo.clone());

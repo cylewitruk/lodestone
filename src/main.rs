@@ -185,6 +185,11 @@ enum HookCmd {
     PromptSubmit,
     /// The same, for each subagent.
     SubagentStart,
+    /// Point a shell search by guessed names in an indexed repository at lodestone's search.
+    PreToolUse,
+    /// A hook this `lode` does not know, from a newer install: nothing to add.
+    #[command(external_subcommand)]
+    Unknown(#[expect(dead_code, reason = "clap collects the arguments here")] Vec<String>),
 }
 
 /// How long `lode stop` waits for the daemon to exit.
@@ -363,15 +368,22 @@ fn main() -> anyhow::Result<()> {
                 HookCmd::SessionStart => HookEvent::SessionStart,
                 HookCmd::PromptSubmit => HookEvent::UserPromptSubmit,
                 HookCmd::SubagentStart => HookEvent::SubagentStart,
+                HookCmd::PreToolUse => HookEvent::PreToolUse,
+                HookCmd::Unknown(_) => return Ok(()),
             };
             let input = HookInput::read()?;
-            let out = agents::hook(
-                event,
-                &input.dir,
-                input.session.as_deref(),
-                &config,
-                cli.config.as_deref(),
-            );
+            let out = match (event, &input.command) {
+                (HookEvent::PreToolUse, command) => command
+                    .as_deref()
+                    .and_then(|c| agents::nudge(c, &input.dir, &config, cli.config.as_deref())),
+                _ => agents::hook(
+                    event,
+                    &input.dir,
+                    input.session.as_deref(),
+                    &config,
+                    cli.config.as_deref(),
+                ),
+            };
             if let Some(out) = out {
                 println!("{out}");
             }
@@ -659,6 +671,8 @@ struct HookInput {
     dir: PathBuf,
     /// The harness's session id.
     session: Option<String>,
+    /// The shell command a tool is about to run.
+    command: Option<String>,
 }
 
 impl HookInput {
@@ -677,6 +691,7 @@ impl HookInput {
         Ok(Self {
             dir,
             session: json["session_id"].as_str().map(String::from),
+            command: json["tool_input"]["command"].as_str().map(String::from),
         })
     }
 }

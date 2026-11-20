@@ -7,8 +7,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{Call, Kind};
 
-/// Bumped when parsing or the schema changes, so every transcript is read again.
-const PARSER_VERSION: &str = "4";
+/// Bumped when parsing or the schema changes, so every transcript still on disk is read again.
+const PARSER_VERSION: u32 = 5;
+
+/// The parser version that last changed the schema; what an older one extracted is dropped.
+const SCHEMA_SINCE: u32 = 4;
 
 const META: &str = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);";
 
@@ -78,22 +81,38 @@ impl Store {
                 r.get(0)
             })
             .optional()?;
-        if version.as_deref() != Some(PARSER_VERSION) {
-            // Read everything again, into the current schema.
+        let version = version.and_then(|v| v.parse::<u32>().ok());
+        if version.is_none_or(|v| v < SCHEMA_SINCE) {
             conn.execute_batch(
                 "DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS calls;",
             )?;
-            conn.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES ('parser', ?1)",
-                [PARSER_VERSION],
-            )?;
         }
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn })
+        let store = Self { conn };
+        if version != Some(PARSER_VERSION) {
+            store.reread()?;
+            store.conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('parser', ?1)",
+                [PARSER_VERSION.to_string()],
+            )?;
+        }
+        Ok(store)
     }
 
-    /// Forgets everything read when the registered repositories changed (`repos`), since calls
-    /// in repositories that were not registered were not kept.
+    /// Marks the transcripts still on disk to be read again from the start. Each keeps what was
+    /// extracted from it until a scan reads it again, and one its harness has since deleted keeps
+    /// it for good.
+    fn reread(&self) -> anyhow::Result<()> {
+        let mut st = self.conn.prepare("SELECT path FROM files")?;
+        let paths: Vec<String> = st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        for path in paths.iter().filter(|p| Path::new(p).exists()) {
+            self.save_file(path, &FileState::default())?;
+        }
+        Ok(())
+    }
+
+    /// Reads the transcripts still on disk again when the registered repositories changed
+    /// (`repos`), since calls in repositories that were not registered were not kept.
     pub fn reset_unless_registered(&self, repos: &str) -> anyhow::Result<()> {
         let seen: Option<String> = self
             .conn
@@ -102,8 +121,7 @@ impl Store {
             })
             .optional()?;
         if seen.as_deref() != Some(repos) {
-            self.conn
-                .execute_batch("DELETE FROM files; DELETE FROM sessions; DELETE FROM calls;")?;
+            self.reread()?;
             self.conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('repos', ?1)",
                 [repos],
@@ -159,7 +177,7 @@ impl Store {
         Ok(())
     }
 
-    /// Drops what was extracted from a transcript that was rewritten.
+    /// Drops what was extracted from a transcript, before reading it from the start.
     pub fn forget_calls(&self, path: &str) -> anyhow::Result<()> {
         self.conn
             .execute("DELETE FROM calls WHERE file = ?1", [path])?;

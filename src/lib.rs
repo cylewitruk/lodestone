@@ -12,6 +12,7 @@ pub mod graph;
 pub mod index;
 pub mod registry;
 pub mod search;
+pub mod shell;
 #[doc(hidden)]
 pub mod testutil;
 pub mod text;

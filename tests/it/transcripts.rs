@@ -365,6 +365,54 @@ fn reads_sessions_in_registered_repositories_incrementally() {
             .count(),
         2
     );
+
+    // What was read from a transcript deleted since stays when the rest is read again.
+    fs::remove_file(&main).unwrap();
+    s.register(&[&s.repo]);
+    s.scan();
+    let r = s.report();
+    let kept = r
+        .groups
+        .iter()
+        .find(|g| g.harness == "claude" && g.repo == s.repo.to_string_lossy())
+        .unwrap();
+    assert_eq!((kept.greps, kept.globs), (1, 1));
+
+    // A scan of one harness's transcripts keeps what was read from the others' until they are
+    // read again.
+    let calls = |r: &Report, harness: &str| -> Vec<_> {
+        r.groups
+            .iter()
+            .filter(|g| g.harness == harness)
+            .map(|g| {
+                (
+                    g.repo.clone(),
+                    g.semantic,
+                    g.similar,
+                    g.greps,
+                    g.globs,
+                    g.reads,
+                )
+            })
+            .collect()
+    };
+    let on_disk = s.claude_file(&s.repo, "s7.jsonl");
+    append(
+        &on_disk,
+        &[claude_line(
+            "s7",
+            &s.repo,
+            1,
+            "assistant",
+            tool_use("g7", "Grep", json!({})),
+        )],
+    );
+    s.scan();
+    let before = calls(&s.report(), "claude");
+    assert!(before.iter().any(|c| c.3 == 2), "{before:?}");
+    s.register(&[&s.repo, &s.other]);
+    transcripts::scan(&s.config, &[(Harness::Codex, s.codex.clone())]).unwrap();
+    assert_eq!(calls(&s.report(), "claude"), before);
 }
 
 #[test]
@@ -552,4 +600,67 @@ fn report_filters_by_repo_harness_and_date() {
         }),
         0
     );
+}
+
+#[test]
+fn shell_commands_count_as_the_searches_and_reads_they_make() {
+    let s = Setup::new();
+    // A linked worktree registered under its repository's name, since removed.
+    let worktree = s.other.join("wt");
+    fs::write(
+        s.config.data_dir().join("registry.json"),
+        json!({ "repos": [{ "root": s.repo, "name": "repo" },
+                          { "root": worktree, "name": "repo:wt" }] })
+        .to_string(),
+    )
+    .unwrap();
+    let bash = |n: u32, id: &str, command: String| {
+        let input = json!({ "command": command });
+        claude_line("s1", &s.repo, n, "assistant", tool_use(id, "Bash", input))
+    };
+    append(
+        &s.claude_file(&s.repo, "s1.jsonl"),
+        &[
+            claude_line(
+                "s1",
+                &s.repo,
+                1,
+                "assistant",
+                tool_use(
+                    "q1",
+                    "mcp__lodestone__semantic_code_search",
+                    json!({ "query": "a", "repo": "repo:wt" }),
+                ),
+            ),
+            claude_line(
+                "s1",
+                &s.repo,
+                2,
+                "user",
+                tool_result("q1", "core/src/a.rs:3:8  lines 3-5  pub fn a()"),
+            ),
+            // Reads a result and searches the repository.
+            bash(
+                3,
+                "b1",
+                "sed -n 1,40p core/src/a.rs; grep -rn foo core | head".into(),
+            ),
+            // Elsewhere: neither the search nor the read is the repository's. (A relative `cd`,
+            // since Bash reads a Windows path's backslashes as escapes.)
+            bash(
+                4,
+                "b2",
+                "cd ../other && grep -c foo notes.json; cat notes.json".into(),
+            ),
+        ],
+    );
+    // A file that exists, so `../other` resolves out of the repository.
+    fs::write(s.other.join("notes.json"), "{}").unwrap();
+    s.scan();
+    let r = s.report();
+    assert_eq!(r.groups.len(), 1, "{:#?}", r.groups);
+    let c = group(&r, "claude");
+    assert_eq!(c.repo, s.repo.to_string_lossy());
+    assert_eq!((c.semantic, c.searches_read), (1, 1));
+    assert_eq!((c.greps, c.reads), (1, 1));
 }

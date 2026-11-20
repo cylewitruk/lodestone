@@ -91,6 +91,13 @@ carry `line`, `line_end`, `name_line` and `name_column`.
   - Claude Code's desktop app skips SessionStart hooks, so `lode hook prompt-submit` adds the
     reminder to the first prompt instead.
   - Subagents don't see their session's reminder, so `lode hook subagent-start` adds it to each.
+- **Nudge:** for Claude, `lode hook pre-tool-use` runs before each shell command. When it searches
+  a directory tree lodestone serves for three or more names (`grep -rn 'a\|b\|c' .`), it adds a
+  line pointing at `semantic_code_search`, with `repo` when the search is in another checkout.
+  It says nothing for any other command and never blocks one: the installed command ends in
+  `|| true`.
+- **Your hooks:** `lode install` and `uninstall` change only the hook commands lodestone wrote; a
+  hook of yours that runs `lode` stays.
 - **Deferred tools:** the search tools ask Claude Code to load them upfront
   (`_meta["anthropic/alwaysLoad"]`, v2.1.285 or later). Where they're still deferred, the reminder
   and skill say to load them with ToolSearch (`+lodestone search`).
@@ -130,14 +137,16 @@ calls from a date, `--queries` lists every search, `--json` is for machines.
 
 **What counts:**
 
-- **Repository:** each call counts towards the registered repository it worked in (its `repo`,
-  file path or command directory, else the session's directory). Linked worktrees count towards
-  their repository; calls elsewhere are dropped.
-- **Grep:** a Claude shell command counts when `rg`, `grep` or `git grep` searches files, not when
-  it filters output (`cargo test | grep FAILED`). Codex commands count by Codex's own
-  classification.
+- **Repository:** each call counts towards the registered repository it worked in (its file path
+  or command directory, else its `repo`, else the session's directory). Linked worktrees count
+  towards their repository, also when named as `repo`; calls elsewhere are dropped.
+- **Shell commands:** a Claude shell command counts as the greps (`rg`, `grep`, `git grep`) and
+  file reads (`cat`, `sed -n`, `head`, `tail`) it makes, each where it ran (after `cd`) or on the
+  path it names. A grep that filters output (`cargo test | grep FAILED`) is not one. Codex
+  commands count by Codex's own classification.
 
 **Storage:** `~/.lodestone/transcripts.sqlite` keeps call kinds and times, queries, result paths
 and the paths of file reads; no other content. It reads only new lines of each transcript and
-keeps what it extracted after the harness deletes old transcripts. Registering another repository
-re-reads everything.
+keeps what it extracted after the harness deletes old transcripts. Registering another repository,
+or a new `lode` version, re-reads the transcripts still on disk; each keeps its data until it is
+read again.
