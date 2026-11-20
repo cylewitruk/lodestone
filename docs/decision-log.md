@@ -1290,6 +1290,19 @@ Measured against the release `lode` before this change: 95.0 MB, 72.8 MB strippe
 - Result: the default release `lode` is 48.0 MB (−49%); with `--features fastembed`, 67.5 MB.
   A release build from scratch takes about 4 minutes on the M4 Max.
 
+## Global git excludes apply relative to the indexed checkout
+
+- A checkout under a directory the global git excludes file ignores (`**/.worktrees/**`, to keep
+  nested worktrees out of their parent) indexed as empty unless `lode` happened to run inside it:
+  the walker matched global patterns against paths relative to the process's working directory,
+  so from the daemon the checkout's own path matched. They now match relative to the checkout
+  being indexed, as in git. Full scans and watched edits share the walker.
+- The daemon tests read their global excludes from the test's home, not the machine's; two
+  worktree tests failed on a machine with such a rule.
+- Checked: a test with its own excludes file indexes from outside both checkouts; the parent
+  skips the nested worktree, and a search naming the worktree finds its file and a later edit.
+  It fails without the fix.
+
 ## A nudge at the grep, and stats that follow shell commands
 
 With the tools loaded and every session and subagent reminded, Claude made about one search per
