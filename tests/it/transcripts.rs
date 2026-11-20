@@ -377,6 +377,42 @@ fn reads_sessions_in_registered_repositories_incrementally() {
         .find(|g| g.harness == "claude" && g.repo == s.repo.to_string_lossy())
         .unwrap();
     assert_eq!((kept.greps, kept.globs), (1, 1));
+
+    // A scan of one harness's transcripts keeps what was read from the others' until they are
+    // read again.
+    let calls = |r: &Report, harness: &str| -> Vec<_> {
+        r.groups
+            .iter()
+            .filter(|g| g.harness == harness)
+            .map(|g| {
+                (
+                    g.repo.clone(),
+                    g.semantic,
+                    g.similar,
+                    g.greps,
+                    g.globs,
+                    g.reads,
+                )
+            })
+            .collect()
+    };
+    let on_disk = s.claude_file(&s.repo, "s7.jsonl");
+    append(
+        &on_disk,
+        &[claude_line(
+            "s7",
+            &s.repo,
+            1,
+            "assistant",
+            tool_use("g7", "Grep", json!({})),
+        )],
+    );
+    s.scan();
+    let before = calls(&s.report(), "claude");
+    assert!(before.iter().any(|c| c.3 == 2), "{before:?}");
+    s.register(&[&s.repo, &s.other]);
+    transcripts::scan(&s.config, &[(Harness::Codex, s.codex.clone())]).unwrap();
+    assert_eq!(calls(&s.report(), "claude"), before);
 }
 
 #[test]

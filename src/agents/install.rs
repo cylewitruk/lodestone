@@ -164,11 +164,13 @@ pub enum Step {
         args: Vec<String>,
         may_fail: bool,
     },
-    /// Adds or removes our `event` hook in a Claude settings or Codex hooks JSON file.
+    /// Adds (`add`) or removes our `event` hook, running `command`, in a Claude settings or
+    /// Codex hooks JSON file.
     Hook {
         path: PathBuf,
         event: HookEvent,
-        command: Option<String>,
+        command: String,
+        add: bool,
     },
     /// Adds or removes our server (`<program> mcp`) in a `.mcp.json` file.
     McpJson {
@@ -193,13 +195,11 @@ impl fmt::Display for Step {
             Step::Remove { path } => write!(f, "remove {}", path.display()),
             Step::Run { program, args, .. } => write!(f, "run {program} {}", args.join(" ")),
             Step::Hook {
-                path,
-                event,
-                command,
+                path, event, add, ..
             } => write!(
                 f,
                 "{} {} hook in {}",
-                verb(command.is_some()),
+                verb(*add),
                 event.name(),
                 path.display()
             ),
@@ -262,7 +262,8 @@ pub fn install(harnesses: &[Harness], t: &Target) -> Vec<Step> {
         steps.extend(h.hook_events().iter().map(|&event| Step::Hook {
             path: t.hooks_file(h),
             event,
-            command: Some(t.hook_command(event)),
+            command: t.hook_command(event),
+            add: true,
         }));
     }
     steps
@@ -282,7 +283,8 @@ pub fn uninstall(harnesses: &[Harness], t: &Target) -> Vec<Step> {
         steps.extend(h.hook_events().iter().map(|&event| Step::Hook {
             path: t.hooks_file(h),
             event,
-            command: None,
+            command: t.hook_command(event),
+            add: false,
         }));
     }
     if Harness::ALL.iter().all(|h| harnesses.contains(h)) {
@@ -330,7 +332,8 @@ pub fn apply(step: &Step) -> anyhow::Result<()> {
             path,
             event,
             command,
-        } => edit_json(path, |doc| set_hook(doc, *event, command.as_deref())),
+            add,
+        } => edit_json(path, |doc| set_hook(doc, *event, command, *add)),
         Step::McpJson { path, program } => {
             edit_json(path, |doc| set_mcp_server(doc, program.as_deref()))
         }
@@ -410,14 +413,36 @@ fn edit_json(path: &Path, edit: impl FnOnce(&mut Map<String, Value>)) -> anyhow:
     write_if_changed(path, &text, &new)
 }
 
-fn is_ours(hook: &Value, event: HookEvent) -> bool {
-    hook["command"]
-        .as_str()
-        .is_some_and(|c| c.contains("lode") && c.contains(event.args()))
+/// Whether `hook` is our `event` hook: `command`, which this install writes, or what an install
+/// from another path wrote, `'<absolute path to lode>' <args>` (guarded for `PreToolUse`). Any
+/// other command is the user's, even one that runs `lode`.
+fn is_ours(hook: &Value, event: HookEvent, command: &str) -> bool {
+    let Some(theirs) = hook["command"].as_str() else {
+        return false;
+    };
+    if theirs == command {
+        return true;
+    }
+    let theirs = match event {
+        HookEvent::PreToolUse => theirs.strip_suffix(" || true"),
+        _ => Some(theirs),
+    };
+    theirs
+        .and_then(|c| c.strip_suffix(event.args()))
+        .and_then(|p| p.strip_suffix("' "))
+        .and_then(|p| p.strip_prefix('\''))
+        .filter(|path| !path.contains('\'') && is_absolute(path))
+        .and_then(|path| Path::new(path).file_name())
+        .is_some_and(|name| name == "lode" || name == "lode.exe")
 }
 
-/// Replaces our `event` hook with one running `command`, or removes it; other hooks stay.
-fn set_hook(doc: &mut Map<String, Value>, event: HookEvent, command: Option<&str>) {
+/// Absolute on this platform, or written as one for a Unix shell.
+fn is_absolute(path: &str) -> bool {
+    path.starts_with('/') || Path::new(path).is_absolute()
+}
+
+/// Replaces our `event` hook with one running `command` (`add`), or removes it; other hooks stay.
+fn set_hook(doc: &mut Map<String, Value>, event: HookEvent, command: &str, add: bool) {
     let hooks = doc
         .entry("hooks")
         .or_insert_with(|| json!({}))
@@ -429,11 +454,11 @@ fn set_hook(doc: &mut Map<String, Value>, event: HookEvent, command: Option<&str
         .unwrap_or_default();
     for g in &mut groups {
         if let Some(list) = g.get_mut("hooks").and_then(Value::as_array_mut) {
-            list.retain(|h| !is_ours(h, event));
+            list.retain(|h| !is_ours(h, event, command));
         }
     }
     groups.retain(|g| g["hooks"].as_array().is_none_or(|l| !l.is_empty()));
-    if let Some(command) = command {
+    if add {
         let mut group = Map::new();
         if let Some(matcher) = event.matcher() {
             group.insert("matcher".into(), matcher.into());
@@ -676,7 +701,11 @@ mod tests {
                 "SessionStart": [
                     { "hooks": [
                         { "type": "command", "command": "other" },
-                        { "type": "command", "command": "'/old/lode' hook session-start" }
+                        { "type": "command", "command": "'/old/lode' hook session-start" },
+                        { "type": "command", "command": "lode hook session-start && ./team-setup" },
+                        { "type": "command", "command": "./setup; lode hook session-start" },
+                        { "type": "command", "command": "./tools/lode.sh hook session-start" },
+                        { "type": "command", "command": "./bootstrap;/opt/bin/lode hook session-start" }
                     ] }
                 ],
                 "Stop": [ { "hooks": [ { "type": "command", "command": "bye" } ] } ]
@@ -687,19 +716,95 @@ mod tests {
         set_hook(
             &mut doc,
             HookEvent::SessionStart,
-            Some("lode hook session-start"),
+            "lode hook session-start",
+            true,
         );
         let keys: Vec<&str> = doc.keys().map(String::as_str).collect();
         assert_eq!(keys, ["model", "hooks", "theme"]);
         let groups = doc["hooks"]["SessionStart"].as_array().unwrap();
         assert_eq!(groups.len(), 2);
-        assert_eq!(
-            groups[0]["hooks"],
-            json!([{ "type": "command", "command": "other" }])
-        );
+        // Only the command lodestone wrote is replaced; commands that also run lode stay.
+        let theirs = json!([
+            { "type": "command", "command": "other" },
+            { "type": "command", "command": "lode hook session-start && ./team-setup" },
+            { "type": "command", "command": "./setup; lode hook session-start" },
+            { "type": "command", "command": "./tools/lode.sh hook session-start" },
+            { "type": "command", "command": "./bootstrap;/opt/bin/lode hook session-start" }
+        ]);
+        assert_eq!(groups[0]["hooks"], theirs);
         assert_eq!(groups[1]["hooks"][0]["command"], "lode hook session-start");
-        set_hook(&mut doc, HookEvent::SessionStart, None);
-        assert_eq!(doc["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
+        set_hook(
+            &mut doc,
+            HookEvent::SessionStart,
+            "lode hook session-start",
+            false,
+        );
+        let groups = doc["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["hooks"], theirs);
         assert!(doc["hooks"]["Stop"].is_array());
+    }
+
+    #[test]
+    fn a_renamed_binary_replaces_and_removes_its_own_hook() {
+        let theirs = json!({ "type": "command", "command": "'./tools/lode' hook session-start" });
+        let mut doc: Map<String, Value> = serde_json::from_value(
+            json!({ "hooks": { "SessionStart": [ { "hooks": [theirs] } ] } }),
+        )
+        .unwrap();
+        let dev = "'/opt/bin/lode-dev' hook session-start";
+        set_hook(&mut doc, HookEvent::SessionStart, dev, true);
+        set_hook(&mut doc, HookEvent::SessionStart, dev, true);
+        let commands = |doc: &Map<String, Value>| -> Vec<String> {
+            doc["hooks"]["SessionStart"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|g| g["hooks"].as_array().unwrap().clone())
+                .map(|h| h["command"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(commands(&doc), ["'./tools/lode' hook session-start", dev]);
+        set_hook(&mut doc, HookEvent::SessionStart, dev, false);
+        assert_eq!(commands(&doc), ["'./tools/lode' hook session-start"]);
+    }
+
+    #[test]
+    fn hooks_are_ours_only_in_the_form_installed() {
+        let pre = HookEvent::PreToolUse;
+        let start = HookEvent::SessionStart;
+        let ours = |c: &str, e, installed: &str| is_ours(&json!({ "command": c }), e, installed);
+        // What this install writes, whatever the binary is called.
+        let dev = "'/opt/bin/lode-dev' hook session-start";
+        assert!(ours(dev, start, dev));
+        assert!(ours(
+            "lode hook pre-tool-use || true",
+            pre,
+            "lode hook pre-tool-use || true"
+        ));
+        // What an install from another path wrote.
+        let installed = "'/new/lode' hook pre-tool-use || true";
+        assert!(ours(
+            "'/opt/my bin/lode' hook pre-tool-use || true",
+            pre,
+            installed
+        ));
+        let exe = std::env::current_dir().unwrap().join("lode.exe");
+        let exe = format!("'{}' hook session-start", exe.display());
+        assert!(ours(&exe, start, dev));
+        assert!(!ours("'/old/lode' hook session-start || true", start, dev));
+        assert!(!ours("'/old/lode' hook pre-tool-use", start, dev));
+        // Wrappers, relative paths and compound commands that run `lode` are the user's.
+        for theirs in [
+            "./tools/lode.sh hook session-start",
+            "'./tools/lode' hook session-start",
+            "'./tools/lode.sh' hook session-start",
+            "./bootstrap;/opt/bin/lode hook session-start",
+            "/opt/bin/lode hook session-start",
+            "lode hook session-start && ./more",
+            "'/opt/bin/lode' hook session-start && ./more",
+        ] {
+            assert!(!ours(theirs, start, dev), "{theirs}");
+        }
     }
 }

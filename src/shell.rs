@@ -99,7 +99,8 @@ pub fn analyse(command: &str, cwd: Option<&Path>) -> Command {
     out
 }
 
-/// The search `args` describe; `tree` when the program searches directories by default.
+/// The search `args` describe; `tree` when the program searches directories by default. It does
+/// not search a tree when every path it names is an existing file.
 fn search(args: &[String], tree: bool, dir: Option<&Path>) -> Search {
     let recursive = args.iter().any(|a| {
         a == "--recursive"
@@ -112,8 +113,8 @@ fn search(args: &[String], tree: bool, dir: Option<&Path>) -> Search {
         .map(|w| w[1].as_str());
     let mut operands = operands(args, VALUE_SHORT_FLAGS);
     let pattern = named.or_else(|| operands.next()).unwrap_or_default();
-    let target = operands
-        .find_map(|p| {
+    let paths: Vec<Option<PathBuf>> = operands
+        .map(|p| {
             // A glob searches the directory it is in.
             let literal = p.split(['*', '?', '[', '{']).next().unwrap_or_default();
             let path = if literal.len() == p.len() {
@@ -123,10 +124,18 @@ fn search(args: &[String], tree: bool, dir: Option<&Path>) -> Search {
             };
             (!path.is_empty()).then(|| resolve(path, dir)).flatten()
         })
-        .or_else(|| dir.map(Path::to_path_buf));
+        .collect();
+    let named_files = !paths.is_empty()
+        && paths
+            .iter()
+            .all(|p| p.as_ref().is_some_and(|p| p.is_file()));
     Search {
-        target,
-        tree: tree || recursive,
+        target: paths
+            .into_iter()
+            .flatten()
+            .next()
+            .or_else(|| dir.map(Path::to_path_buf)),
+        tree: (tree || recursive) && !named_files,
         alternatives: pattern.matches('|').count() + 1,
     }
 }
@@ -318,6 +327,19 @@ mod tests {
         let s = &run("rg -t py -e 'a|b|c|d'").searches[0];
         assert_eq!((s.tree, s.alternatives), (true, 4));
         assert!(run("grep --include='*.py' foo .").searches[0].tree);
+    }
+
+    #[test]
+    fn named_files_are_not_a_tree() {
+        let dir = crate::testutil::tempdir();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+        let tree = |c: &str| analyse(c, Some(&dir)).searches[0].tree;
+        assert!(!tree("rg 'a|b|c' src/lib.rs"));
+        assert!(!tree("grep -rn 'a|b|c' src/lib.rs"));
+        assert!(tree("rg 'a|b|c' src/lib.rs src"));
+        assert!(tree("rg 'a|b|c' src/missing.rs"));
+        assert!(tree("rg 'a|b|c'"));
     }
 
     #[test]

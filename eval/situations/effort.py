@@ -6,7 +6,7 @@ Usage: effort.py <out-dir> [situation ...]   (default: write)
 For each run of a task that has an answer, "found" is the first tool result containing the
 answer (the write task's `accept` pattern, or an answer symbol). Reports per arm: how often the
 answer was found, and how often it was found but not used; for found runs, the median tool calls,
-search calls (Grep, Glob, lodestone `search`) and tokens up to and including the finding call;
+search calls (Grep or a shell text search, Glob, lodestone) and tokens up to and including the finding call;
 and for all runs, the median search calls, tokens and seconds for the whole run.
 """
 import json
@@ -18,9 +18,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from run import tasks  # noqa: E402
-from score import SEARCHES as LODE_SEARCHES, grade, parse  # noqa: E402
+from score import SEARCHES as LODE_SEARCHES, grade, is_grep, parse  # noqa: E402
 
-SEARCHES = {"Grep", "Glob"} | LODE_SEARCHES
+SEARCHES = {"Glob"} | LODE_SEARCHES
 
 
 def pattern(situation: str, t: dict):
@@ -56,7 +56,7 @@ def trace(path: Path, pat) -> dict | None:
             for b in msg.get("content", []):
                 if b.get("type") == "tool_use":
                     n_calls += 1
-                    n_search += b["name"] in SEARCHES
+                    n_search += b["name"] in SEARCHES or is_grep(b["name"], b.get("input", {}))
                     calls[b["id"]], searches[b["id"]] = n_calls, n_search
         elif ev.get("type") == "user":
             for b in msg.get("content", []) if isinstance(msg.get("content"), list) else []:

@@ -19,6 +19,8 @@ from run import tasks  # noqa: E402
 
 SEARCHES = {f"mcp__lodestone__{t}" for t in ("search", "semantic_code_search", "similar_code_search")}
 SIMILAR = "mcp__lodestone__similar_code_search"
+# Programs that search files (`git grep` too); as in `src/shell.rs`.
+SEARCH_PROGRAMS = {"rg", "grep", "egrep", "fgrep", "ag", "ack"}
 # An identifier-like word: snake_case with an underscore, or camel/Pascal case with an inner capital.
 IDENT = re.compile(r"\b(?:[a-z][a-z0-9]*_[a-z0-9_]+|[a-z]+[A-Z]\w*|[A-Z][a-z0-9]+[A-Z]\w*)\b")
 
@@ -29,6 +31,112 @@ def query(i: dict) -> str:
         code = i["code"]
         return "\n\n".join(code) if isinstance(code, list) else code
     return " ".join([i.get("query", ""), *i.get("example_identifiers", [])])
+
+
+def first_words(command: str) -> list[list[str]]:
+    """The words of each shell statement that does not read a pipe. Operators (`;`, `&`, `|`,
+    `&&`, `||`, a newline, `<<`) and comments count only outside quotes; here-document bodies
+    are skipped, and a line ending in `|`, `&&`, `||` or `\\` continues on the next."""
+    out: list[list[str]] = []
+    words: list[str] = []
+    word: str | None = None
+    piped = False  # the statement reads a pipe
+    continued = False  # the last operator needs a command after it, so a newline continues
+    heredoc: bool | None = None  # the next word names a here-document (True: `<<-`)
+    delimiters: list[tuple[str, bool]] = []  # here-documents whose bodies follow this line
+    quote = None
+    i, n = 0, len(command)
+
+    def end_word() -> None:
+        nonlocal word, heredoc, continued
+        if word is not None:
+            if heredoc is not None:
+                delimiters.append((word, heredoc))
+                heredoc = None
+            else:
+                words.append(word)
+                continued = False
+            word = None
+
+    def end_statement(op: str) -> None:
+        nonlocal words, piped, continued
+        end_word()
+        if words and not piped:
+            out.append(words)
+        words, piped, continued = [], op == "|", op in ("|", "&&", "||")
+
+    while i < n:
+        c = command[i]
+        if quote:
+            if c == quote:
+                quote = None
+            elif c == "\\" and quote == '"' and i + 1 < n:
+                i += 1
+                word += command[i]
+            else:
+                word += c
+            i += 1
+        elif c in "'\"":
+            quote, word = c, word or ""
+            i += 1
+        elif c == "\\" and command.startswith("\n", i + 1):  # line continuation
+            i += 2
+        elif c == "\\" and i + 1 < n:
+            word = (word or "") + command[i + 1]
+            i += 2
+        elif c == "#" and word is None:  # a comment, to the end of the line
+            nl = command.find("\n", i)
+            i = n if nl < 0 else nl
+        elif c in " \t":
+            end_word()
+            i += 1
+        elif c == "\n":
+            end_word()
+            i += 1
+            while delimiters and i < n:  # skip the bodies
+                nl = command.find("\n", i)
+                line, i = (command[i:], n) if nl < 0 else (command[i:nl], nl + 1)
+                delimiter, tabs = delimiters[0]
+                if (line.lstrip("\t") if tabs else line) == delimiter:
+                    delimiters.pop(0)
+            if not continued:
+                end_statement("\n")
+        elif command.startswith(("&&", "||"), i):
+            end_statement(command[i : i + 2])
+            i += 2
+        elif command.startswith("<<<", i):  # a here-string: the next word is input
+            end_word()
+            i += 3
+        elif command.startswith("<<", i):
+            end_word()
+            heredoc = command.startswith("<<-", i)
+            i += 3 if heredoc else 2
+        elif c == "&" and word and word.endswith((">", "<")):  # `2>&1`
+            word += c
+            i += 1
+        elif c in ";&|":
+            end_statement(c)
+            i += 1
+        else:
+            word = (word or "") + c
+            i += 1
+    if quote is None:
+        end_statement("")
+    return out
+
+
+def is_grep(name: str, i: dict) -> bool:
+    """A text search: the Grep tool, or a shell command with a statement that starts one."""
+    if name == "Grep":
+        return True
+    if name != "Bash":
+        return False
+    for words in first_words(i.get("command", "")):
+        words = [w for w in words if not re.fullmatch(r"\w+=.*", w)][:2]
+        program = words[0].rsplit("/", 1)[-1] if words else ""
+        if program in SEARCH_PROGRAMS or (program == "git" and words[1:] == ["grep"]):
+            return True
+    return False
 
 
 def combined(query: str) -> bool:
@@ -55,6 +163,7 @@ def parse(path: Path) -> dict:
     names = [n for n, _ in calls]
     queries = [query(i) for n, i in calls if n in SEARCHES]
     first_search = next((k for k, n in enumerate(names) if n in SEARCHES), None)
+    greps = [k for k, (n, i) in enumerate(calls) if is_grep(n, i)]
     return {
         "final": r.get("result") or text or "",
         "complete": result is not None and not r.get("is_error"),
@@ -65,14 +174,13 @@ def parse(path: Path) -> dict:
         "turns": r.get("num_turns") or 0,
         "calls": len(calls),
         "searches": len(queries),
-        "greps": names.count("Grep"),
+        "greps": len(greps),
         "reads": names.count("Read"),
         "globs": names.count("Glob"),
         "skill": any(n == "Skill" and "lodestone" in json.dumps(i) for n, i in calls),
         "combined": sum(map(combined, queries)) / len(queries) if queries else None,
         "similar": names.count(SIMILAR),
-        "grep_first": ("Grep" in names
-                       and (first_search is None or names.index("Grep") < first_search)),
+        "grep_first": bool(greps) and (first_search is None or greps[0] < first_search),
         "queries": queries,
     }
 

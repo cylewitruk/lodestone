@@ -194,12 +194,15 @@ fn read_file(
     let mut file = File::open(path)?;
     let mut state = match saved {
         Some(s) if s.offset <= meta.len() && head(&mut file, s.head_len)? == s.head => s,
-        Some(_) => {
-            store.forget_calls(&key)?;
-            FileState::default()
-        }
-        None => FileState::default(),
+        // Rewritten.
+        _ => FileState::default(),
     };
+    store.begin()?;
+    // Read from the start (new, rewritten, or marked to be read again): what it replaces goes
+    // in the same transaction.
+    if state.offset == 0 {
+        store.forget_calls(&key)?;
+    }
     state.size = meta.len();
     state.mtime = mtime_nanos(&meta);
     // The session this file belongs to, and the repository its working directory is in.
@@ -221,7 +224,6 @@ fn read_file(
     file.seek(SeekFrom::Start(state.offset))?;
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
-    store.begin()?;
     loop {
         line.clear();
         let n = reader.read_until(b'\n', &mut line)?;

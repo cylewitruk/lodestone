@@ -166,19 +166,14 @@ pub fn nudge(
         .filter(|s| s.tree && s.alternatives >= GUESSES)
         .max_by_key(|s| s.alternatives)?;
     let target = search.target.as_deref().unwrap_or(dir);
+    let top = registry::checkout_top(target);
     let repo = match serves(target, config, config_path)? {
-        // A search in the session's own checkout needs no `repo`.
-        Served::Worktree
-            if registry::checkout_top(dir).is_some_and(|top| target.starts_with(top)) =>
-        {
-            String::new()
-        }
+        // A search in the session's own checkout needs no `repo`; one in another, such as a
+        // linked worktree inside it, does.
+        Served::Worktree if top.is_some() && top == registry::checkout_top(dir) => String::new(),
         Served::Worktree => format!(
             " Pass `repo`: `{}`.",
-            registry::checkout_top(target)
-                .as_deref()
-                .unwrap_or(target)
-                .display()
+            top.as_deref().unwrap_or(target).display()
         ),
         Served::Inside(repos) => format!(
             " Pass the repository as `repo`: {}.",
