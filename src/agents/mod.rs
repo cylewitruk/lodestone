@@ -166,7 +166,8 @@ pub fn nudge(
     let search = shell::analyse(command, Some(dir))
         .searches
         .into_iter()
-        .filter(|s| s.tree && s.alternatives >= GUESSES)
+        // lodestone indexes the files on disk, not other revisions.
+        .filter(|s| s.tree && !s.revision && s.alternatives >= GUESSES)
         .max_by_key(|s| s.alternatives)?;
     let target = search.target.as_deref().unwrap_or(dir);
     let top = registry::checkout_top(target);

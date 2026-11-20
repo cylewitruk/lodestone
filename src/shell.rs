@@ -14,6 +14,8 @@ pub struct Search {
     pub tree: bool,
     /// Alternatives in its pattern (`a|b|c` is three).
     pub alternatives: usize,
+    /// Whether it searched a git revision rather than the files on disk.
+    pub revision: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -71,7 +73,11 @@ pub fn analyse(command: &str, cwd: Option<&Path>) -> Command {
                     .push(search(args, !name.ends_with("grep"), dir.as_deref()));
             }
             "git" if args.first().is_some_and(|a| a == "grep") => {
-                out.searches.push(search(&args[1..], true, dir.as_deref()));
+                let args = &args[1..];
+                out.searches.push(Search {
+                    revision: git_grep_revision(args, dir.as_deref()),
+                    ..search(args, true, dir.as_deref())
+                });
             }
             "sed"
                 if args.iter().any(|a| a == "-n") && !args.iter().any(|a| a.starts_with("-i")) =>
@@ -137,6 +143,28 @@ fn search(args: &[String], tree: bool, dir: Option<&Path>) -> Search {
             .or_else(|| dir.map(Path::to_path_buf)),
         tree: (tree || recursive) && !named_files,
         alternatives: pattern.matches('|').count() + 1,
+        revision: false,
+    }
+}
+
+/// Whether `git grep` `args` name a revision to search (`git grep foo main -- src`). Before `--`,
+/// every operand after the pattern is one; without `--`, git takes an operand that is no path in
+/// `dir` as one. Pathspec globs and magic (`'*.rs'`, `:!vendor`) are paths.
+fn git_grep_revision(args: &[String], dir: Option<&Path>) -> bool {
+    let separator = args.iter().position(|a| a == "--");
+    let before = &args[..separator.unwrap_or(args.len())];
+    let named = before
+        .iter()
+        .any(|a| a.starts_with("--regexp") || (is_short(a) && a.ends_with('e')));
+    let mut trees = operands(before, VALUE_SHORT_FLAGS).skip(usize::from(!named));
+    match (separator, dir) {
+        (Some(_), _) => trees.next().is_some(),
+        (None, Some(_)) => trees.any(|t| {
+            !t.starts_with(':')
+                && !t.contains(['*', '?', '['])
+                && resolve(t, dir).is_some_and(|p| !p.exists())
+        }),
+        (None, None) => false,
     }
 }
 
@@ -399,6 +427,22 @@ mod tests {
         assert!(tree("rg 'a|b|c' src/lib.rs src"));
         assert!(tree("rg 'a|b|c' src/missing.rs"));
         assert!(tree("rg 'a|b|c'"));
+    }
+
+    #[test]
+    fn git_grep_over_a_revision() {
+        let dir = crate::testutil::tempdir();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let revision = |c: &str| analyse(c, Some(&dir)).searches[0].revision;
+        assert!(revision("git grep -n -E 'a|b' upstream/main -- src"));
+        assert!(revision("M=upstream/main; git grep -n foo $M -- src"));
+        assert!(revision("git grep foo HEAD~2"));
+        assert!(revision("git grep -e foo -e bar v1.0"));
+        assert!(!revision("git grep -n foo -- src missing"));
+        assert!(!revision("git grep -n foo src '*.rs' ':!vendor'"));
+        assert!(!revision("git grep --cached foo"));
+        assert!(!revision("grep -rn foo missing"));
+        assert!(!analyse("git grep foo HEAD", None).searches[0].revision);
     }
 
     #[test]

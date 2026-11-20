@@ -1095,6 +1095,9 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
     assert_eq!(nudge("grep -n 'a\\|b\\|c' src/lib.rs"), "");
     assert_eq!(nudge("cargo test 2>&1 | grep -E 'a|b|c'"), "");
     assert_eq!(nudge("rg 'a|b|c' src/m1.rs"), "");
+    // Another revision is not what lodestone indexes.
+    assert_eq!(nudge("git grep -n -E 'a|b|c' upstream/main -- src"), "");
+    assert!(nudge("git grep -n -E 'a|b|c' -- src").contains("semantic_code_search"));
     // From the main checkout into the linked worktree inside it, the nudge names the worktree.
     let into_feat = hook(
         "pre-tool-use",
