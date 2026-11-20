@@ -1312,7 +1312,9 @@ With the tools loaded and every session and subagent reminded, Claude made about
   runs `lode` through a wrapper or alongside other commands stays.
 - **Shell commands.** `shell::analyse` reads a command's first pipeline stages, following `cd`
   and `NAME=value`, skipping here-documents: its searches (target, tree or files, alternatives)
-  and its file reads. The nudge and the stats share it.
+  and its file reads. The nudge and the stats share it; `eval/situations/score.py` mirrors its
+  statement splitting, and both check `tests/fixtures/shell-searches.json` (quotes, comments,
+  continued lines, here-documents and here-strings, `|&`).
 - **Stats.**
   - Claude reads mostly through the shell (875 `cat`/`sed -n`/`head` against 77 `Read` calls in
     four sessions), so a search whose results it then read with `sed -n` counted as unread.

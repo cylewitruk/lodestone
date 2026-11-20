@@ -205,83 +205,146 @@ fn resolve(path: &str, dir: Option<&Path>) -> Option<PathBuf> {
     })
 }
 
-/// The words of the first stage of each pipeline in `command`, quotes removed. Here-document
-/// bodies are skipped.
+/// The words of the first stage of each pipeline in `command`, quotes removed. Operators (`;`,
+/// `&`, `|`, `|&`, `&&`, `||`, a newline, `<<`) and comments count only outside quotes;
+/// here-document bodies are skipped, and a line ending in `|`, `&&`, `||` or `\` continues on the
+/// next. `eval/situations/score.py` mirrors this.
 fn statements(command: &str) -> Vec<Vec<String>> {
-    let mut out = Vec::new();
-    let mut words: Vec<String> = Vec::new();
-    let mut word = String::new();
-    let mut quote: Option<char> = None;
-    // Whether `word` exists even if empty (`''`), and whether a later pipeline stage is skipped.
-    let (mut quoted, mut piped) = (false, false);
-    // The line that ends the here-document a word of this line opens, then the one being skipped.
-    let (mut opens, mut heredoc): (Option<String>, Option<String>) = (None, None);
-    for line in command.lines() {
-        if let Some(end) = &heredoc {
-            if line.trim() == end {
-                heredoc = None;
+    let mut t = Tokens::default();
+    let mut rest = command;
+    while let Some(c) = rest.chars().next() {
+        let after = &rest[c.len_utf8()..];
+        if let Some(q) = t.quote {
+            let word = t.word.get_or_insert_default();
+            if c == q {
+                t.quote = None;
+            } else if q == '"' && c == '\\' && after.starts_with(['"', '\\', '$', '`']) {
+                word.push_str(&after[..1]);
+                rest = &after[1..];
+                continue;
+            } else {
+                word.push(c);
             }
+            rest = after;
             continue;
         }
-        let mut chars = line.chars().peekable();
-        while let Some(c) = chars.next() {
-            match (quote, c) {
-                (Some(q), _) if c == q => quote = None,
-                (Some('"'), '\\') if chars.peek().is_some_and(|n| "\"\\$`".contains(*n)) => {
-                    word.extend(chars.next());
-                }
-                (Some(_), _) => word.push(c),
-                (None, '\'' | '"') => (quote, quoted) = (Some(c), true),
-                (None, '\\') => word.extend(chars.next()),
-                (None, '>') if chars.peek() == Some(&'&') => {
-                    word.push(c);
-                    word.extend(chars.next());
-                }
-                (None, ' ' | '\t' | '(' | ')' | ';' | '&' | '|') => {
-                    finish(&mut word, &mut quoted, piped, &mut words, &mut opens);
-                    if matches!(c, ';' | '&') || (c == '|' && chars.peek() == Some(&'|')) {
-                        chars.next_if(|n| *n == c);
-                        out.push(std::mem::take(&mut words));
-                        piped = false;
-                    } else if c == '|' {
-                        piped = true;
-                    }
-                }
-                (None, _) => word.push(c),
+        let (op, len) = match c {
+            '\'' | '"' => {
+                t.quote = Some(c);
+                t.word.get_or_insert_default();
+                (None, 1)
             }
+            '\\' if after.starts_with('\n') => (None, 2),
+            '\\' => {
+                let next = after.chars().next();
+                t.word.get_or_insert_default().extend(next);
+                (None, 1 + next.map_or(0, char::len_utf8))
+            }
+            '#' if t.word.is_none() => (None, rest.find('\n').unwrap_or(rest.len())),
+            ' ' | '\t' | '(' | ')' => {
+                t.end_word();
+                (None, 1)
+            }
+            '\n' => {
+                t.end_word();
+                rest = t.skip_heredocs(after);
+                if !t.continued {
+                    t.end_statement("\n");
+                }
+                continue;
+            }
+            _ if rest.starts_with("&&") || rest.starts_with("||") || rest.starts_with("|&") => {
+                (Some(&rest[..2]), 2)
+            }
+            _ if rest.starts_with("<<<") => {
+                t.end_word();
+                (None, 3)
+            }
+            _ if rest.starts_with("<<") => {
+                t.end_word();
+                let tabs = rest.starts_with("<<-");
+                t.heredoc = Some(tabs);
+                (None, if tabs { 3 } else { 2 })
+            }
+            // `2>&1`
+            '&' if t.word.as_deref().is_some_and(|w| w.ends_with(['>', '<'])) => {
+                t.word.get_or_insert_default().push(c);
+                (None, 1)
+            }
+            ';' | '&' | '|' => (Some(&rest[..1]), 1),
+            _ => {
+                t.word.get_or_insert_default().push(c);
+                (None, c.len_utf8())
+            }
+        };
+        if let Some(op) = op {
+            t.end_statement(op);
         }
-        if quote.is_some() {
-            // A quoted string continues on the next line.
-            word.push('\n');
-            continue;
-        }
-        finish(&mut word, &mut quoted, piped, &mut words, &mut opens);
-        out.push(std::mem::take(&mut words));
-        piped = false;
-        heredoc = opens.take();
+        rest = &rest[len..];
     }
-    out.retain(|w| !w.is_empty());
-    out
+    if t.quote.is_none() {
+        t.end_statement("");
+    }
+    t.out
 }
 
-/// Ends `word`, if one was begun: it joins `words` unless a later pipeline stage, and a
-/// here-document it opens is noted in `opens`.
-fn finish(
-    word: &mut String,
-    quoted: &mut bool,
+#[derive(Default)]
+struct Tokens {
+    out: Vec<Vec<String>>,
+    words: Vec<String>,
+    /// The word being read; `Some("")` after `''`.
+    word: Option<String>,
+    quote: Option<char>,
+    /// The statement reads a pipe, so it is not reported.
     piped: bool,
-    words: &mut Vec<String>,
-    opens: &mut Option<String>,
-) {
-    if !std::mem::take(quoted) && word.is_empty() {
-        return;
+    /// The last operator needs a command after it, so a newline continues the statement.
+    continued: bool,
+    /// The next word names a here-document; `true` for `<<-`, which strips leading tabs.
+    heredoc: Option<bool>,
+    /// Here-documents whose bodies follow the current line.
+    delimiters: Vec<(String, bool)>,
+}
+
+impl Tokens {
+    fn end_word(&mut self) {
+        let Some(word) = self.word.take() else {
+            return;
+        };
+        match self.heredoc.take() {
+            Some(tabs) => self.delimiters.push((word, tabs)),
+            None => {
+                self.words.push(word);
+                self.continued = false;
+            }
+        }
     }
-    let word = std::mem::take(word);
-    if let Some((_, tag)) = word.split_once("<<") {
-        *opens = Some(tag.trim_start_matches('-').to_string()).filter(|t| !t.is_empty());
+
+    fn end_statement(&mut self, op: &str) {
+        self.end_word();
+        let words = std::mem::take(&mut self.words);
+        if !words.is_empty() && !self.piped {
+            self.out.push(words);
+        }
+        self.piped = matches!(op, "|" | "|&");
+        self.continued = matches!(op, "|" | "|&" | "&&" | "||");
     }
-    if !piped {
-        words.push(word);
+
+    /// `rest` past the bodies of the here-documents the line just ended opened.
+    fn skip_heredocs<'a>(&mut self, mut rest: &'a str) -> &'a str {
+        while !self.delimiters.is_empty() && !rest.is_empty() {
+            let (line, next) = rest.split_once('\n').unwrap_or((rest, ""));
+            let (delimiter, tabs) = &self.delimiters[0];
+            if (if *tabs {
+                line.trim_start_matches('\t')
+            } else {
+                line
+            }) == delimiter
+            {
+                self.delimiters.remove(0);
+            }
+            rest = next;
+        }
+        rest
     }
 }
 
@@ -301,20 +364,16 @@ mod tests {
             .collect()
     }
 
+    /// The cases `eval/situations/test_score.py` checks too.
     #[test]
-    fn searches_over_files_not_filters() {
-        assert_eq!(run("cd repo && rg -n foo src").searches.len(), 1);
-        assert_eq!(run("LC_ALL=C grep -r foo .").searches.len(), 1);
-        assert_eq!(run("git grep -n foo").searches.len(), 1);
-        assert_eq!(run("test -d src || rg foo").searches.len(), 1);
-        assert_eq!(run("grep -rn 'a;b' src | head").searches.len(), 1);
-        for filter in [
-            "cargo nextest run 2>&1 | grep -E 'FAIL|ok'",
-            "git show HEAD:a.rs | grep -n foo",
-            "git log --grep foo",
-            "python3 - <<'EOF'\ngrep = 1\nhead = lines[0]\nEOF",
-        ] {
-            assert_eq!(run(filter), Command::default(), "{filter}");
+    fn shared_cases() {
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/shell-searches.json")).unwrap();
+        for (key, searches) in [("search", true), ("no_search", false)] {
+            for c in cases[key].as_array().unwrap() {
+                let c = c.as_str().unwrap();
+                assert_eq!(!run(c).searches.is_empty(), searches, "{c:?}");
+            }
         }
     }
 

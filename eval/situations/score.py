@@ -35,8 +35,9 @@ def query(i: dict) -> str:
 
 def first_words(command: str) -> list[list[str]]:
     """The words of each shell statement that does not read a pipe. Operators (`;`, `&`, `|`,
-    `&&`, `||`, a newline, `<<`) and comments count only outside quotes; here-document bodies
-    are skipped, and a line ending in `|`, `&&`, `||` or `\\` continues on the next."""
+    `|&`, `&&`, `||`, a newline, `<<`) and comments count only outside quotes; here-document
+    bodies are skipped, and a line ending in `|`, `&&`, `||` or `\\` continues on the next.
+    Mirrors `statements` in `src/shell.rs`; both check `tests/fixtures/shell-searches.json`."""
     out: list[list[str]] = []
     words: list[str] = []
     word: str | None = None
@@ -63,14 +64,14 @@ def first_words(command: str) -> list[list[str]]:
         end_word()
         if words and not piped:
             out.append(words)
-        words, piped, continued = [], op == "|", op in ("|", "&&", "||")
+        words, piped, continued = [], op in ("|", "|&"), op in ("|", "|&", "&&", "||")
 
     while i < n:
         c = command[i]
         if quote:
             if c == quote:
                 quote = None
-            elif c == "\\" and quote == '"' and i + 1 < n:
+            elif c == "\\" and quote == '"' and command[i + 1 : i + 2] in ('"', "\\", "$", "`"):
                 i += 1
                 word += command[i]
             else:
@@ -87,7 +88,7 @@ def first_words(command: str) -> list[list[str]]:
         elif c == "#" and word is None:  # a comment, to the end of the line
             nl = command.find("\n", i)
             i = n if nl < 0 else nl
-        elif c in " \t":
+        elif c in " \t()":
             end_word()
             i += 1
         elif c == "\n":
@@ -101,7 +102,7 @@ def first_words(command: str) -> list[list[str]]:
                     delimiters.pop(0)
             if not continued:
                 end_statement("\n")
-        elif command.startswith(("&&", "||"), i):
+        elif command.startswith(("&&", "||", "|&"), i):
             end_statement(command[i : i + 2])
             i += 2
         elif command.startswith("<<<", i):  # a here-string: the next word is input

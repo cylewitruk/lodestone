@@ -1,0 +1,41 @@
+{
+  "_": "Shell commands and whether they search files. Read by src/shell.rs and eval/situations/test_score.py, which must agree.",
+  "search": [
+    "grep -rn 'a\\|b' src | head",
+    "cd repo && rg -n foo src",
+    "cd x && LC_ALL=C rg foo",
+    "LC_ALL=C grep -r foo .",
+    "git grep -n foo",
+    "/usr/bin/grep -r term .",
+    "test -d src || rg foo",
+    "grep -rn 'a;b' src | head",
+    "echo start; grep -r foo .",
+    "make 2>&1 >/dev/null; grep -r foo .",
+    "(cd src && rg foo)",
+    "echo '<<EOF'\nrg needle .",
+    "cat <<'EOF' > notes.txt\ngrep = 1\nEOF\nrg needle .",
+    "cat <<-EOF\n\tbody\n\tEOF\nrg needle .",
+    "cat <<< 'note'\nrg needle .",
+    "# don't scan generated files\nrg needle src",
+    "echo a \\\n  && rg needle .",
+    "rg 'multi\nline' src"
+  ],
+  "no_search": [
+    "ls",
+    "printf '%s' 'done; grep foo'",
+    "printf '%s %s' ';' grep",
+    "echo \"a | grep b\"",
+    "echo a#b grep",
+    "make 2>&1 grep",
+    "cargo test 2>&1 | grep FAIL",
+    "cargo nextest run 2>&1 | grep -E 'FAIL|ok'",
+    "cargo test |& grep FAILED",
+    "cargo test |\ngrep FAILED",
+    "cargo test \\\n  | grep FAILED",
+    "git show HEAD:a.rs | grep -n foo",
+    "git log --grep foo",
+    "python3 - <<'EOF'\ngrep = 1\nhead = lines[0]\nEOF",
+    "cat <<EOF\n  EOF\ngrep = 1\nEOF",
+    "# grep -r foo ."
+  ]
+}
