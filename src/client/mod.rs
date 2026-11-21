@@ -12,7 +12,7 @@ use anyhow::{Context, bail};
 use serde::de::DeserializeOwned;
 
 use crate::api::types::{
-    ErrorBody, IndexRequest, IndexResponse, RegisterRequest, RepoInfo, SearchRequest,
+    ErrorBody, IndexRequest, IndexResponse, NOT_LOCAL, RegisterRequest, RepoInfo, SearchRequest,
     SearchResponse, SessionRequest, SessionResponse, StatusOverview, StatusReport, ToolRequest,
 };
 use crate::config::{Config, Endpoint};
@@ -139,6 +139,16 @@ pub fn connect_or_start(
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// Whether a daemon answered that it has no such route: 404, or 405 where an older route with a
+/// path parameter matches the path.
+fn unserved(resp: &ureq::http::Response<ureq::Body>) -> bool {
+    use ureq::http::StatusCode;
+    matches!(
+        resp.status(),
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    )
 }
 
 pub struct Client {
@@ -269,10 +279,39 @@ impl Client {
     /// Runs an MCP tool: `Err` when the daemon cannot be reached, `Ok(Err(message))` when the
     /// tool itself fails.
     pub fn tool(&self, req: &ToolRequest) -> anyhow::Result<Result<String, String>> {
+        self.tool_at("tool", req)
+    }
+
+    /// [`Self::tool`], run only by a daemon that keeps code on this machine; any other, or one
+    /// too old to say, refuses with [`NOT_LOCAL`].
+    pub fn tool_local(&self, req: &ToolRequest) -> anyhow::Result<Result<String, String>> {
+        self.tool_at("local/tool", req)
+    }
+
+    /// [`Self::session`], taken only by a daemon that keeps code on this machine; any other, or
+    /// one too old to say, takes no lease and answers `local: Some(false)`.
+    pub fn session_local(&self, req: &SessionRequest) -> anyhow::Result<SessionResponse> {
+        let resp = self
+            .agent
+            .post(format!("{}/v1/local/sessions", self.base))
+            .send_json(req)?;
+        if unserved(&resp) {
+            return Ok(SessionResponse {
+                repo: None,
+                local: Some(false),
+            });
+        }
+        Self::decode(resp)
+    }
+
+    fn tool_at(&self, route: &str, req: &ToolRequest) -> anyhow::Result<Result<String, String>> {
         let mut resp = self
             .agent
-            .post(format!("{}/v1/tool", self.base))
+            .post(format!("{}/v1/{route}", self.base))
             .send_json(req)?;
+        if route == "local/tool" && unserved(&resp) {
+            return Ok(Err(format!("{NOT_LOCAL}: it predates checking")));
+        }
         let ok = resp.status().is_success();
         let text = resp.body_mut().read_to_string()?;
         Ok(if ok {

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-pub use install::{Harness, Scope, Step, Target, apply, install, uninstall};
+pub use install::{Harness, Scope, Step, Target, apply, check, find_program, install, uninstall};
 pub use relay::run as run_relay;
 
 use crate::api::types::SessionRequest;
@@ -115,7 +115,7 @@ fn output(event: HookEvent, context: &str) -> String {
 /// The hook's output for `event` in session `session` (the harness's id) in `dir`: the reminder
 /// as hook JSON when `dir` is in a registered worktree, otherwise `None`.
 ///
-/// The session's own hooks keep its marker (see [`marker`]) current. `UserPromptSubmit` adds the
+/// The session's own hooks keep its marker (see `marker`) current. `UserPromptSubmit` adds the
 /// reminder only when it writes a session's first marker, so never without a session id;
 /// `SessionStart` always adds it, since a compacted session has lost it. `SubagentStart` always
 /// adds it too, and leaves the marker to the session. `PreToolUse` adds nothing here (see
@@ -155,7 +155,7 @@ pub fn hook(
 }
 
 /// The `PreToolUse` hook's output for shell `command` run in `dir`: a pointer to
-/// `semantic_code_search` when the command searches a tree lodestone serves for [`GUESSES`] or
+/// `semantic_code_search` when the command searches a tree lodestone serves for `GUESSES` or
 /// more alternative names, otherwise `None`. It decides nothing about the command.
 pub fn nudge(
     command: &str,

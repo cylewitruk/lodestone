@@ -95,10 +95,10 @@ enum Cmd {
         model: Option<String>,
         #[arg(long)]
         backend: Option<Backend>,
-        /// Corpus to index (default: <eval-dir>/corpus).
+        /// Corpus to index (default: EVAL_DIR/corpus).
         #[arg(long)]
         corpus: Option<PathBuf>,
-        /// Question file (default: <eval-dir>/questions.json).
+        /// Question file (default: EVAL_DIR/questions.json).
         #[arg(long)]
         questions: Option<PathBuf>,
         /// Comma-separated question ids that count as hard cases.
@@ -579,7 +579,7 @@ fn harness_command(config: &Config, args: HarnessArgs, add: bool) -> anyhow::Res
     if clients.is_empty() {
         clients = Harness::ALL
             .into_iter()
-            .filter(|h| on_path(h.program()))
+            .filter(|h| agents::find_program(h.program()).is_some())
             .collect();
         anyhow::ensure!(
             !clients.is_empty(),
@@ -606,6 +606,7 @@ fn harness_command(config: &Config, args: HarnessArgs, add: bool) -> anyhow::Res
     } else {
         agents::uninstall(&clients, &target)
     };
+    agents::check(&steps)?;
     for step in &steps {
         println!("{step}");
         if !args.dry_run {
@@ -634,11 +635,6 @@ Next: register repositories (`lode register <path>`). Agent sessions start the d
     if clients.contains(&Harness::Claude) && scope == Scope::Project {
         println!("Claude Code: approve the `lodestone` server from .mcp.json on first use.");
     }
-}
-
-fn on_path(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(program).is_file()))
 }
 
 /// The session's directory: `cwd` from the hook's stdin JSON (Claude Code and Codex both send

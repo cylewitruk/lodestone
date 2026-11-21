@@ -15,7 +15,8 @@ use lodestone::api::mcp::{
     LOCAL_NOTE, SEMANTIC_DESCRIPTION, SIMILAR_DESCRIPTION, STATUS_DESCRIPTION,
 };
 use lodestone::api::types::{
-    RegisterRequest, SearchResponse, SessionRequest, StatusOverview, StatusReport, ToolRequest,
+    NOT_LOCAL, RegisterRequest, SearchResponse, SessionRequest, StatusOverview, StatusReport,
+    ToolRequest,
 };
 use lodestone::cache::EmbeddingCache;
 use lodestone::client::Client;
@@ -266,9 +267,15 @@ fn daemon_rest_mcp_and_freshness() {
         json!({ "name": "similar_code_search", "arguments": { "code": "pub fn helper_3(x: u64) -> u64 { x + 3 }" } }),
     );
     let text = out["content"][0]["text"].as_str().unwrap();
-    assert!(!text.contains("fn helper_3("), "{text}");
+    // The passed code's own definition is listed apart, after the ranked results.
+    let (ranked, matching) = text.split_once("# matching the passed code").unwrap();
+    assert!(!ranked.contains("fn helper_3("), "{text}");
     assert!(
-        text.contains("# note: left out the passed code itself: core/src/m3.rs:2 helper_3"),
+        matching
+            .lines()
+            .nth(1)
+            .unwrap()
+            .starts_with("core/src/m3.rs:2:8"),
         "{text}"
     );
     // Several definitions in one call: a section each, fewer results each.
@@ -288,13 +295,11 @@ fn daemon_rest_mcp_and_freshness() {
         "{text}"
     );
     for s in &sections {
-        let results = s.lines().filter(|l| l.contains("  lines ")).count();
+        let ranked = s.split("# matching the passed code").next().unwrap();
+        let results = ranked.lines().filter(|l| l.contains("  lines ")).count();
         assert!((1..=12).contains(&results), "{s}");
     }
-    assert!(
-        sections[0].contains("left out the passed code itself: core/src/m3.rs:2 helper_3"),
-        "{text}"
-    );
+    assert!(sections[0].contains("# matching the passed code"), "{text}");
     let out = mcp.request("tools/call", json!({ "name": "status", "arguments": {} }));
     let text = out["content"][0]["text"].as_str().unwrap();
     assert!(
@@ -1526,5 +1531,328 @@ fn mcp_relay_starts_the_daemon_and_searches_the_session_worktree() {
     assert!(relay.wait().unwrap().success());
     wait_until("the idle daemon to exit", Duration::from_secs(30), || {
         client(&home).is_none()
+    });
+}
+
+/// The first search tool's description as a `lode mcp` relay lists it, run with `config`.
+fn relay_description(home: &Path, config: &Path) -> Value {
+    use std::io::{BufRead, BufReader, Write};
+
+    let mut relay = lode(home)
+        .arg("--config")
+        .arg(config)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = relay.stdin.take().unwrap();
+    let mut lines = BufReader::new(relay.stdout.take().unwrap()).lines();
+    let mut send = |v: Value| writeln!(stdin, "{v}").unwrap();
+    send(
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": { "name": "test", "version": "0" } } }),
+    );
+    let init = rpc_response(&mut lines, 1);
+    assert_eq!(init["result"]["capabilities"]["tools"]["listChanged"], true);
+    send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    send(json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }));
+    let tools = rpc_response(&mut lines, 2);
+    drop(stdin);
+    relay.wait().unwrap();
+    tools["result"]["tools"][0]["description"].clone()
+}
+
+/// The relay promises local processing only as the daemon serving it says: a daemon started
+/// with remote embeddings keeps them though the relay's own config has changed to local ones.
+#[test]
+fn the_relay_takes_locality_from_the_running_daemon() {
+    let home = on_demand_home(30);
+    let local = fs::read_to_string(home.join("config.toml")).unwrap();
+    write(&home, "local.toml", &local);
+    let remote = format!(
+        "{local}backend = \"remote\"\n[remote]\nurl = \"https://embed.example.com/v1/embeddings\"\napi_key_env = \"NONE\"\n"
+    );
+    for (daemon_config, expected) in [
+        (remote, SEMANTIC_DESCRIPTION.to_string()),
+        (local, format!("{SEMANTIC_DESCRIPTION} {LOCAL_NOTE}")),
+    ] {
+        write(&home, "config.toml", &daemon_config);
+        let mut daemon = lode(&home)
+            .args(["serve", "--on-demand"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        wait_until("the daemon to start", Duration::from_secs(30), || {
+            client(&home).is_some()
+        });
+        assert_eq!(relay_description(&home, &home.join("local.toml")), expected);
+        client(&home).unwrap().stop().unwrap();
+        daemon.wait().unwrap();
+    }
+}
+
+/// A relay that listed its tools as local never has a call served by a daemon that is not: the
+/// replacement daemon refuses it, and the relay lists the tools again without the promise.
+#[test]
+fn a_replaced_daemon_with_remote_embeddings_refuses_local_only_calls() {
+    use std::io::{BufRead, BufReader, Write};
+
+    let home = on_demand_home(30);
+    let local = fs::read_to_string(home.join("config.toml")).unwrap();
+    let serve = |config: &str| {
+        write(&home, "config.toml", config);
+        let daemon = lode(&home)
+            .args(["serve", "--on-demand"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        wait_until("the daemon to start", Duration::from_secs(30), || {
+            client(&home).is_some()
+        });
+        daemon
+    };
+    let mut daemon = serve(&local);
+    let mut relay = lode(&home)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = relay.stdin.take().unwrap();
+    let mut lines = BufReader::new(relay.stdout.take().unwrap()).lines();
+    let mut send = |v: Value| writeln!(stdin, "{v}").unwrap();
+    send(
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": { "name": "test", "version": "0" } } }),
+    );
+    rpc_response(&mut lines, 1);
+    send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    send(json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }));
+    let description = |tools: Value| tools["result"]["tools"][0]["description"].clone();
+    assert_eq!(
+        description(rpc_response(&mut lines, 2)),
+        format!("{SEMANTIC_DESCRIPTION} {LOCAL_NOTE}")
+    );
+
+    client(&home).unwrap().stop().unwrap();
+    daemon.wait().unwrap();
+    let mut daemon = serve(&format!(
+        "{local}backend = \"remote\"\n[remote]\nurl = \"https://embed.example.com/v1/embeddings\"\napi_key_env = \"NONE\"\n"
+    ));
+    send(
+        json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
+        "name": "semantic_code_search", "arguments": { "query": "anything", "repo": "x" } } }),
+    );
+    let out = rpc_response(&mut lines, 3);
+    assert_eq!(out["result"]["isError"], true, "{out}");
+    let text = out["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with(NOT_LOCAL), "{text}");
+    send(json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {} }));
+    assert_eq!(
+        description(rpc_response(&mut lines, 4)),
+        SEMANTIC_DESCRIPTION
+    );
+    // Nor does it lease (and so index) a worktree for a session promised local processing.
+    let root = repo(1);
+    let c = client(&home).unwrap();
+    let lease = |local_only| {
+        let req = SessionRequest {
+            id: "s".into(),
+            cwd: root.to_string_lossy().into_owned(),
+            ttl_secs: 60,
+        };
+        if local_only {
+            c.session_local(&req).unwrap()
+        } else {
+            c.session(&req).unwrap()
+        }
+    };
+    let refused = lease(true);
+    assert_eq!((refused.repo, refused.local), (None, Some(false)));
+    c.register(&RegisterRequest {
+        path: root.to_string_lossy().into_owned(),
+    })
+    .unwrap();
+    assert!(lease(true).repo.is_none());
+    assert!(lease(false).repo.is_some());
+
+    drop(stdin);
+    relay.wait().unwrap();
+    client(&home).unwrap().stop().unwrap();
+    daemon.wait().unwrap();
+}
+
+/// A daemon too old to serve the local-only routes (here a stub with v0.1.1's session and tool
+/// routes) neither runs a local-only call nor takes a local-only lease, whether it answers 404 or,
+/// where a route with a path parameter matches, 405.
+#[test]
+fn a_daemon_without_local_only_routes_refuses_them() {
+    use axum::routing::{delete, get, post};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    let ran = Arc::new(AtomicBool::new(false));
+    let leased = ran.clone();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let app = axum::Router::new()
+                .route("/v1/repos", get(|| async { "[]" }))
+                .route(
+                    "/v1/sessions",
+                    post(move || {
+                        leased.store(true, Ordering::SeqCst);
+                        async { "{\"repo\":null}" }
+                    }),
+                )
+                .route("/v1/sessions/{id}", delete(|| async { "" }))
+                .route("/v1/tool", post(|| async { "ran" }))
+                // Matches `/v1/local/tool` for another method: 405.
+                .route("/v1/local/{route}", delete(|| async { "" }));
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            axum::serve(listener, app).await.unwrap();
+        });
+    });
+    let c = (0..50)
+        .find_map(|_| {
+            std::thread::sleep(Duration::from_millis(50));
+            Client::connect(&lodestone::config::Endpoint::Tcp(port))
+        })
+        .unwrap();
+    let lease = c
+        .session_local(&SessionRequest {
+            id: "s".into(),
+            cwd: "/".into(),
+            ttl_secs: 60,
+        })
+        .unwrap();
+    assert_eq!((lease.repo, lease.local), (None, Some(false)));
+    assert!(!ran.load(Ordering::SeqCst), "no lease taken");
+    let out = c.tool_local(&ToolRequest::default()).unwrap();
+    assert!(out.unwrap_err().starts_with(NOT_LOCAL));
+    assert_eq!(c.tool(&ToolRequest::default()).unwrap(), Ok("ran".into()));
+}
+
+/// A git directory created outside the tree after watching began (`git init --separate-git-dir`,
+/// here then pointed to relatively) is watched too: a commit there rescans.
+#[test]
+fn a_new_external_git_dir_is_watched() {
+    let root = repo(2);
+    let home = tempdir();
+    let d = Daemon::start(&home, 0);
+    d.post("/v1/register", json!({ "path": root.to_string_lossy() }));
+    d.wait_fresh(Duration::from_secs(30));
+    let git_dir = root.parent().unwrap().join("gd");
+    git(
+        &root,
+        &[
+            "init",
+            "-q",
+            "--separate-git-dir",
+            &git_dir.to_string_lossy(),
+        ],
+    );
+    // A relative pointer: `<root>/../gd` is outside the tree, though it starts with its path.
+    std::thread::sleep(Duration::from_secs(1));
+    write(&root, ".git", "gitdir: ../gd\n");
+    std::thread::sleep(Duration::from_secs(2));
+    d.wait_fresh(Duration::from_secs(30));
+    // Index runs are stamped in whole seconds.
+    std::thread::sleep(Duration::from_millis(1100));
+    let before = d.status().last_update;
+    git(&root, &["commit", "-q", "--allow-empty", "-m", "x"]);
+    wait_until("a rescan after the commit", Duration::from_secs(20), || {
+        d.status().last_update > before
+    });
+}
+
+/// The local-only lease route leaves the session namespace alone: a session named `local` is
+/// released like any other.
+#[test]
+fn a_session_named_local_is_released() {
+    let home = tempdir();
+    let d = Daemon::start(&home, 0);
+    let release = |id: &str| {
+        ureq::delete(format!("{}/v1/sessions/{id}", d.base))
+            .call()
+            .unwrap()
+            .status()
+    };
+    assert_eq!(release("local"), 204);
+    assert_eq!(release("other"), 204);
+}
+
+/// While indexing fails (the embedding service down), the watcher keeps the change pending and
+/// searches say so; once the service is back, the next change indexes it too.
+#[test]
+fn a_failed_watcher_pass_stays_pending_until_one_succeeds() {
+    let root = repo(2);
+    let home = tempdir();
+    let flag = home.join("down");
+    let d = Daemon::start_with_env(&home, 0, &[("LODESTONE_TEST_EMBED_FAIL_FLAG", &flag)]);
+    d.post("/v1/register", json!({ "path": root.to_string_lossy() }));
+    d.wait_fresh(Duration::from_secs(30));
+    fs::write(&flag, "").unwrap();
+    write(
+        &root,
+        "core/src/m0.rs",
+        "/// Renamed helper.\npub fn renamed_0(x: u64) -> u64 { x }\n",
+    );
+    wait_until("the failed pass", Duration::from_secs(30), || {
+        d.status()
+            .stale_reasons
+            .iter()
+            .any(|r| r.contains("failed"))
+    });
+    let resp = d.search("helper_0");
+    assert!(resp.stale, "{resp:?}");
+    fs::remove_file(&flag).unwrap();
+    // An unrelated change: its pass retries the failed one's.
+    write(&root, "core/src/m1.rs", "pub fn unrelated_1() {}\n");
+    wait_until("the renamed function", Duration::from_secs(30), || {
+        let resp = d.search("renamed_0");
+        !resp.stale && resp.results.first().is_some_and(|r| r.name == "renamed_0")
+    });
+    assert!(
+        d.search("helper_0")
+            .results
+            .iter()
+            .all(|r| r.name != "helper_0")
+    );
+}
+
+/// An external git directory named (absolutely) before it exists is watched once it does.
+#[test]
+fn an_external_git_dir_created_after_its_pointer_is_watched() {
+    let root = repo(2);
+    let home = tempdir();
+    let d = Daemon::start(&home, 0);
+    d.post("/v1/register", json!({ "path": root.to_string_lossy() }));
+    d.wait_fresh(Duration::from_secs(30));
+    // Canonical, so it resolves to the very path written (macOS temp paths are symlinked).
+    let git_dir = tempdir().canonicalize().unwrap().join("later.git");
+    write(&root, ".git", &format!("gitdir: {}\n", git_dir.display()));
+    std::thread::sleep(Duration::from_secs(2));
+    git(
+        root.parent().unwrap(),
+        &["init", "-q", "--bare", &git_dir.to_string_lossy()],
+    );
+    // Any change in the tree lets the watcher find it.
+    write(&root, "core/src/m1.rs", "pub fn unrelated_1() {}\n");
+    std::thread::sleep(Duration::from_secs(2));
+    d.wait_fresh(Duration::from_secs(30));
+    std::thread::sleep(Duration::from_millis(1100));
+    let before = d.status().last_update;
+    fs::write(git_dir.join("HEAD"), "ref: refs/heads/other\n").unwrap();
+    wait_until("a rescan after HEAD moved", Duration::from_secs(20), || {
+        d.status().last_update > before
     });
 }

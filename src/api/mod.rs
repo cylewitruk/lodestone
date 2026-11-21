@@ -25,7 +25,7 @@ use listen::Listeners;
 use mcp::LodestoneMcp;
 use sessions::Leases;
 use types::{
-    DEFAULT_TOP_K, ErrorBody, IndexRequest, IndexResponse, RegisterRequest, RepoInfo,
+    DEFAULT_TOP_K, ErrorBody, IndexRequest, IndexResponse, NOT_LOCAL, RegisterRequest, RepoInfo,
     SearchRequest, SessionRequest, SessionResponse, ToolRequest,
 };
 
@@ -248,6 +248,7 @@ async fn session_renew(
     State(s): State<AppState>,
     Json(req): Json<SessionRequest>,
 ) -> ApiResult<Json<SessionResponse>> {
+    let local = s.engine.config.is_local();
     // A linked git worktree of a registered repository is registered here, on its first session.
     let root = s
         .engine
@@ -265,7 +266,10 @@ async fn session_renew(
         s.activate(s.engine.open_canonical(root)?);
     }
     let repo = root.and_then(|r| repos.into_iter().find(|i| Path::new(&i.root) == r));
-    Ok(Json(SessionResponse { repo }))
+    Ok(Json(SessionResponse {
+        repo,
+        local: Some(local),
+    }))
 }
 
 async fn session_release(State(s): State<AppState>, UrlPath(id): UrlPath<String>) -> StatusCode {
@@ -275,6 +279,35 @@ async fn session_release(State(s): State<AppState>, UrlPath(id): UrlPath<String>
 
 /// Runs an MCP tool for `lode mcp`; a call without `repo` searches the session's worktree, and
 /// one with `repo` keeps that worktree leased for as long as the session.
+/// [`session_renew`] for a session promised that nothing leaves this machine: a daemon whose
+/// embeddings are not local takes no lease, so indexes nothing for it, and says so. A separate
+/// route, so that a daemon predating the check cannot serve it.
+async fn session_local(
+    s: State<AppState>,
+    req: Json<SessionRequest>,
+) -> ApiResult<Json<SessionResponse>> {
+    if !s.engine.config.is_local() {
+        return Ok(Json(SessionResponse {
+            repo: None,
+            local: Some(false),
+        }));
+    }
+    session_renew(s, req).await
+}
+
+/// [`tool`] for a caller promised that nothing leaves this machine: refused unless the
+/// daemon's embeddings are local. A separate route, so that a daemon predating the check cannot
+/// serve it.
+async fn tool_local(s: State<AppState>, req: Json<ToolRequest>) -> ApiResult<String> {
+    if !s.engine.config.is_local() {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            format!("{NOT_LOCAL}; the tools were listed as local, so the call was not run"),
+        ));
+    }
+    tool(s, req).await
+}
+
 async fn tool(State(s): State<AppState>, Json(mut req): Json<ToolRequest>) -> ApiResult<String> {
     if let Some(id) = req.session.as_deref()
         && let Some(repo) = req.arguments.get("repo").and_then(|r| r.as_str())
@@ -332,8 +365,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/index", post(index))
         .route("/v1/repos", get(repos))
         .route("/v1/sessions", post(session_renew))
+        .route("/v1/local/sessions", post(session_local))
         .route("/v1/sessions/{id}", axum::routing::delete(session_release))
         .route("/v1/tool", post(tool))
+        .route("/v1/local/tool", post(tool_local))
         .route("/v1/shutdown", post(shutdown))
         .nest_service("/mcp", mcp)
         .with_state(state)

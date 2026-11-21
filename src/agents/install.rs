@@ -14,6 +14,7 @@ use std::process::Command;
 
 use anyhow::{Context, bail};
 use serde_json::{Map, Value, json};
+use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, value};
 
 use super::{HookEvent, SKILL};
 
@@ -156,6 +157,12 @@ pub enum Step {
         link: PathBuf,
         target: PathBuf,
     },
+    /// Removes the link to `target` at `link` that [`Step::Link`] made.
+    Unlink {
+        link: PathBuf,
+        target: PathBuf,
+    },
+    /// Removes a skill file lodestone shipped, or a skill directory left empty.
     Remove {
         path: PathBuf,
     },
@@ -192,6 +199,7 @@ impl fmt::Display for Step {
             Step::Link { link, target } => {
                 write!(f, "link {} -> {}", link.display(), target.display())
             }
+            Step::Unlink { link, .. } => write!(f, "unlink {}", link.display()),
             Step::Remove { path } => write!(f, "remove {}", path.display()),
             Step::Run { program, args, .. } => write!(f, "run {program} {}", args.join(" ")),
             Step::Hook {
@@ -275,8 +283,9 @@ pub fn uninstall(harnesses: &[Harness], t: &Target) -> Vec<Step> {
     let mut steps = Vec::new();
     for &h in harnesses {
         if h == Harness::Claude {
-            steps.push(Step::Remove {
-                path: t.claude_skill_link(),
+            steps.push(Step::Unlink {
+                link: t.claude_skill_link(),
+                target: t.claude_skill_link_target(),
             });
         }
         steps.extend(mcp_steps(h, t, false));
@@ -288,6 +297,10 @@ pub fn uninstall(harnesses: &[Harness], t: &Target) -> Vec<Step> {
         }));
     }
     if Harness::ALL.iter().all(|h| harnesses.contains(h)) {
+        // The directory goes only once empty: anything else in it is the user's.
+        steps.push(Step::Remove {
+            path: t.skill_dir().join("SKILL.md"),
+        });
         steps.push(Step::Remove {
             path: t.skill_dir(),
         });
@@ -295,8 +308,78 @@ pub fn uninstall(harnesses: &[Harness], t: &Target) -> Vec<Step> {
     steps
 }
 
-/// Applies one step.
+/// Checks `steps` against the files as they are, before any is applied, so that a conflict
+/// changes nothing: anything but lodestone's link where the skill link goes, a skill file
+/// lodestone did not write, a directory holding other files, or a config file that does not
+/// parse. [`apply`] checks each step again.
+pub fn check(steps: &[Step]) -> anyhow::Result<()> {
+    let mut removed: Vec<&Path> = Vec::new();
+    for step in steps {
+        check_step(step, &removed)?;
+        if let Step::Remove { path } = step {
+            removed.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// [`check`] for one step, given the paths earlier steps remove.
+fn check_step(step: &Step, removed: &[&Path]) -> anyhow::Result<()> {
+    match step {
+        Step::Write { path, contents } => match fs::read_to_string(path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Ok(text) if text == *contents || is_shipped_skill(&text) => Ok(()),
+            _ => bail!(
+                "{} was not written by lodestone; move it aside and install again",
+                path.display()
+            ),
+        },
+        Step::Link { link, target } => match fs::symlink_metadata(link) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            _ if is_our_link(link, target) => Ok(()),
+            _ => bail!(
+                "{} already exists and is not lodestone's link; move it aside and install again",
+                link.display()
+            ),
+        },
+        Step::Unlink { link, target } => match fs::symlink_metadata(link) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            _ if is_our_link(link, target) => Ok(()),
+            _ => bail!(
+                "not removing {}: it is not the link lodestone made",
+                link.display()
+            ),
+        },
+        Step::Remove { path } => match fs::symlink_metadata(path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Ok(m) if m.is_dir() => {
+                for entry in fs::read_dir(path)? {
+                    anyhow::ensure!(
+                        removed.contains(&entry?.path().as_path()),
+                        "not removing {}: it holds files lodestone did not write",
+                        path.display()
+                    );
+                }
+                Ok(())
+            }
+            Ok(m)
+                if m.is_file() && fs::read_to_string(path).is_ok_and(|t| is_shipped_skill(&t)) =>
+            {
+                Ok(())
+            }
+            _ => bail!(
+                "not removing {}: lodestone did not write it",
+                path.display()
+            ),
+        },
+        Step::Run { .. } => Ok(()),
+        Step::Hook { .. } | Step::McpJson { .. } | Step::CodexToml { .. } => edit(step).map(|_| ()),
+    }
+}
+
+/// Applies one step, after checking it (see [`check`]).
 pub fn apply(step: &Step) -> anyhow::Result<()> {
+    check_step(step, &[])?;
     match step {
         Step::Write { path, contents } => {
             create_parent(path)?;
@@ -307,18 +390,22 @@ pub fn apply(step: &Step) -> anyhow::Result<()> {
             remove(link)?;
             symlink(target, link).with_context(|| format!("linking {}", link.display()))
         }
-        Step::Remove { path } => remove(path),
+        Step::Unlink { link, .. } | Step::Remove { path: link } => remove(link),
         Step::Run {
             program,
             args,
             may_fail,
         } => {
-            let out = Command::new(program).args(args).output().with_context(|| {
-                format!(
-                    "{program} not found; run it yourself: {program} {}",
-                    args.join(" ")
-                )
-            })?;
+            // Windows' own lookup tries only `.exe`.
+            let out = Command::new(find_program(program).unwrap_or_else(|| program.into()))
+                .args(args)
+                .output()
+                .with_context(|| {
+                    format!(
+                        "{program} not found; run it yourself: {program} {}",
+                        args.join(" ")
+                    )
+                })?;
             if !out.status.success() && !may_fail {
                 bail!(
                     "{program} {} failed: {}",
@@ -328,30 +415,107 @@ pub fn apply(step: &Step) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Step::Hook { .. } | Step::McpJson { .. } | Step::CodexToml { .. } => {
+            let (path, old, new) = edit(step)?;
+            write_if_changed(path, &old, &new)
+        }
+    }
+}
+
+/// A config-editing step's file, its text and its text once edited.
+fn edit(step: &Step) -> anyhow::Result<(&Path, String, String)> {
+    let (Step::Hook { path, .. } | Step::McpJson { path, .. } | Step::CodexToml { path, .. }) =
+        step
+    else {
+        bail!("`{step}` edits no config file");
+    };
+    let old = read_or_empty(path)?;
+    let new = match step {
         Step::Hook {
-            path,
             event,
             command,
             add,
-        } => edit_json(path, |doc| set_hook(doc, *event, command, *add)),
-        Step::McpJson { path, program } => {
-            edit_json(path, |doc| set_mcp_server(doc, program.as_deref()))
+            ..
+        } => edit_json(&old, |doc| set_hook(doc, *event, command, *add)),
+        Step::McpJson { program, .. } => {
+            edit_json(&old, |doc| set_mcp_server(doc, program.as_deref()))
         }
-        Step::CodexToml { path, program } => {
-            let text = read_or_empty(path)?;
-            // The tools only read the index (and say so), so Codex need not ask before each call.
-            let table = program.as_ref().map(|p| {
-                format!(
-                    "command = {}\nargs = [\"mcp\"]\ndefault_tools_approval_mode = \"approve\"\n",
-                    Value::from(p.as_str())
-                )
-            });
-            write_if_changed(
-                path,
-                &text,
-                &set_toml_table(&text, MCP_TABLE, table.as_deref()),
-            )
-        }
+        Step::CodexToml { program, .. } => set_codex_server(&old, program.as_deref()),
+        _ => Ok(old.clone()),
+    }
+    .with_context(|| format!("editing {}; left unchanged", path.display()))?;
+    Ok((path, old, new))
+}
+
+/// blake3 of each SKILL.md lodestone has shipped, with `\n` line endings: a skill file lodestone
+/// may overwrite or remove. A test fails until the current one is listed.
+const SHIPPED_SKILLS: [&str; 5] = [
+    "f85f9c394917c983324f0c97ae91ce5f3749f0f54d611d61ada0bb88c77f8503",
+    "1de52c75ad8593becdff37119fbd943d79e5c796cce1c9a282af8c82c36afab4",
+    "c8f51de035ef5db53a6692ca3c5721065d6a76c43e5bbbaa7f5a5408edd2b903",
+    "21831d5b2cc6f40c0ed81580cc088c0b3d916142ad2014145571166c0c1eb9db",
+    "7f8217d8f5f2207e2cd0b73ca1ba8e390b69b91cf3d60061d92058ec41e36570",
+];
+
+/// Whether `text` is a SKILL.md lodestone shipped.
+fn is_shipped_skill(text: &str) -> bool {
+    let hash = blake3::hash(text.replace("\r\n", "\n").as_bytes());
+    SHIPPED_SKILLS.contains(&hash.to_hex().as_str())
+}
+
+/// Whether `link` is the link lodestone makes: to `target`, as written or resolved.
+fn is_our_link(link: &Path, target: &Path) -> bool {
+    let Ok(found) = fs::read_link(link) else {
+        return false;
+    };
+    let resolve = |t: &Path| {
+        link.parent()
+            .map(|d| d.join(t))
+            .and_then(|p| p.canonicalize().ok())
+    };
+    found == target || resolve(&found).is_some_and(|f| Some(f) == resolve(target))
+}
+
+/// Executable extensions Windows tries when `PATHEXT` is unset.
+const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+
+/// Where `program` is on `PATH`: the first file of that name this user may run. On Windows,
+/// where a command is installed as `.exe` or `.cmd`, with each extension in `PATHEXT`.
+pub fn find_program(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let pathext =
+        cfg!(windows).then(|| std::env::var("PATHEXT").unwrap_or_else(|_| DEFAULT_PATHEXT.into()));
+    let names = program_names(program, pathext.as_deref());
+    std::env::split_paths(&path)
+        .find_map(|dir| names.iter().map(|n| dir.join(n)).find(|p| is_executable(p)))
+}
+
+/// A file this process may execute (`access(2)` with `X_OK`, as the shell's lookup checks).
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `c_path` is a NUL-terminated path that outlives the call.
+    path.is_file() && unsafe { libc::access(c_path.as_ptr(), libc::X_OK) } == 0
+}
+
+/// Windows runs any file whose extension is in `PATHEXT`.
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+/// The file names `program` may have: itself, or with each of `pathext`'s extensions.
+fn program_names(program: &str, pathext: Option<&str>) -> Vec<String> {
+    match pathext {
+        None => vec![program.to_string()],
+        Some(exts) => exts
+            .split(';')
+            .filter(|e| !e.is_empty())
+            .map(|e| format!("{program}{e}"))
+            .collect(),
     }
 }
 
@@ -362,13 +526,14 @@ fn create_parent(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Removes a file, a link or an empty directory; `check_step` decides which are lodestone's.
 fn remove(path: &Path) -> anyhow::Result<()> {
     let result = match fs::symlink_metadata(path) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(e) => Err(e),
-        Ok(m) if m.is_dir() => fs::remove_dir_all(path),
         // Windows removes a directory symlink only as a directory.
         Ok(m) if m.is_symlink() => fs::remove_file(path).or_else(|_| fs::remove_dir(path)),
+        Ok(m) if m.is_dir() => fs::remove_dir(path),
         Ok(_) => fs::remove_file(path),
     };
     result.with_context(|| format!("removing {}", path.display()))
@@ -399,18 +564,15 @@ fn write_if_changed(path: &Path, old: &str, new: &str) -> anyhow::Result<()> {
     fs::write(path, new).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Edits a JSON object file in place, keeping its key order; a missing file starts empty.
-fn edit_json(path: &Path, edit: impl FnOnce(&mut Map<String, Value>)) -> anyhow::Result<()> {
-    let text = read_or_empty(path)?;
+/// JSON object `text` (empty: a new object) edited by `edit`, keeping its key order.
+fn edit_json(text: &str, edit: impl FnOnce(&mut Map<String, Value>)) -> anyhow::Result<String> {
     let mut doc: Map<String, Value> = if text.trim().is_empty() {
         Map::new()
     } else {
-        serde_json::from_str(&text)
-            .with_context(|| format!("{} is not a JSON object; left unchanged", path.display()))?
+        serde_json::from_str(text).context("not a JSON object")?
     };
     edit(&mut doc);
-    let new = format!("{}\n", serde_json::to_string_pretty(&doc)?);
-    write_if_changed(path, &text, &new)
+    Ok(format!("{}\n", serde_json::to_string_pretty(&doc)?))
 }
 
 /// Whether `hook` is our `event` hook: `command`, which this install writes, or what an install
@@ -499,37 +661,66 @@ fn set_mcp_server(doc: &mut Map<String, Value>, program: Option<&str>) {
     }
 }
 
-const MCP_TABLE: &str = "[mcp_servers.lodestone]";
+/// Settings of Codex's streamable HTTP MCP servers, which it rejects for a stdio server (as of
+/// Codex 0.171).
+const HTTP_SETTINGS: [&str; 8] = [
+    "url",
+    "bearer_token",
+    "bearer_token_env_var",
+    "http_headers",
+    "env_http_headers",
+    "oauth_resource",
+    "oauth",
+    "auth",
+];
 
-/// Replaces (or removes, with `body` `None`) the TOML table headed `header`, as text, so the
-/// rest of the file keeps its comments and layout.
-fn set_toml_table(text: &str, header: &str, body: Option<&str>) -> String {
-    let mut out: Vec<&str> = Vec::new();
-    let mut inside = false;
-    for line in text.lines() {
-        let t = line.trim();
-        if t.starts_with('[') {
-            inside = t == header;
+/// Codex config `text` with our `[mcp_servers.lodestone]` server set to run `program`, or removed
+/// (`None`). Edited as a TOML document, so the rest keeps its comments and layout, and settings
+/// the user added to our table stay.
+fn set_codex_server(text: &str, program: Option<&str>) -> anyhow::Result<String> {
+    let mut doc: DocumentMut = text.parse().context("not valid TOML")?;
+    match program {
+        Some(program) => {
+            let servers = doc.entry("mcp_servers").or_insert_with(|| {
+                let mut t = Table::new();
+                t.set_implicit(true);
+                Item::Table(t)
+            });
+            let fresh = if servers.is_inline_table() {
+                Item::Value(InlineTable::new().into())
+            } else {
+                Item::Table(Table::new())
+            };
+            let servers = servers
+                .as_table_like_mut()
+                .context("`mcp_servers` is not a table")?;
+            if servers.get(NAME).is_none() {
+                servers.insert(NAME, fresh);
+            }
+            let ours = servers
+                .get_mut(NAME)
+                .and_then(Item::as_table_like_mut)
+                .with_context(|| format!("`mcp_servers.{NAME}` is not a table"))?;
+            // A stdio server, also when replacing the old HTTP one: Codex rejects both kinds of
+            // settings in one table. Settings of both kinds (timeouts, tool lists) stay.
+            for http in HTTP_SETTINGS {
+                ours.remove(http);
+            }
+            ours.insert("command", value(program));
+            ours.insert("args", value(Array::from_iter(["mcp"])));
+            // The tools only read the index (and say so), so Codex need not ask before each call.
+            ours.insert("default_tools_approval_mode", value("approve"));
         }
-        if !inside {
-            out.push(line);
+        None => {
+            if let Some(servers) = doc.get_mut("mcp_servers").and_then(Item::as_table_like_mut) {
+                servers.remove(NAME);
+                if servers.is_empty() {
+                    doc.remove("mcp_servers");
+                }
+            }
         }
     }
-    while out.last().is_some_and(|l| l.trim().is_empty()) {
-        out.pop();
-    }
-    let mut new = out.join("\n");
-    if let Some(body) = body {
-        if !new.is_empty() {
-            new.push_str("\n\n");
-        }
-        new.push_str(header);
-        new.push('\n');
-        new.push_str(body);
-    } else if !new.is_empty() {
-        new.push('\n');
-    }
-    new
+    Ok(doc.to_string())
 }
 
 #[cfg(test)]
@@ -589,8 +780,8 @@ mod tests {
         run_all(&steps);
         assert_eq!(
             fs::read_to_string(&codex).unwrap(),
-            "model = \"x\"\n\n[mcp_servers.other]\ncommand = \"o\"\n\n[mcp_servers.lodestone]\n\
-             command = \"/opt/bin/lode\"\nargs = [\"mcp\"]\ndefault_tools_approval_mode = \"approve\"\n"
+            "model = \"x\"\n\n[mcp_servers.lodestone]\ncommand = \"/opt/bin/lode\"\nargs = [\"mcp\"]\n\
+             default_tools_approval_mode = \"approve\"\n\n[mcp_servers.other]\ncommand = \"o\"\n"
         );
         let skill = home.join(".agents/skills/lodestone/SKILL.md");
         assert_eq!(fs::read_to_string(&skill).unwrap(), SKILL);
@@ -641,6 +832,191 @@ mod tests {
             fs::read_to_string(&codex).unwrap(),
             "model = \"x\"\n\n[mcp_servers.other]\ncommand = \"o\"\n"
         );
+    }
+
+    #[test]
+    fn windows_programs_are_found_by_their_pathext_extensions() {
+        assert_eq!(program_names("claude", None), ["claude"]);
+        assert_eq!(
+            program_names("claude", Some(DEFAULT_PATHEXT)),
+            ["claude.COM", "claude.EXE", "claude.BAT", "claude.CMD"]
+        );
+    }
+
+    /// Every file under `dir`, with its contents.
+    fn snapshot(dir: &Path) -> Vec<(PathBuf, Option<String>)> {
+        let mut out = vec![(dir.to_path_buf(), fs::read_to_string(dir).ok())];
+        if fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir()) {
+            for e in fs::read_dir(dir).unwrap() {
+                out.extend(snapshot(&e.unwrap().path()));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn the_current_skill_is_a_shipped_one() {
+        assert!(is_shipped_skill(SKILL));
+        assert!(is_shipped_skill(&SKILL.replace('\n', "\r\n")));
+        assert!(!is_shipped_skill("---\nname: lodestone\n---\nmine\n"));
+    }
+
+    #[test]
+    fn a_conflict_stops_install_before_anything_changes() {
+        let root = tempdir();
+        let t = target(Scope::Project, &root);
+        let repo = root.join("repo");
+        // The user's own skill, and a directory where the Claude link goes.
+        let skill = repo.join(".agents/skills/lodestone/SKILL.md");
+        fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        fs::write(&skill, "---\nname: lodestone\n---\nmine\n").unwrap();
+        let before = snapshot(&repo);
+        let err = check(&install(&Harness::ALL, &t)).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not written by lodestone"),
+            "{err:#}"
+        );
+        for step in install(&Harness::ALL, &t) {
+            if matches!(step, Step::Write { .. }) {
+                assert!(apply(&step).is_err());
+            }
+        }
+        assert_eq!(snapshot(&repo), before);
+
+        fs::remove_file(&skill).unwrap();
+        let own = repo.join(".claude/skills/lodestone/notes.md");
+        fs::create_dir_all(own.parent().unwrap()).unwrap();
+        fs::write(&own, "mine").unwrap();
+        let before = snapshot(&repo);
+        let err = check(&install(&Harness::ALL, &t)).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("is not lodestone's link"),
+            "{err:#}"
+        );
+        assert_eq!(snapshot(&repo), before);
+        // Nor does uninstall touch it.
+        assert!(check(&uninstall(&Harness::ALL, &t)).is_err());
+        assert!(
+            apply(&Step::Remove {
+                path: own.parent().unwrap().to_path_buf()
+            })
+            .is_err()
+        );
+        assert_eq!(snapshot(&repo), before);
+    }
+
+    #[test]
+    fn uninstall_keeps_the_users_skill_files() {
+        let root = tempdir();
+        let t = target(Scope::Project, &root);
+        let dir = root.join("repo/.agents/skills/lodestone");
+        run_all(&install(&Harness::ALL, &t));
+        let own = dir.join("notes.md");
+        fs::write(&own, "mine").unwrap();
+        let before = snapshot(&root.join("repo"));
+        assert!(check(&uninstall(&Harness::ALL, &t)).is_err());
+        assert_eq!(snapshot(&root.join("repo")), before);
+        // A skill the user rewrote stays too.
+        fs::remove_file(&own).unwrap();
+        fs::write(dir.join("SKILL.md"), "mine").unwrap();
+        assert!(check(&uninstall(&Harness::ALL, &t)).is_err());
+        fs::write(dir.join("SKILL.md"), SKILL).unwrap();
+        run_all(&uninstall(&Harness::ALL, &t));
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn only_lodestones_link_is_replaced_or_removed() {
+        let root = tempdir();
+        let t = target(Scope::Project, &root);
+        let repo = root.join("repo");
+        let link = repo.join(".claude/skills/lodestone");
+        // The user's own link, to their own skill: even one in a shared skill directory elsewhere.
+        let theirs = root.join("dotfiles/.agents/skills/lodestone");
+        fs::create_dir_all(&theirs).unwrap();
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink(&theirs, &link).unwrap();
+        assert!(check(&install(&[Harness::Claude], &t)).is_err());
+        assert!(check(&uninstall(&[Harness::Claude], &t)).is_err());
+        assert_eq!(fs::read_link(&link).unwrap(), theirs);
+        // An empty directory of theirs is no link either.
+        fs::remove_file(&link)
+            .or_else(|_| fs::remove_dir(&link))
+            .unwrap();
+        fs::create_dir(&link).unwrap();
+        assert!(check(&uninstall(&[Harness::Claude], &t)).is_err());
+        assert!(link.is_dir());
+        // Lodestone's own link comes and goes.
+        fs::remove_dir(&link).unwrap();
+        run_all(&install(&[Harness::Claude], &t));
+        run_all(&install(&[Harness::Claude], &t));
+        run_all(&uninstall(&[Harness::Claude], &t));
+        assert!(fs::symlink_metadata(&link).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_executable_files_are_programs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir();
+        let file = dir.join("claude");
+        fs::write(&file, "").unwrap();
+        assert!(!is_executable(&file));
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(is_executable(&file));
+        assert!(!is_executable(&dir));
+        // Runnable by others, not by its owner (this user).
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o601)).unwrap();
+        assert!(!is_executable(&file));
+    }
+
+    #[test]
+    fn codex_config_is_edited_as_toml() {
+        let program = Some("lode");
+        // A comment after the header, and a setting of the user's in our table.
+        let text =
+            "[mcp_servers.lodestone] # code search\ncommand = \"old\"\nstartup_timeout_sec = 30\n";
+        let new = set_codex_server(text, program).unwrap();
+        assert_eq!(
+            new,
+            "[mcp_servers.lodestone] # code search\ncommand = \"lode\"\nstartup_timeout_sec = 30\n\
+             args = [\"mcp\"]\ndefault_tools_approval_mode = \"approve\"\n"
+        );
+        assert_eq!(set_codex_server(&new, program).unwrap(), new);
+        // Servers as an inline table, and as dotted keys.
+        let inline =
+            set_codex_server("mcp_servers = { other = { command = \"o\" } }\n", program).unwrap();
+        let parsed: toml::Table = toml::from_str(&inline).unwrap();
+        assert_eq!(
+            parsed["mcp_servers"]["lodestone"]["command"].as_str(),
+            Some("lode")
+        );
+        assert_eq!(
+            parsed["mcp_servers"]["other"]["command"].as_str(),
+            Some("o")
+        );
+        let dotted = set_codex_server("mcp_servers.other.command = \"o\"\n", program).unwrap();
+        let parsed: toml::Table = toml::from_str(&dotted).unwrap();
+        assert_eq!(
+            parsed["mcp_servers"]["lodestone"]["args"][0].as_str(),
+            Some("mcp")
+        );
+        assert_eq!(
+            set_codex_server(&dotted, None).unwrap(),
+            "mcp_servers.other.command = \"o\"\n"
+        );
+        // Replacing the old HTTP server keeps the settings stdio servers share.
+        let http = "[mcp_servers.lodestone]\nurl = \"http://127.0.0.1:4600/mcp\"\n\
+                    bearer_token_env_var = \"T\"\noauth_resource = \"http://r\"\n\
+                    tool_timeout_sec = 60\n";
+        assert_eq!(
+            set_codex_server(http, program).unwrap(),
+            "[mcp_servers.lodestone]\ntool_timeout_sec = 60\ncommand = \"lode\"\n\
+             args = [\"mcp\"]\ndefault_tools_approval_mode = \"approve\"\n"
+        );
+        // Invalid TOML is reported, not rewritten.
+        assert!(set_codex_server("[mcp_servers\n", program).is_err());
     }
 
     #[test]

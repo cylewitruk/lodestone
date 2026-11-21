@@ -33,7 +33,7 @@ pub enum InputKind {
 }
 
 pub trait Embedder: Send + Sync {
-    /// Stable model identity used in the embedding cache key (`hf_repo[@revision]`).
+    /// Stable model identity used in the embedding cache key (see [`model_id`]).
     fn model_id(&self) -> &str;
     fn dim(&self) -> usize;
     fn backend(&self) -> Backend;
@@ -41,12 +41,59 @@ pub trait Embedder: Send + Sync {
     fn embed(&self, texts: &[&str], kind: InputKind) -> anyhow::Result<Vec<Vec<f32>>>;
 }
 
-/// The identity of a model independent of the runtime executing it.
+/// The identity of a model's document vectors, independent of the runtime executing it:
+/// `hf_repo[@revision]#<fingerprint>` of the settings that shape the vectors. The built-in
+/// models as v0.1.1 defined them keep the bare `hf_repo[@revision]` their vectors were cached
+/// under; any other settings, including later changes to a built-in, get their own id.
 pub fn model_id(model: &ModelConfig) -> String {
-    match &model.revision {
+    let base = match &model.revision {
         Some(rev) => format!("{}@{rev}", model.hf_repo),
         None => model.hf_repo.clone(),
+    };
+    let settings = vector_settings(model);
+    let legacy = blake3::hash(format!("{base}\n{settings}").as_bytes());
+    if V0_1_1_BUILTINS.contains(&legacy.to_hex().as_str()) {
+        base
+    } else {
+        format!(
+            "{base}#{}",
+            &blake3::hash(settings.as_bytes()).to_hex()[..12]
+        )
     }
+}
+
+/// blake3 of `"{hf_repo[@revision]}\n{vector_settings}"` for each built-in model of v0.1.1, whose
+/// ids had no fingerprint. Never add to it: a new or changed built-in gets a fingerprinted id.
+const V0_1_1_BUILTINS: [&str; 13] = [
+    "c55f43166ca381b88df54e7ced1a33950af158d7140a4678640690969f8df02e",
+    "4b74252a75b8b8f24d82660e908eb796256bd0c34ed15d99976c622b8562f564",
+    "76b5bdac9d7181e2292670f018923e775eaa00fba03b440722eb588df2d9f590",
+    "6adb550b4aac33ebdda6270fc24f77f09d649a0046baef32822a1d931920a0d1",
+    "b917e5aaeaae48210e45d541219094531319235b76d11b36bbc10aaed5ae871f",
+    "e25b076eac3a8683c5b1781ed93d6675abc4f4c7b322ad941736c9bd1912a50d",
+    "21a1a46c57ab27583ef737c6f0766dc2a3346c49fbde0f009c309ad890572131",
+    "34bdde81ef2551fbbf1bfbc64874e88e5a397dbac8264ae77c5498d6f615c806",
+    "7c2412d9138f2e69a335b48df4dfb5ca1647eef9725ac3340487956758267f4a",
+    "d91a4cb22d32d1cd02e3052d9c4227e24556aebaf77b39b14baba8b654dced9f",
+    "3b2c26fd60ea0b14b474b8576d17648943a7952a1a76454ab5210ec903eeb55a",
+    "1ef4aa5810a0c7714b38c4a3ecc805279b54661007b97e3034097c825f94b71e",
+    "3666d4af12031e17ebf16020682dced8f9b8b93854c00f338f5c2c2aef911419",
+];
+
+/// The settings that determine a document's vector besides the repository's weights, including
+/// the fastembed variant, whose weights fastembed loads instead. The query prefix only shapes
+/// queries, and the dtype is how the same model runs.
+fn vector_settings(m: &ModelConfig) -> String {
+    serde_json::json!([
+        m.dim,
+        m.max_tokens,
+        m.arch,
+        m.pooling,
+        m.document_prefix,
+        m.tokenizer_repo,
+        m.fastembed
+    ])
+    .to_string()
 }
 
 pub fn prefixed<'a>(
@@ -183,5 +230,33 @@ impl Embedder for HashEmbedder {
                 v
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::builtin_models;
+
+    #[test]
+    fn model_id_changes_with_the_settings_that_shape_document_vectors() {
+        // v0.1.1's built-ins, unchanged since; a change to one fails here, as it should give it
+        // a fingerprinted id (then compare against a frozen v0.1.1 definition instead).
+        for builtin in builtin_models().values() {
+            assert!(!model_id(builtin).contains('#'), "{}", builtin.hf_repo);
+        }
+        let model = builtin_models().into_values().next().unwrap();
+        let base = model_id(&model);
+        let changed = |f: &dyn Fn(&mut ModelConfig)| {
+            let mut m = model.clone();
+            f(&mut m);
+            model_id(&m)
+        };
+        assert_eq!(changed(&|m| m.query_prefix.push('x')), base);
+        let prefix = changed(&|m| m.document_prefix.push('x'));
+        assert!(prefix.starts_with(&format!("{base}#")), "{prefix}");
+        assert_ne!(changed(&|m| m.max_tokens += 1), prefix);
+        assert_ne!(changed(&|m| m.fastembed = Some("Other".into())), base);
+        assert_eq!(changed(&|m| m.document_prefix.push('x')), prefix);
     }
 }

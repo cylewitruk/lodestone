@@ -4,6 +4,7 @@ pub mod agents;
 pub mod api;
 pub mod bench;
 pub mod cache;
+pub mod checkout;
 pub mod chunk;
 pub mod client;
 pub mod config;

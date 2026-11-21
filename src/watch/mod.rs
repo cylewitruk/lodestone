@@ -5,7 +5,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
@@ -13,11 +13,14 @@ use notify_debouncer_full::notify::RecursiveMode;
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 use tokio::sync::mpsc;
 
+pub use crate::checkout::git_dir;
 use crate::index::{IndexOptions, WorktreeIndex};
 use crate::registry::Engine;
 
 const DEBOUNCE: Duration = Duration::from_millis(500);
 const POLL: Duration = Duration::from_secs(60);
+/// How long a failed indexing pass waits for the next change before it is retried.
+const RETRY: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
@@ -49,62 +52,89 @@ pub struct Watchers {
     busy: Arc<AtomicUsize>,
 }
 
-/// The git directory of a worktree: `.git/` or the `gitdir:` target of a `.git` file.
-pub fn git_dir(root: &Path) -> Option<PathBuf> {
-    let dot = root.join(".git");
-    if dot.is_dir() {
-        return Some(dot);
-    }
-    let text = std::fs::read_to_string(&dot).ok()?;
-    let target = text.trim().strip_prefix("gitdir:")?.trim();
-    let p = Path::new(target);
-    Some(if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        root.join(p)
-    })
-}
+/// Ignore files the index walk reads at any level; a change to one can show or hide any file.
+const IGNORE_FILES: [&str; 3] = [".gitignore", ".ignore", ".lodestoneignore"];
 
 /// Classifies raw event paths for a worktree.
 pub struct EventFilter {
     root: PathBuf,
-    git_dir: Option<PathBuf>,
-    ignore: Gitignore,
+    /// Refreshed when the root becomes, or stops being, a git checkout.
+    git_dir: RwLock<Option<PathBuf>>,
+    /// Reloaded when an ignore file changes.
+    ignore: RwLock<Gitignore>,
 }
 
 impl EventFilter {
     pub fn new(root: &Path) -> Self {
-        let mut b = GitignoreBuilder::new(root);
         let git = git_dir(root);
-        for f in [root.join(".gitignore"), root.join(".lodestoneignore")]
+        Self {
+            ignore: RwLock::new(Self::matcher(root, git.as_deref())),
+            root: root.to_path_buf(),
+            git_dir: RwLock::new(git),
+        }
+    }
+
+    /// The root's ignore rules, which drop events before they reach the index walk. Added from
+    /// lowest precedence to highest, as the walk ranks them, since the last matching rule wins.
+    fn matcher(root: &Path, git_dir: Option<&Path>) -> Gitignore {
+        let mut b = GitignoreBuilder::new(root);
+        for f in git_dir
+            .map(|g| g.join("info/exclude"))
             .into_iter()
-            .chain(git.as_ref().map(|g| g.join("info/exclude")))
+            .chain([".gitignore", ".ignore", ".lodestoneignore"].map(|f| root.join(f)))
         {
             if f.exists() {
                 let _ = b.add(f);
             }
         }
-        Self {
-            root: root.to_path_buf(),
-            git_dir: git,
-            ignore: b.build().unwrap_or_else(|_| Gitignore::empty()),
-        }
+        b.build().unwrap_or_else(|_| Gitignore::empty())
+    }
+
+    /// The worktree's git directory, as last seen.
+    pub fn git_dir(&self) -> Option<PathBuf> {
+        self.git_dir
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn is_git_ref(rel: &Path) -> bool {
         rel == Path::new("HEAD") || rel.starts_with("refs") || rel == Path::new("packed-refs")
     }
 
-    /// Folds event paths into a change set; `None` if nothing relevant happened.
+    /// Folds event paths into a change set; `None` if nothing relevant happened. Asks for a full
+    /// rescan when what the index covers may have changed: a git ref moved, an ignore file
+    /// changed (reloading the rules), or a checkout appeared or went away inside the tree.
     pub fn classify<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) -> Option<Change> {
         let mut out = BTreeSet::new();
+        let (mut rescan, mut reload) = (false, false);
+        let mut git_dir = self
+            .git_dir
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        // A pointer to a git directory not created yet resolves once it is.
+        if git_dir
+            .as_deref()
+            .is_some_and(|g| g.canonicalize().ok().as_deref() != Some(g))
+        {
+            git_dir = crate::checkout::git_dir(&self.root);
+            *self.git_dir.write().unwrap_or_else(|e| e.into_inner()) = git_dir.clone();
+        }
         for p in paths {
-            if let Some(g) = &self.git_dir
+            // The root becoming a checkout, or ceasing to be one, changes which nested checkouts
+            // its index owns.
+            if p == self.root.join(".git") {
+                git_dir = crate::checkout::git_dir(&self.root);
+                *self.git_dir.write().unwrap_or_else(|e| e.into_inner()) = git_dir.clone();
+                (rescan, reload) = (true, true);
+                continue;
+            }
+            if let Some(g) = &git_dir
                 && let Ok(rel) = p.strip_prefix(g)
             {
-                if Self::is_git_ref(rel) {
-                    return Some(Change::Rescan);
-                }
+                rescan |= Self::is_git_ref(rel);
+                reload |= rel == Path::new("info/exclude");
                 continue;
             }
             let Ok(rel) = p.strip_prefix(&self.root) else {
@@ -113,11 +143,22 @@ impl EventFilter {
             if rel.starts_with(".git") {
                 continue;
             }
-            if self
-                .ignore
-                .matched_path_or_any_parents(rel, p.is_dir())
-                .is_ignore()
-            {
+            // Ignore files and checkouts count wherever the walk enters their directory, even
+            // when the rules ignore the marker itself (`.git` listed in `.gitignore`).
+            let name = rel.file_name();
+            let in_tree = || {
+                rel.parent()
+                    .is_none_or(|d| d.as_os_str().is_empty() || !self.ignored(d, true))
+            };
+            if name.is_some_and(|n| IGNORE_FILES.iter().any(|f| n == *f)) && in_tree() {
+                reload = true;
+                continue;
+            }
+            if name.is_some_and(|n| n == ".git") && in_tree() {
+                rescan = true;
+                continue;
+            }
+            if self.ignored(rel, p.is_dir()) {
                 continue;
             }
             // Cache directories (`target/` and friends carry CACHEDIR.TAG).
@@ -131,7 +172,31 @@ impl EventFilter {
             }
             out.insert(rel.to_string_lossy().replace('\\', "/"));
         }
-        (!out.is_empty()).then_some(Change::Paths(out))
+        if reload {
+            *self.ignore.write().unwrap_or_else(|e| e.into_inner()) =
+                Self::matcher(&self.root, git_dir.as_deref());
+        }
+        if rescan || reload {
+            Some(Change::Rescan)
+        } else {
+            (!out.is_empty()).then_some(Change::Paths(out))
+        }
+    }
+
+    /// Whether the root's rules ignore `rel` and no ignore file below the root, which could
+    /// re-include it, is in a directory above it. Anything else is left to the index walk.
+    fn ignored(&self, rel: &Path, is_dir: bool) -> bool {
+        self.ignore
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .matched_path_or_any_parents(rel, is_dir)
+            .is_ignore()
+            && !rel.ancestors().skip(1).any(|a| {
+                !a.as_os_str().is_empty()
+                    && IGNORE_FILES
+                        .iter()
+                        .any(|f| self.root.join(a).join(f).exists())
+            })
     }
 }
 
@@ -149,12 +214,22 @@ impl Watchers {
             return;
         }
         let (tx, rx) = mpsc::unbounded_channel::<Change>();
-        let filter = EventFilter::new(&w.root);
+        let filter = Arc::new(EventFilter::new(&w.root));
         let events_tx = tx.clone();
         let err_engine = engine.clone();
         let err_root = w.root.clone();
+        let root = w.root.clone();
+        // A git directory outside the tree is watched apart: the one there at the start below,
+        // one that appears later (`git init --separate-git-dir`) by `external`.
+        let outside = move |g: Option<PathBuf>| g.filter(|g| !g.starts_with(&root));
+        let mut external = ExternalGit {
+            path: outside(filter.git_dir()).filter(|g| g.exists()),
+            watcher: None,
+        };
+        let handler_filter = filter.clone();
         let debouncer = new_debouncer(DEBOUNCE, None, move |res: DebounceEventResult| match res {
             Ok(events) => {
+                let filter = &handler_filter;
                 if let Some(c) = filter.classify(
                     events
                         .iter()
@@ -162,6 +237,7 @@ impl Watchers {
                 ) {
                     let _ = events_tx.send(c);
                 }
+                external.follow(outside(filter.git_dir()), filter, &events_tx);
             }
             Err(errors) => {
                 let msg = errors
@@ -182,6 +258,7 @@ impl Watchers {
             d.watch(&w.root, RecursiveMode::Recursive)?;
             if let Some(g) = git_dir(&w.root)
                 && !g.starts_with(&w.root)
+                && g.exists()
             {
                 d.watch(&g, RecursiveMode::Recursive)?;
             }
@@ -282,21 +359,92 @@ impl Watchers {
     }
 }
 
-/// Serializes indexing for one worktree, coalescing everything queued while a pass runs.
+type Watcher = Debouncer<notify_debouncer_full::notify::RecommendedWatcher, RecommendedCache>;
+
+/// The git directory outside a worktree being watched (`path`), and the watcher started for it
+/// after the worktree's (`None` for the one there from the start, which the worktree's watches).
+struct ExternalGit {
+    path: Option<PathBuf>,
+    watcher: Option<Watcher>,
+}
+
+impl ExternalGit {
+    /// Watches `git` (the worktree's git directory, when outside it) instead, once watching it
+    /// works: until then (it may not exist yet) the current watch stays, and the next call
+    /// tries again.
+    fn follow(
+        &mut self,
+        git: Option<PathBuf>,
+        filter: &Arc<EventFilter>,
+        tx: &mpsc::UnboundedSender<Change>,
+    ) {
+        if git == self.path {
+            return;
+        }
+        match git.as_deref() {
+            None => self.watcher = None,
+            Some(g) => match git_watcher(filter, g, tx) {
+                Some(w) => self.watcher = Some(w),
+                None => return,
+            },
+        }
+        self.path = git;
+    }
+}
+
+/// Watches `git_dir`, outside the worktree, for ref changes, which `filter` turns into rescans.
+fn git_watcher(
+    filter: &Arc<EventFilter>,
+    git_dir: &Path,
+    tx: &mpsc::UnboundedSender<Change>,
+) -> Option<Watcher> {
+    let (filter, tx) = (filter.clone(), tx.clone());
+    let mut d = new_debouncer(DEBOUNCE, None, move |res: DebounceEventResult| {
+        if let Ok(events) = res
+            && let Some(c) = filter.classify(
+                events
+                    .iter()
+                    .flat_map(|e| e.paths.iter().map(PathBuf::as_path)),
+            )
+        {
+            let _ = tx.send(c);
+        }
+    })
+    .ok()?;
+    d.watch(git_dir, RecursiveMode::Recursive).ok()?;
+    Some(d)
+}
+
+/// Serializes indexing for one worktree, coalescing everything queued while a pass runs. What a
+/// failed pass was to index stays pending, and is retried with the next change or after
+/// [`RETRY`], until a pass succeeds.
 async fn worker(
     engine: Arc<Engine>,
     w: Arc<WorktreeIndex>,
     mut rx: mpsc::UnboundedReceiver<Change>,
     busy: Arc<AtomicUsize>,
 ) {
-    while let Some(first) = rx.recv().await {
-        let mut rescan = first == Change::Rescan;
-        let mut paths = match first {
-            Change::Paths(p) => p,
-            Change::Rescan => BTreeSet::new(),
+    // (rescan, paths) a failed pass left.
+    let mut left: Option<(bool, BTreeSet<String>)> = None;
+    loop {
+        let first = if left.is_none() {
+            match rx.recv().await {
+                Some(c) => Some(c),
+                None => break,
+            }
+        } else {
+            match tokio::time::timeout(RETRY, rx.recv()).await {
+                Ok(Some(c)) => Some(c),
+                Ok(None) => break,
+                Err(_) => None,
+            }
         };
-        while let Ok(more) = rx.try_recv() {
-            match more {
+        let (mut rescan, mut paths) = left.take().unwrap_or_default();
+        for change in first
+            .into_iter()
+            .chain(std::iter::from_fn(|| rx.try_recv().ok()))
+        {
+            match change {
                 Change::Rescan => rescan = true,
                 Change::Paths(p) => paths.extend(p),
             }
@@ -306,10 +454,10 @@ async fn worker(
         } else {
             format!("{} changed files", paths.len())
         };
-        w.set_pending(Some(what));
+        w.set_pending(Some(what.clone()));
         let opts = IndexOptions {
             force: false,
-            paths: (!rescan).then(|| paths.into_iter().collect()),
+            paths: (!rescan).then(|| paths.iter().cloned().collect()),
         };
         busy.fetch_add(1, Ordering::SeqCst);
         let result = match engine.index_context() {
@@ -325,10 +473,16 @@ async fn worker(
                 r.chunks_embedded,
                 r.secs
             ),
-            Err(e) => tracing::warn!("{}: indexing failed: {e:#}", w.root.display()),
+            Err(e) => {
+                tracing::warn!("{}: indexing failed: {e:#}", w.root.display());
+                left = Some((rescan, paths));
+            }
         }
         if rx.is_empty() {
-            w.set_pending(None);
+            w.set_pending(
+                left.is_some()
+                    .then(|| format!("{what}, retried after a failed pass")),
+            );
             w.release_writer();
         }
     }
@@ -366,10 +520,125 @@ mod tests {
     }
 
     #[test]
-    fn git_file_worktree() {
+    fn an_ignore_file_change_reloads_the_rules_and_rescans() {
         let root = crate::testutil::tempdir();
-        let target = crate::testutil::tempdir().join(".git/worktrees/wt");
-        std::fs::write(root.join(".git"), format!("gitdir: {}\n", target.display())).unwrap();
-        assert_eq!(git_dir(&root), Some(target));
+        std::fs::write(root.join(".gitignore"), "gen/\n").unwrap();
+        let f = EventFilter::new(&root);
+        let gen_file = root.join("gen/out.rs");
+        assert_eq!(f.classify([gen_file.as_path()]), None);
+        std::fs::write(root.join(".gitignore"), "").unwrap();
+        assert_eq!(
+            f.classify([root.join(".gitignore").as_path()]),
+            Some(Change::Rescan)
+        );
+        assert_eq!(
+            f.classify([gen_file.as_path()]),
+            Some(Change::Paths(BTreeSet::from(["gen/out.rs".to_string()])))
+        );
+        assert_eq!(
+            f.classify([root.join("src/.lodestoneignore").as_path()]),
+            Some(Change::Rescan)
+        );
+        // In one batch with a ref change, the ignore file still reloads the rules.
+        std::fs::write(root.join(".gitignore"), "gen/\n").unwrap();
+        std::fs::create_dir_all(root.join(".git/refs/heads")).unwrap();
+        let f = EventFilter::new(&root);
+        std::fs::write(root.join(".gitignore"), "").unwrap();
+        let batch = [root.join(".git/HEAD"), root.join(".gitignore")];
+        assert_eq!(
+            f.classify(batch.iter().map(PathBuf::as_path)),
+            Some(Change::Rescan)
+        );
+        assert!(f.classify([gen_file.as_path()]).is_some());
+    }
+
+    #[test]
+    fn nested_rules_and_checkouts_reach_the_index_walk() {
+        let root = crate::testutil::tempdir();
+        std::fs::write(root.join(".gitignore"), "*.gen.rs\n").unwrap();
+        std::fs::create_dir_all(root.join("child")).unwrap();
+        std::fs::write(root.join("child/.gitignore"), "!keep.gen.rs\n").unwrap();
+        let f = EventFilter::new(&root);
+        // The walk decides: a nested rule may re-include what the root's rules ignore.
+        assert_eq!(
+            f.classify([root.join("child/keep.gen.rs").as_path()]),
+            Some(Change::Paths(BTreeSet::from([
+                "child/keep.gen.rs".to_string()
+            ])))
+        );
+        assert_eq!(f.classify([root.join("other.gen.rs").as_path()]), None);
+        // `git init` in a subdirectory moves its files to another index, even with `.git`
+        // ignored; not inside an ignored directory, which the walk never enters.
+        std::fs::write(root.join(".gitignore"), "*.gen.rs\n.git\ngen/\n").unwrap();
+        let f = EventFilter::new(&root);
+        std::fs::create_dir_all(root.join("child/.git")).unwrap();
+        assert_eq!(
+            f.classify([root.join("child/.git").as_path()]),
+            Some(Change::Rescan)
+        );
+        assert_eq!(f.classify([root.join("gen/x/.git").as_path()]), None);
+        assert_eq!(f.classify([root.join("gen/.gitignore").as_path()]), None);
+    }
+
+    #[test]
+    fn the_root_becoming_a_checkout_rescans() {
+        let root = crate::testutil::tempdir();
+        let f = EventFilter::new(&root);
+        std::fs::create_dir_all(root.join(".git/refs/heads")).unwrap();
+        let marker = root.join(".git");
+        assert_eq!(f.classify([marker.as_path()]), Some(Change::Rescan));
+        // Its refs are watched from then on.
+        let head = root.join(".git/refs/heads/main");
+        assert_eq!(f.classify([head.as_path()]), Some(Change::Rescan));
+        assert_eq!(f.classify([root.join(".git/objects/x").as_path()]), None);
+    }
+
+    #[test]
+    fn a_git_dir_created_after_its_pointer_is_found() {
+        let base = crate::testutil::tempdir().canonicalize().unwrap();
+        let root = base.join("wt");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".git"), "gitdir: ../external.git\n").unwrap();
+        let f = EventFilter::new(&root);
+        std::fs::create_dir_all(base.join("external.git/refs/heads")).unwrap();
+        f.classify([root.join("src/a.rs").as_path()]);
+        assert_eq!(f.git_dir(), Some(base.join("external.git")));
+        let head = base.join("external.git/HEAD");
+        assert_eq!(f.classify([head.as_path()]), Some(Change::Rescan));
+    }
+
+    #[test]
+    fn a_failed_retarget_keeps_the_watch_it_had() {
+        let base = crate::testutil::tempdir().canonicalize().unwrap();
+        let (a, b) = (base.join("a.git"), base.join("b.git"));
+        std::fs::create_dir_all(&a).unwrap();
+        let filter = Arc::new(EventFilter::new(&base.join("wt")));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut external = ExternalGit {
+            path: None,
+            watcher: None,
+        };
+        external.follow(Some(a.clone()), &filter, &tx);
+        assert_eq!(external.path.as_ref(), Some(&a));
+        // B does not exist: A stays watched, and returning to it keeps that watch.
+        external.follow(Some(b.clone()), &filter, &tx);
+        assert_eq!(external.path.as_ref(), Some(&a));
+        assert!(external.watcher.is_some());
+        external.follow(Some(a.clone()), &filter, &tx);
+        assert!(external.watcher.is_some());
+        // Once B exists, it is watched.
+        std::fs::create_dir_all(&b).unwrap();
+        external.follow(Some(b.clone()), &filter, &tx);
+        assert_eq!(external.path, Some(b));
+    }
+
+    #[test]
+    fn root_rules_rank_as_the_walk_ranks_them() {
+        let root = crate::testutil::tempdir();
+        std::fs::write(root.join(".gitignore"), "*.gen.rs\n").unwrap();
+        std::fs::write(root.join(".ignore"), "!root.gen.rs\n").unwrap();
+        let f = EventFilter::new(&root);
+        assert!(f.classify([root.join("root.gen.rs").as_path()]).is_some());
+        assert_eq!(f.classify([root.join("other.gen.rs").as_path()]), None);
     }
 }
