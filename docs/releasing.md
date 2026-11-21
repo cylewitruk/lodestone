@@ -8,10 +8,12 @@
 ## Flow
 
 1. Every push to `main` updates a release PR (label `release`) that bumps `Cargo.toml` and adds a
-   `CHANGELOG.md` entry from the commits since the last release. It opens as a draft.
+   `CHANGELOG.md` entry from the commits since the last release, grouped by Conventional Commits
+   type (see [CONTRIBUTING.md](../CONTRIBUTING.md#pull-requests)). It opens as a draft.
 2. Edit the PR before merging: tidy the changelog entry, pick the version, and mark it ready.
-   release-plz bumps the patch version for `area: summary` commits; for a minor bump, run
-   `release-plz set-version lodestone-cli@0.X.0` on the PR branch and push.
+   While on 0.x, release-plz bumps the minor version for breaking changes (`type!:`) and the
+   patch version otherwise. To pick another version, run
+   `release-plz set-version lodestone-cli@0.X.Y` on the PR branch and push.
 3. Merging it publishes `lodestone-cli` to crates.io (trusted publishing), pushes the tag and
    dispatches `release.yml` for it. A tag pushed with `GITHUB_TOKEN` starts no workflow, but a
    dispatch does, so no other credential is needed.
