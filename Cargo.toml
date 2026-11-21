@@ -47,6 +47,7 @@ thiserror = "2.0.21"
 tokenizers = { version = "0.23.2", optional = true, default-features = false, features = ["onig"] }
 tokio = { version = "1.54.1", features = ["full"] }
 toml = "1.2.1"
+toml_edit = { version = "0.25.19", default-features = false, features = ["parse", "display"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tree-sitter = "0.27.2"
@@ -85,6 +86,9 @@ ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, fea
 # auto-vectorized distance loops there.
 [target.'cfg(not(all(target_os = "linux", target_arch = "aarch64")))'.dependencies]
 usearch = { version = "2.26.6", features = ["numkong"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }

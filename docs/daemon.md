@@ -21,15 +21,16 @@ One daemon per user keeps the model loaded and serves every registered repositor
 
 ## Repositories and worktrees
 
-- **Registering:** `lode register` adds the path to `~/.lodestone/registry.json`, then watches and
-  indexes it.
+- **Registering:** `lode register` adds the path to `~/.lodestone/registry.json` and starts its
+  first index in the background; `lode status` shows when it is done.
 - **One index per worktree:** results never mix worktrees. They share an embedding cache, so a
   second worktree only re-embeds what differs.
 - **Linked worktrees** (`git worktree add`) of a registered repository register themselves on
   first use as `<repository>:<worktree>`, and are unregistered once their directory is deleted.
 - **Which one:** a session or command uses the worktree it runs in; `repo` overrides it. An
   unregistered checkout gets an error asking for `lode register`, never another checkout's
-  results.
+  results. A repository or linked worktree nested in a registered one is left out of its index;
+  submodules are part of it.
 - **Searching keeps a worktree fresh:** a search that names a worktree has the daemon watch it,
   catch it up and index it if new. The search itself answers from the index as it is: a stale
   index answers from what it has and `lode status` says why. An MCP search in a never-indexed
@@ -41,7 +42,11 @@ One daemon per user keeps the model loaded and serves every registered repositor
 
 `.gitignore` at every level, `.git/info/exclude`, the global git excludes file, `.ignore` and
 `.lodestoneignore`. Hidden files, symlinks and directories containing `CACHEDIR.TAG` (such as
-Cargo's `target/`) are skipped.
+Cargo's `target/`) are skipped. Editing an ignore file, or creating or removing a checkout inside
+the tree, triggers a full rescan. A directory or file that cannot be read keeps what was indexed
+from it until a scan can read it again, and `lode status` names it until then. Rebuilding the
+index (`lode index --force`, or after a model change) re-indexes every file a batch at a time,
+so the index stays searchable and an unreadable file keeps its items.
 
 On Linux, large trees may need a higher `fs.inotify.max_user_watches`. If the watcher fails,
 lodestone rescans every 60 s and says so in `lode status`.

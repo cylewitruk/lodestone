@@ -2,6 +2,7 @@
 //! served over HTTP here and over stdio by the `lode mcp` relay. Their names, descriptions and
 //! inputs are part of the design (agents re-read them every turn); keep them verbatim.
 
+use std::mem;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,7 +21,7 @@ use super::types::{DEFAULT_TOP_K, SearchRequest, SearchResponse};
 use crate::registry::Engine;
 
 pub const SEMANTIC_DESCRIPTION: &str = "Find existing code by what it does, when you do not know its name. Returns matching functions, types and macros as 'path:line:col  lines start-end  kind name(signature) — doc', where line:col is the name's position and start-end the item's line range (all 1-based). Use before writing any helper.";
-pub const SIMILAR_DESCRIPTION: &str = "Find existing code that does the same job as given code: every function a diff adds, or the functions you consolidate, move or rewrite. Returns one section per `code` entry, listing the closest matches in semantic_code_search's format; the entry's own definition is not listed.";
+pub const SIMILAR_DESCRIPTION: &str = "Find existing code that does the same job as given code: every function a diff adds, or the functions you consolidate, move or rewrite. Returns one section per `code` entry, listing the closest matches in semantic_code_search's format; definitions matching the entry itself (its own once indexed, or an existing copy) are listed apart.";
 /// Appended to the search tools' descriptions when [`crate::config::Config::is_local`].
 pub const LOCAL_NOTE: &str = "It runs on this machine: the index and the embedding model are local, and nothing is sent elsewhere.";
 pub const STATUS_DESCRIPTION: &str =
@@ -62,7 +63,7 @@ const ALWAYS_LOAD: &str = "anthropic/alwaysLoad";
 
 /// The MCP tools. All of them only read the index, which harnesses may use to approve them;
 /// `local` (see [`crate::config::Config::is_local`]) adds [`LOCAL_NOTE`] to the searches. The
-/// searches ask to load upfront ([`ALWAYS_LOAD`]), since a model rarely loads a deferred tool
+/// searches ask to load upfront (`ALWAYS_LOAD`), since a model rarely loads a deferred tool
 /// that its harness's instructions don't name.
 pub fn tools(local: bool) -> Vec<Tool> {
     let read_only = ToolAnnotations::default().read_only(true).open_world(false);
@@ -233,8 +234,8 @@ fn squash(code: &str) -> String {
     out
 }
 
-/// Whether a result is the passed code's own definition: one contains the other, ignoring
-/// whitespace and comments.
+/// Whether a result matches the passed code: one contains the other, ignoring whitespace and
+/// comments.
 fn is_self(code: &str, body: &str) -> bool {
     let body = squash(body);
     body.len() >= MIN_SELF_MATCH
@@ -242,7 +243,6 @@ fn is_self(code: &str, body: &str) -> bool {
         && (body.contains(code) || code.contains(&body))
 }
 
-/// Drops the passed code's own definition from `resp` and keeps `top_k` results.
 /// A definition's first non-empty line, shortened, to head its results.
 fn first_line(code: &str) -> String {
     let line = code
@@ -257,23 +257,21 @@ fn first_line(code: &str) -> String {
     out
 }
 
-fn drop_self(resp: &mut SearchResponse, code: &str, top_k: usize) {
+/// Moves the results matching the passed code (see [`is_self`]) out of the ranked results into
+/// `matching`, and keeps `top_k` of the rest. Whether a match is the passed code's own definition
+/// or an existing copy cannot be told from the code alone, so it is shown either way, with its
+/// location, without taking a ranked slot.
+fn split_self(resp: &mut SearchResponse, code: &str, top_k: usize) {
     let code = squash(code);
-    let mut left_out = Vec::new();
-    resp.results.retain_mut(|r| {
-        let own = r.body.take().is_some_and(|b| is_self(&code, &b));
-        if own {
-            left_out.push(format!("{}:{} {}", r.path, r.line, r.name));
-        }
-        !own
-    });
-    resp.results.truncate(top_k);
-    if !left_out.is_empty() {
-        resp.notes.push(format!(
-            "left out the passed code itself: {}",
-            left_out.join(", ")
-        ));
-    }
+    let (matching, rest) = mem::take(&mut resp.results)
+        .into_iter()
+        .map(|mut r| {
+            let own = r.body.take().is_some_and(|b| is_self(&code, &b));
+            (own, r)
+        })
+        .partition::<Vec<_>, _>(|(own, _)| *own);
+    resp.matching = matching.into_iter().map(|(_, r)| r).collect();
+    resp.results = rest.into_iter().map(|(_, r)| r).take(top_k).collect();
 }
 
 /// Called with the `repo` a search names (`None`: the default), before it runs.
@@ -351,11 +349,11 @@ impl LodestoneMcp {
             let mut sections = Vec::new();
             for (i, code) in codes.into_iter().enumerate() {
                 let mut req = scope.clone().request(code.clone());
-                // Room for the passed code's own definition, which is dropped afterwards.
+                // Room for the passed code's own definition, which is moved out afterwards.
                 req.top_k = each + 2;
                 req.with_body = Some(usize::MAX);
                 let mut resp = engine.search(&req).map_err(|e| format!("{e:#}"))?;
-                drop_self(&mut resp, &code, each);
+                split_self(&mut resp, &code, each);
                 sections.push(if n == 1 {
                     resp.to_text()
                 } else {
@@ -554,28 +552,45 @@ mod tests {
     }
 
     #[test]
-    fn drop_self_removes_the_passed_definition_only() {
+    fn matching_definitions_are_shown_apart_from_ranked_results() {
         let own = "fn compact_size(n: u64, out: &mut Vec<u8>) {\n    // one byte\n    out.push(n as u8);\n}";
+        let other = "fn write_varint(n: u64, w: &mut Vec<u8>) { w.push(n as u8) }";
         let mut resp = SearchResponse {
             results: vec![
                 result("compact_size", own),
-                result(
-                    "write_varint",
-                    "fn write_varint(n: u64, w: &mut Vec<u8>) { w.push(n as u8) }",
-                ),
+                result("write_varint", other),
                 result("tiny", "fn t() {}"),
             ],
             ..SearchResponse::default()
         };
-        // Re-indented and without its comment, it is still the same definition.
+        // Re-indented and without its comment, it still matches.
         let pasted = "fn compact_size(n: u64, out: &mut Vec<u8>) { out.push(n as u8); }";
-        drop_self(&mut resp, pasted, 1);
-        let names: Vec<&str> = resp.results.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["write_varint"]);
-        assert!(resp.results.iter().all(|r| r.body.is_none()));
+        split_self(&mut resp, pasted, 1);
+        let names = |rs: &[SearchResult]| rs.iter().map(|r| r.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&resp.results), ["write_varint"]);
+        assert_eq!(names(&resp.matching), ["compact_size"]);
+        assert!(
+            resp.results
+                .iter()
+                .chain(&resp.matching)
+                .all(|r| r.body.is_none())
+        );
+
+        // A lone match (an existing copy of unindexed code) still shows, with its location.
+        let mut resp = SearchResponse {
+            results: vec![SearchResult {
+                text: "src/a.rs:1:4  lines 1-1  fn compact_size(n: u64, out: &mut Vec<u8>)".into(),
+                ..result("compact_size", own)
+            }],
+            ..SearchResponse::default()
+        };
+        split_self(&mut resp, pasted, 5);
+        assert!(resp.results.is_empty());
         assert_eq!(
-            resp.notes,
-            ["left out the passed code itself: src/lib.rs:1 compact_size"]
+            resp.to_text(),
+            "no other matches\n# matching the passed code: its own definition if already \
+             indexed, otherwise an existing copy\nsrc/a.rs:1:4  lines 1-1  fn \
+             compact_size(n: u64, out: &mut Vec<u8>)"
         );
     }
 }

@@ -148,8 +148,9 @@ top 8 without / with the reranker:
   name"; it now asks for both.
 - **`similar_code_search`** exists because advice alone did not get agents to search with code
   (0 of 7 searches in a sample, even after reading the skill). It strips diff `+` prefixes and
-  leaves out the passed code's own definition, ignoring whitespace and comments (an agent pasted
-  a function without its comments and got itself back). `code` is a list: one call per diff,
+  lists definitions matching the passed code apart from the ranked results, ignoring whitespace
+  and comments (an agent pasted a function without its comments and got itself back). They are
+  listed, not left out, since a match may be an existing copy of code not yet indexed. `code` is a list: one call per diff,
   not one per function, after a Codex session made 13 calls returning ~46k characters it never
   read.
 - **24 results, no `top_k` on MCP.** Replaying 78 real agent queries: 8 results put the answer in

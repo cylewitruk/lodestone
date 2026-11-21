@@ -215,12 +215,23 @@ pub fn search(snap: &Snapshot, lexical: &Lexical, p: &SearchParams) -> anyhow::R
     } else {
         p.config.identifier_lexical_weight
     };
-    // A list weighted 0 contributes no candidates at all.
-    let lexical_hits: Vec<(u64, f32)> = if lex_weight > 0.0 {
+    // A list weighted 0 contributes no candidates at all, except for items awaiting a vector
+    // (their files not yet embedded with this model), which only a keyword search can find.
+    let (lexical_hits, lex_weight): (Vec<(u64, f32)>, f32) = if !snap.lexical_current {
+        // Not in step with the items (see `Snapshot::lexical_current`).
+        (Vec::new(), lex_weight)
+    } else if lex_weight > 0.0 {
         let admit = admit.clone();
-        lexical.search(&snap.searcher, p.query, k, move |id| admit.admits(id))?
+        let hits = lexical.search(&snap.searcher, p.query, k, move |id| admit.admits(id))?;
+        (hits, lex_weight)
+    } else if snap.vectors.len() < snap.items.len() {
+        let (admit, vectors) = (admit.clone(), snap.vectors.clone());
+        let hits = lexical.search(&snap.searcher, p.query, k, move |id| {
+            admit.admits(id) && !vectors.contains(id)
+        })?;
+        (hits, 1.0)
     } else {
-        Vec::new()
+        (Vec::new(), lex_weight)
     };
 
     let mut fused: HashMap<u64, (f32, Option<f32>)> = HashMap::new();

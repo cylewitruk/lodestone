@@ -2,8 +2,9 @@
 //! duplicate it, mutate the copy and publish the copy in the next snapshot.
 //!
 //! usearch fails a search that finds all of an index's thread slots taken ("Reserve capacity
-//! ahead of searches!"), so each index reserves [`search_slots`] and searches beyond that wait.
+//! ahead of searches!"), so each index reserves `search_slots()` and searches beyond that wait.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Condvar, Mutex, MutexGuard};
 
@@ -165,6 +166,25 @@ impl VectorIndex {
         Ok(())
     }
 
+    /// A copy holding only the vectors of `ids` (those this index has): it drops keys that
+    /// usearch cannot list, in time proportional to `ids`, copying through one buffer.
+    pub fn rebuilt(&self, ids: &HashSet<u64>) -> anyhow::Result<Self> {
+        let copy = Self::new(self.dim, self.precision)?;
+        copy.reserve(ids.len())?;
+        let mut buf = vec![0f32; self.dim];
+        for &id in ids {
+            if self.contains(id) {
+                self.index
+                    .get(id, &mut buf)
+                    .map_err(|e| anyhow!("usearch get: {e}"))?;
+                copy.index
+                    .add(id, &buf)
+                    .map_err(|e| anyhow!("usearch add: {e}"))?;
+            }
+        }
+        Ok(copy)
+    }
+
     pub fn remove_many(&mut self, ids: &[u64]) {
         for id in ids {
             let _ = self.index.remove(*id);
@@ -220,6 +240,26 @@ mod tests {
             2
         );
         assert!(v.search(&[f32::NAN; 4], 1, |_| true).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rebuilding_keeps_only_the_given_keys() {
+        let mut v = VectorIndex::new(4, Precision::F32).unwrap();
+        v.add_many(&[(1, &[1.0, 0.0, 0.0, 0.0]), (2, &[0.0, 1.0, 0.0, 0.0])])
+            .unwrap();
+        assert!(
+            v.add_many(&[(1, &[0.0, 0.0, 1.0, 0.0])]).is_err(),
+            "duplicate"
+        );
+        let kept = v.rebuilt(&HashSet::from([1, 3])).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert!(!kept.contains(2));
+        assert_eq!(
+            kept.search(&[1.0, 0.0, 0.0, 0.0], 1, |_| true).unwrap()[0].0,
+            1
+        );
+        v.remove_many(&[2]);
+        assert_eq!(v.len(), 1);
     }
 
     #[test]

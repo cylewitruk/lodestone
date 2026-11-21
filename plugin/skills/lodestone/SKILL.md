@@ -41,8 +41,9 @@ and search again. Two or three searches is normal.
 
 `code` is a list with the source of each function or type to check, one definition per entry,
 as written (diff `+` prefixes are fine): all of a diff's new functions in one call, not the whole
-diff in one entry. Each gets its own section of results; the passed code's own definition is
-left out. If a definition finds nothing, describe it with `semantic_code_search`.
+diff in one entry. Each gets its own section of results. Definitions matching the passed code
+are listed apart: its own definition once indexed, or an existing copy, which means the code
+duplicates it. If a definition finds nothing, describe it with `semantic_code_search`.
 
 ## Using the results
 

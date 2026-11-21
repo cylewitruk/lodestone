@@ -57,7 +57,8 @@ Both searches also take:
 - **Filters** apply inside the search, so a narrow scope still returns a full set of results.
 - **Result count:** 24 per search. REST and the CLI take `top_k` (default 24).
 - **Several definitions:** `similar_code_search` returns a section per definition (24 results for
-  one, fewer each for several, at least 5), leaving out each definition's own match.
+  one, fewer each for several, at least 5). Definitions matching the passed one (its own once
+  indexed, or an existing copy) are listed apart, after the ranked results.
 
 ### Result format
 
@@ -83,8 +84,10 @@ carry `line`, `line_end`, `name_line` and `name_column`.
   session's hooks recorded in `~/.lodestone/hook-sessions/`.
 - **New worktrees:** the first search in a never-indexed worktree waits up to 30 s for its index.
 - **Approval:** the tools are read-only (`readOnlyHint`). For Codex, `lode install` sets
-  `default_tools_approval_mode = "approve"`. With local embeddings, tool descriptions say nothing
-  leaves the machine.
+  `default_tools_approval_mode = "approve"`. When the daemon serving them has said its embeddings
+  are local, tool descriptions say nothing leaves the machine; until then they say nothing about
+  it, and the harness is told when the list changes. Calls made under that promise are refused
+  by a daemon whose embeddings are remote (one started since with another config).
 - **Reminders:** `lode hook session-start` reminds the agent in a registered repository (or names
   the ones in the folder) and starts the daemon early. Hooks keep a marker per session in
   `~/.lodestone/hook-sessions/`.
@@ -96,8 +99,12 @@ carry `line`, `line_end`, `name_line` and `name_column`.
   line pointing at `semantic_code_search`, with `repo` when the search is in another checkout.
   It says nothing for any other command, such as a `git grep` over another revision, and never
   blocks one: the installed command ends in `|| true`.
-- **Your hooks:** `lode install` and `uninstall` change only the hook commands lodestone wrote; a
-  hook of yours that runs `lode` stays.
+- **Your files:** `lode install` and `uninstall` change only the hook commands lodestone wrote (a
+  hook of yours that runs `lode` stays), a `SKILL.md` lodestone shipped, and its own link to the
+  shared skill. They check every step first, and change nothing if anything else is in the way:
+  your own skill, or a file, directory or other link where the link goes. Settings you added to
+  the Codex server table stay, except HTTP-only ones when installing replaces the old HTTP server
+  with the stdio one.
 - **Deferred tools:** the search tools ask Claude Code to load them upfront
   (`_meta["anthropic/alwaysLoad"]`, v2.1.285 or later). Where they're still deferred, the reminder
   and skill say to load them with ToolSearch (`+lodestone search`).

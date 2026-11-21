@@ -1,6 +1,6 @@
 //! Language registry: compiled-in grammars plus grammars discovered through tree-sitter's own
 //! config. A language is a grammar, its tags query (merged with lodestone's supplementary
-//! overlay) and an optional tests query. Component formats (see [`super::component`]) are
+//! overlay) and an optional tests query. Component formats (see `component`) are
 //! registered alongside. Nothing here knows about any specific language.
 
 use std::collections::{BTreeMap, HashMap, HashSet};

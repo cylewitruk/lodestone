@@ -78,7 +78,7 @@ pub struct Group {
     pub reads: usize,
     /// Shell searches lodestone's hook pointed at `semantic_code_search`.
     pub nudges: usize,
-    /// Nudges followed by a lodestone search in the same session within [`NUDGE_WINDOW_MS`].
+    /// Nudges followed by a lodestone search in the same session within `NUDGE_WINDOW_MS`.
     pub nudges_searched: usize,
     pub latency_ms_median: Option<i64>,
     pub latency_ms_p90: Option<i64>,
@@ -206,10 +206,12 @@ fn tally(
                 g.searches_empty += 1;
             }
         }
+        // Read once its results were in: a read sent alongside the search does not count.
+        let results_in = c.done_ts.unwrap_or(c.ts);
         let read = c.results.iter().any(|r| {
             calls.iter().any(|o| {
                 o.kind == Kind::Read
-                    && o.ts >= c.ts
+                    && o.ts >= results_in
                     && o.path.as_deref().is_some_and(|p| Path::new(p).ends_with(r))
             })
         });

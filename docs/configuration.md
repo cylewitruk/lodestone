@@ -5,12 +5,12 @@ directory.
 
 ```toml
 # socket = "/path/to/daemon.sock"  # default: <data dir>/daemon.sock
-port = 4600                 # also listen on 127.0.0.1:4600; off by default
+# port = 4600               # also listen on 127.0.0.1:4600; off by default (Windows: always 4600)
 idle_timeout_secs = 1800    # on-demand daemon: exit this long after the last session; 0 = never
 model = "jina-code-v2"      # alias into [models]; see `lode models`
-backend = "candle-metal"    # candle-metal | candle-cpu | fastembed | remote
+# backend = "candle-cpu"    # candle-metal (macOS default) | candle-cpu (default elsewhere) | fastembed | remote
 batch_size = 64
-cache_max_gb = 4
+cache_max_gb = 4            # embedding cache budget (vector data, in GB); oldest entries go first
 chunk_tokens = 200
 vector_precision = "f32"    # f32 | f16
 doc_vectors = false         # also embed each item's doc comment; used only with the reranker
@@ -50,9 +50,18 @@ cargo install --locked lodestone-cli --features fastembed
   `coderank`, `gte-modernbert`, `granite-r2`, `granite-small-r2`, `ultrabert-150m`,
   `embeddinggemma-2`, `nomic-text-v1.5`, `bge-small`, `minilm-l6`, and `jina-code-0.5b`
   (non-commercial licence). fastembed has its own list.
-- **Switching models** needs `lode index --force`. The cache keeps each model's vectors apart.
-- **Rerankers:** any Hugging Face cross-encoder in `[rerank] hf_repo` (candle), or a fastembed
-  reranker in `[rerank] model`. The [decision log](decision-log.md) compares them.
+- **Switching models** needs `lode index --force`. The cache keeps each model's vectors apart, and
+  so it does for a model whose settings change (`document_prefix`, `max_tokens`, `pooling`, …):
+  those re-embed on the next index.
+- **Upgrading from v0.1.1 after changing those settings:** v0.1.1 kept vectors made with changed
+  settings under the model's plain id, which the built-in settings use again, and its cache is
+  shared, so any worktree indexed with that model may hold them. If you changed them on v0.1.1,
+  run `lode stop`, delete `~/.lodestone/cache.sqlite`, and run `lode index --force` in every
+  worktree indexed with that model.
+- **Rerankers:** a Hugging Face cross-encoder in `[rerank] hf_repo` (candle) of a supported family:
+  ModernBERT (gte, granite), BERT (ms-marco-MiniLM), XLM-RoBERTa (bge-reranker,
+  jina-reranker-v2), Qwen3-Reranker or jina-reranker-v3; or a fastembed reranker in
+  `[rerank] model`. The [decision log](decision-log.md) compares them.
 
 ## Languages
 

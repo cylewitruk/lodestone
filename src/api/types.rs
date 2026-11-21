@@ -53,6 +53,10 @@ pub struct SessionRequest {
 pub struct SessionResponse {
     /// The registered worktree the session works in, if any.
     pub repo: Option<RepoInfo>,
+    /// Whether the daemon keeps queries and code on this machine (see
+    /// [`crate::config::Config::is_local`]); unknown from a daemon that predates it.
+    #[serde(default)]
+    pub local: Option<bool>,
 }
 
 /// An MCP tool call relayed by `lode mcp` (`POST /v1/tool`).
@@ -68,6 +72,11 @@ pub struct ToolRequest {
     #[serde(default)]
     pub cwd: Option<String>,
 }
+
+/// How a tool call its caller was promised stays on this machine (`POST /v1/local/tool`) is
+/// refused: by a daemon whose embeddings are not local, or one too old to serve that route.
+pub const NOT_LOCAL: &str =
+    "the lodestone daemon serving this call cannot keep code on this machine";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct SearchResult {
@@ -105,6 +114,10 @@ pub struct SearchResponse {
     pub stale_reasons: Vec<String>,
     pub notes: Vec<String>,
     pub results: Vec<SearchResult>,
+    /// `similar_code_search`: definitions matching the passed code, kept out of `results`: the
+    /// passed code's own definition once indexed, or existing copies of it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matching: Vec<SearchResult>,
     pub took_ms: f64,
 }
 
@@ -118,7 +131,9 @@ impl SearchResponse {
                 out.extend(b.lines().map(|l| format!("    {l}")));
             }
         }
-        if self.results.is_empty() {
+        if self.results.is_empty() && !self.matching.is_empty() {
+            out.push("no other matches".into());
+        } else if self.results.is_empty() {
             // An index still being built answers with nothing, not with "nothing exists".
             let building = self
                 .stale_reasons
@@ -129,6 +144,14 @@ impl SearchResponse {
             } else {
                 "no matches".into()
             });
+        }
+        if !self.matching.is_empty() {
+            out.push(
+                "# matching the passed code: its own definition if already indexed, otherwise an \
+                 existing copy"
+                    .into(),
+            );
+            out.extend(self.matching.iter().map(|r| r.text.clone()));
         }
         for n in &self.notes {
             out.push(format!("# note: {n}"));

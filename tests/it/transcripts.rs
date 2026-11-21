@@ -717,3 +717,40 @@ fn counts_nudges_where_the_nudged_search_counts() {
     assert_eq!((c.nudges, c.nudges_searched), (2, 1));
     assert_eq!((c.greps, c.semantic), (2, 1));
 }
+
+#[test]
+fn a_read_sent_alongside_a_search_is_not_a_read_of_its_results() {
+    let s = Setup::new();
+    let read = |n: u32, id: &str| {
+        let input = json!({ "file_path": s.repo.join("core/src/a.rs") });
+        claude_line("s1", &s.repo, n, "assistant", tool_use(id, "Read", input))
+    };
+    append(
+        &s.claude_file(&s.repo, "s1.jsonl"),
+        &[
+            claude_line(
+                "s1",
+                &s.repo,
+                1,
+                "assistant",
+                tool_use(
+                    "q1",
+                    "mcp__lodestone__semantic_code_search",
+                    json!({ "query": "a" }),
+                ),
+            ),
+            // Parallel tool calls: the read goes out before the search answers.
+            read(2, "r1"),
+            claude_line(
+                "s1",
+                &s.repo,
+                3,
+                "user",
+                tool_result("q1", "core/src/a.rs:3:8  lines 3-5  pub fn a()"),
+            ),
+        ],
+    );
+    s.scan();
+    let c = group(&s.report(), "claude").clone();
+    assert_eq!((c.semantic, c.reads, c.searches_read), (1, 1, 0));
+}
