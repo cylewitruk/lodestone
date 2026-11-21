@@ -30,6 +30,15 @@ test runs only with `LODESTONE_TEST_PARSER_DIR` set (see `tests/it/external_gram
 - Retrieval or agent-behaviour changes are measured first; see
   [docs/evaluation.md](docs/evaluation.md).
 
+## Pull requests
+
+PRs are squash-merged, so the title becomes the commit. Titles are
+[Conventional Commits](https://www.conventionalcommits.org) scoped by area, e.g.
+`feat(mcp): add a status tool` or `fix(index): …`; CI checks this. `feat`, `fix` and `perf`
+become changelog sections; `docs`, `chore`, `ci`, `test`, `style`, `build` and `refactor` are left
+out. `!` (e.g. `feat(mcp)!: …`) or a `BREAKING CHANGE:` footer lists it under Breaking, whatever
+the type.
+
 ## Releases
 
 See [docs/releasing.md](docs/releasing.md).
