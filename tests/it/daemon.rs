@@ -1837,8 +1837,12 @@ fn an_external_git_dir_created_after_its_pointer_is_watched() {
     let d = Daemon::start(&home, 0);
     d.post("/v1/register", json!({ "path": root.to_string_lossy() }));
     d.wait_fresh(Duration::from_secs(30));
-    // Canonical, so it resolves to the very path written (macOS temp paths are symlinked).
-    let git_dir = tempdir().canonicalize().unwrap().join("later.git");
+    // Canonical, so it resolves to the very path written (macOS temp paths are symlinked). Not on
+    // Windows, where a canonical path is a `\\?\` one, which git does not take.
+    let base = tempdir();
+    #[cfg(not(windows))]
+    let base = base.canonicalize().unwrap();
+    let git_dir = base.join("later.git");
     write(&root, ".git", &format!("gitdir: {}\n", git_dir.display()));
     std::thread::sleep(Duration::from_secs(2));
     git(

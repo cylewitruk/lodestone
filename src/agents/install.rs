@@ -858,7 +858,10 @@ mod tests {
     #[test]
     fn the_current_skill_is_a_shipped_one() {
         assert!(is_shipped_skill(SKILL));
-        assert!(is_shipped_skill(&SKILL.replace('\n', "\r\n")));
+        // Either line ending, whichever the checkout gave SKILL.
+        let lf = SKILL.replace("\r\n", "\n");
+        assert!(is_shipped_skill(&lf));
+        assert!(is_shipped_skill(&lf.replace('\n', "\r\n")));
         assert!(!is_shipped_skill("---\nname: lodestone\n---\nmine\n"));
     }
 
