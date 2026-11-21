@@ -4,6 +4,11 @@ User-facing changes per release. Measurements and design decisions are in
 [docs/decision-log.md](docs/decision-log.md).
 
 ## [Unreleased]
+## [0.1.2](https://github.com/cylewitruk/lodestone/compare/v0.1.1...v0.1.2) - 2026-11-21
+
+### ♻️ Changed
+
+- count grep nudges and the searches that follow them ([#44](https://github.com/cylewitruk/lodestone/pull/44))
 
 ## [0.1.1](https://github.com/cylewitruk/lodestone/compare/v0.1.0...v0.1.1) - 2026-11-20
 
