@@ -8,18 +8,21 @@ pub mod vectors;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::mem;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use arc_swap::ArcSwap;
+use rayon::iter::Either;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use tantivy::{IndexWriter, Searcher};
 
 use crate::cache::{CacheKey, EmbeddingCache, cache_key};
+use crate::checkout::{self, Checkout};
 use crate::chunk::{Chunker, extension_of};
 use crate::config::{Config, Precision};
 use crate::embed::{Embedder, InputKind};
@@ -37,6 +40,16 @@ const FILES_PER_BATCH: usize = 128;
 const EMBED_GROUP: usize = 512;
 const VECTORS_FILE: &str = "vectors.usearch";
 const DOC_VECTORS_FILE: &str = "doc-vectors.usearch";
+/// Why an index with a failed pass's work left (see [`Manifest::retry_full`]) may be out of date.
+const RETRY_REASON: &str =
+    "an indexing pass failed before it finished; the next index retries its files";
+/// The worktree's interprocess writer lock file.
+const WRITER_LOCK: &str = "writer.lock";
+/// The paths of the batch being committed, until both stores have.
+const BATCH_JOURNAL: &str = "batch.json";
+
+/// A changed file read for indexing: (path, size, mtime, content hash, contents).
+type ReadFile = (String, u64, i64, String, Vec<u8>);
 
 /// Worktree id: `blake3(canonical_root)`.
 /// Where a worktree's index lives: `<data dir>/worktrees/<worktree id>`.
@@ -72,6 +85,9 @@ pub struct Snapshot {
     pub updated_at: u64,
     /// Why results may be out of date; empty when fresh.
     pub stale: Vec<String>,
+    /// Whether `searcher` is in step with `items`: not while the lexical index was last kept by
+    /// another tokenizer, until a writer rebuilds it. Searches leave it out until then.
+    pub lexical_current: bool,
     pub version: u64,
 }
 
@@ -104,6 +120,8 @@ pub struct IndexReport {
 }
 
 struct WriterState {
+    /// The worktree's interprocess writer lock (see [`WRITER_LOCK`]), held while this lives.
+    _lock: fs::File,
     items: ItemStore,
     writer: IndexWriter,
     manifest: Manifest,
@@ -118,6 +136,7 @@ pub struct WorktreeIndex {
     dim: usize,
     precision: Precision,
     doc_vectors: bool,
+    tokenizer: TokenizerKind,
     lexical: Lexical,
     snapshot: ArcSwap<Snapshot>,
     writer: tokio::sync::Mutex<Option<WriterState>>,
@@ -125,6 +144,11 @@ pub struct WorktreeIndex {
     repaired: AtomicBool,
     progress: Mutex<Progress>,
     last_report: Mutex<Option<IndexReport>>,
+    /// Work the watcher has queued but not indexed yet; kept apart from snapshots, which only
+    /// writers publish.
+    pending: Mutex<Option<String>>,
+    /// The manifest generation this process last read or wrote (see [`Manifest::generation`]).
+    generation: AtomicU64,
 }
 
 fn now_secs() -> u64 {
@@ -142,24 +166,51 @@ pub fn mtime_nanos(meta: &fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
+/// What a walk listed.
+#[derive(Debug, Default)]
+pub struct Walked {
+    /// Accepted files, relative to the root, sorted.
+    pub files: Vec<String>,
+    /// Skipped files per extension.
+    pub skipped: BTreeMap<String, u64>,
+    /// Paths (relative to the root; `""` is the root) the walk could not read. Files below them
+    /// may exist without being listed.
+    pub unread: Vec<String>,
+}
+
+impl Walked {
+    /// Whether `rel` is at or below a path the walk could not read.
+    pub fn missed(&self, rel: &str) -> bool {
+        self.unread.iter().any(|u| {
+            u.is_empty()
+                || rel == u
+                || rel
+                    .strip_prefix(u.as_str())
+                    .is_some_and(|r| r.starts_with('/'))
+        })
+    }
+}
+
 /// Walks `root` respecting ignore files (`.gitignore` at every level, `.git/info/exclude`, the
 /// global git excludes file relative to `root`, `.ignore`, `.lodestoneignore`) and skipping
-/// hidden files, cache directories (`CACHEDIR.TAG`) and symlinks. Returns (accepted rel paths,
-/// skipped files per extension).
+/// hidden files, cache directories (`CACHEDIR.TAG`), symlinks and nested checkouts served by
+/// their own index (see [`crate::checkout::Checkout::is_separate_from`]).
+pub fn walk_tree(root: &Path, accepts: &(dyn Fn(&Path) -> bool + Sync)) -> Walked {
+    walk_within(root, accepts, |_, _| true)
+}
+
+/// [`walk_tree`]'s (accepted files, skipped files per extension).
 pub fn walk(
     root: &Path,
     accepts: &(dyn Fn(&Path) -> bool + Sync),
 ) -> (Vec<String>, BTreeMap<String, u64>) {
-    walk_within(root, accepts, |_, _| true)
+    let walked = walk_tree(root, accepts);
+    (walked.files, walked.skipped)
 }
 
-/// The subset of `paths` (relative to `root`) that [`walk`] accepts. Walks with the same rules,
+/// The subset of `paths` (relative to `root`) that [`walk_tree`] accepts. Walks with the same rules,
 /// entering only the directories that lead to `paths`.
-fn walk_paths(
-    root: &Path,
-    accepts: &(dyn Fn(&Path) -> bool + Sync),
-    paths: &[String],
-) -> Vec<String> {
+fn walk_paths(root: &Path, accepts: &(dyn Fn(&Path) -> bool + Sync), paths: &[String]) -> Walked {
     let files: HashSet<PathBuf> = paths.iter().map(|p| root.join(p)).collect();
     let dirs: HashSet<PathBuf> = files
         .iter()
@@ -173,17 +224,27 @@ fn walk_paths(
             files.contains(path)
         }
     })
-    .0
 }
 
-/// [`walk`], also pruning entries `scope(path, is_dir)` rejects.
+/// Where an I/O error stopped `e`'s walk from reading part of the tree: its path, else `root`.
+/// `None` for soft errors (an unparsable ignore-file line), which leave the listing complete.
+fn unread_path(e: &ignore::Error, root: &Path) -> Option<PathBuf> {
+    match e {
+        ignore::Error::WithPath { path, err } => unread_path(err, root).map(|_| path.clone()),
+        ignore::Error::WithDepth { err, .. } => unread_path(err, root),
+        ignore::Error::Io(_) => Some(root.to_path_buf()),
+        _ => None,
+    }
+}
+
+/// [`walk_tree`], also pruning entries `scope(path, is_dir)` rejects.
 fn walk_within(
     root: &Path,
     accepts: &(dyn Fn(&Path) -> bool + Sync),
     scope: impl Fn(&Path, bool) -> bool + Send + Sync + 'static,
-) -> (Vec<String>, BTreeMap<String, u64>) {
-    let mut files = Vec::new();
-    let mut skipped = BTreeMap::new();
+) -> Walked {
+    let mut out = Walked::default();
+    let outer = Checkout::of(root);
     let walker = ignore::WalkBuilder::new(root)
         // Global excludes match paths relative to this directory; the default is the process's.
         .current_dir(root)
@@ -191,34 +252,53 @@ fn walk_within(
         .require_git(false)
         .filter_entry(move |e| {
             let is_dir = e.file_type().is_some_and(|t| t.is_dir());
-            scope(e.path(), is_dir) && !(is_dir && e.path().join("CACHEDIR.TAG").exists())
+            scope(e.path(), is_dir)
+                && !(is_dir
+                    && (e.path().join("CACHEDIR.TAG").exists()
+                        || e.depth() > 0
+                            && checkout::is_separate_checkout(e.path(), outer.as_ref())))
         })
         .build();
-    for entry in walker.flatten() {
+    let rel_of = |path: &Path| {
+        path.strip_prefix(root)
+            .ok()
+            .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+    };
+    for entry in walker {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                // An unreadable path outside the tree is a parent's ignore file: missing rules
+                // list more files, never fewer.
+                if let Some(rel) = unread_path(&e, root).and_then(|p| rel_of(&p)) {
+                    out.unread.push(rel);
+                }
+                continue;
+            }
+        };
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
         let path = entry.path();
-        let Ok(rel) = path.strip_prefix(root) else {
+        let Some(rel) = rel_of(path) else {
             continue;
         };
-        let rel = rel.to_string_lossy().replace('\\', "/");
-        let too_big = entry
-            .metadata()
-            .map(|m| m.len() > MAX_FILE_BYTES)
-            .unwrap_or(true);
-        if accepts(path) && !too_big {
-            files.push(rel);
+        let Ok(meta) = entry.metadata() else {
+            out.unread.push(rel);
+            continue;
+        };
+        if accepts(path) && meta.len() <= MAX_FILE_BYTES {
+            out.files.push(rel);
         } else {
             let ext = path
                 .extension()
                 .map(|e| e.to_string_lossy().to_lowercase())
                 .unwrap_or_else(|| "(none)".into());
-            *skipped.entry(ext).or_insert(0) += 1;
+            *out.skipped.entry(ext).or_insert(0) += 1;
         }
     }
-    files.sort();
-    (files, skipped)
+    out.files.sort();
+    out
 }
 
 impl WorktreeIndex {
@@ -230,13 +310,66 @@ impl WorktreeIndex {
         model_id: &str,
         dim: usize,
     ) -> anyhow::Result<Self> {
-        let id = worktree_id(canonical_root);
         let dir = index_dir(config, canonical_root);
         fs::create_dir_all(&dir)?;
+        let lexical_dir = match config.lexical_tokenizer {
+            TokenizerKind::Code => dir.join("lexical"),
+            TokenizerKind::Default => dir.join("lexical-default"),
+        };
+        let lexical = Lexical::open(&lexical_dir, config.lexical_tokenizer)?;
+        let empty = Snapshot {
+            items: Arc::new(HashMap::new()),
+            vectors: Arc::new(VectorIndex::new(dim, config.vector_precision)?),
+            doc_vectors: Arc::new(VectorIndex::new(dim, config.vector_precision)?),
+            searcher: lexical.searcher(),
+            graph: Arc::new(ProjectGraph::default()),
+            model_id: model_id.to_string(),
+            files_indexed: 0,
+            updated_at: 0,
+            stale: Vec::new(),
+            lexical_current: true,
+            version: 0,
+        };
+        let w = Self {
+            root: canonical_root.to_path_buf(),
+            id: worktree_id(canonical_root),
+            dir,
+            model_id: model_id.to_string(),
+            dim,
+            precision: config.vector_precision,
+            doc_vectors: config.doc_vectors,
+            tokenizer: config.lexical_tokenizer,
+            lexical,
+            snapshot: ArcSwap::from_pointee(empty),
+            writer: tokio::sync::Mutex::new(None),
+            repaired: AtomicBool::new(false),
+            progress: Mutex::new(Progress::default()),
+            last_report: Mutex::new(None),
+            pending: Mutex::new(None),
+            generation: AtomicU64::new(0),
+        };
+        w.load_snapshot(0)?;
+        Ok(w)
+    }
+
+    /// Publishes the index as on disk, as snapshot `version`, and records the manifest
+    /// generation it was read at: only once all of it has loaded, so a failed read is read again
+    /// by the next writer.
+    fn load_snapshot(&self, version: u64) -> anyhow::Result<()> {
+        let (snap, generation) = self.read_snapshot(version)?;
+        self.snapshot.store(Arc::new(snap));
+        self.generation.store(generation, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// The index as on disk, as a snapshot numbered `version`, and the manifest generation it was
+    /// read at. Inconsistencies are reported as staleness, for the next writer to repair.
+    fn read_snapshot(&self, version: u64) -> anyhow::Result<(Snapshot, u64)> {
+        let dir = &self.dir;
+        let (dim, precision, model_id) = (self.dim, self.precision, self.model_id.as_str());
         let manifest = Manifest::load(&dir.join("manifest.json"))?;
-        let store = ItemStore::open(&dir.join("items.sqlite"))?;
-        let rows = store.load_all()?;
-        let precision = config.vector_precision;
+        let generation = manifest.as_ref().map_or(0, |m| m.generation);
+        let rows = ItemStore::open(&dir.join("items.sqlite"))?.load_all()?;
         let mut stale = Vec::new();
         let index_model = manifest
             .as_ref()
@@ -252,7 +385,7 @@ impl WorktreeIndex {
             loaded.map_or_else(|| VectorIndex::new(dim, precision), Ok)
         };
         let vectors = load(VECTORS_FILE, true)?;
-        let doc_vectors = load(DOC_VECTORS_FILE, config.doc_vectors)?;
+        let doc_vectors = load(DOC_VECTORS_FILE, self.doc_vectors)?;
         match &manifest {
             None => stale.push(
                 "not indexed yet (a session or search starts it; `lode index <path>` runs it now)"
@@ -262,13 +395,18 @@ impl WorktreeIndex {
                 "index built with model {} but {model_id} is configured; run `lode index --force`",
                 m.model_id
             )),
-            _ => {}
+            Some(m) => {
+                stale.extend(manifest_stale(m));
+                if dir.join(BATCH_JOURNAL).exists() && !stale.iter().any(|s| s == RETRY_REASON) {
+                    stale.push(RETRY_REASON.to_string());
+                }
+            }
         }
         let missing = rows
             .iter()
             .filter(|r| {
                 !vectors.contains(r.id)
-                    || config.doc_vectors
+                    || self.doc_vectors
                         && !r.item.doc.trim().is_empty()
                         && !doc_vectors.contains(r.id)
             })
@@ -278,50 +416,59 @@ impl WorktreeIndex {
                 "{missing} items have no vector yet (repaired on next index)"
             ));
         }
-        let lexical_dir = match config.lexical_tokenizer {
-            TokenizerKind::Code => dir.join("lexical"),
-            TokenizerKind::Default => dir.join("lexical-default"),
-        };
-        let lexical = Lexical::open(&lexical_dir, config.lexical_tokenizer)?;
-        let searcher = lexical.searcher();
-        if searcher.num_docs() as usize != rows.len() {
+        let ids: HashSet<u64> = rows.iter().map(|r| r.id).collect();
+        if stray_count(&vectors, &ids) + stray_count(&doc_vectors, &ids) > 0 {
+            stale.push("vectors of deleted items remain (repaired on next index)".to_string());
+        }
+        self.lexical.reload()?;
+        let searcher = self.lexical.searcher();
+        // Another tokenizer's lexical index was kept in step with the items meanwhile (or no
+        // manifest says which was): this one may map ids to items long gone.
+        let lexical_current = manifest
+            .as_ref()
+            .is_none_or(|m| m.lexical_tokenizer == Some(self.tokenizer));
+        if !lexical_current {
+            stale.push(
+                "the keyword index was built with another tokenizer; keyword results are left out \
+                 until the next index rebuilds it"
+                    .to_string(),
+            );
+        } else if searcher.num_docs() as usize != rows.len() {
             stale.push("lexical index out of sync with items (repaired on next index)".to_string());
         }
         let graph = fs::read(dir.join("graph.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_else(|| ProjectGraph::build(canonical_root));
-        let snap = Snapshot {
-            items: Arc::new(rows.into_iter().map(|r| (r.id, Arc::new(r))).collect()),
-            vectors: Arc::new(vectors),
-            doc_vectors: Arc::new(doc_vectors),
-            searcher,
-            graph: Arc::new(graph),
-            model_id: if index_model.is_empty() {
-                model_id.to_string()
-            } else {
-                index_model
+            .unwrap_or_else(|| ProjectGraph::build(&self.root));
+        Ok((
+            Snapshot {
+                items: Arc::new(rows.into_iter().map(|r| (r.id, Arc::new(r))).collect()),
+                vectors: Arc::new(vectors),
+                doc_vectors: Arc::new(doc_vectors),
+                searcher,
+                graph: Arc::new(graph),
+                model_id: if index_model.is_empty() {
+                    model_id.to_string()
+                } else {
+                    index_model
+                },
+                files_indexed: manifest.as_ref().map(|m| m.files.len()).unwrap_or(0),
+                updated_at: manifest.as_ref().map(|m| m.updated_at).unwrap_or(0),
+                stale,
+                lexical_current,
+                version,
             },
-            files_indexed: manifest.as_ref().map(|m| m.files.len()).unwrap_or(0),
-            updated_at: manifest.as_ref().map(|m| m.updated_at).unwrap_or(0),
-            stale,
-            version: 0,
-        };
-        Ok(Self {
-            root: canonical_root.to_path_buf(),
-            id,
-            dir,
-            model_id: model_id.to_string(),
-            dim,
-            precision,
-            doc_vectors: config.doc_vectors,
-            lexical,
-            snapshot: ArcSwap::from_pointee(snap),
-            writer: tokio::sync::Mutex::new(None),
-            repaired: AtomicBool::new(false),
-            progress: Mutex::new(Progress::default()),
-            last_report: Mutex::new(None),
-        })
+            generation,
+        ))
+    }
+
+    /// Saves `manifest` (with `next_id` the lowest id not allocated) as a new generation.
+    fn save_manifest(&self, manifest: &mut Manifest, next_id: u64) -> anyhow::Result<()> {
+        manifest.generation += 1;
+        manifest.next_id = manifest.next_id.max(next_id);
+        manifest.save(&self.dir.join("manifest.json"))?;
+        self.generation.store(manifest.generation, Ordering::SeqCst);
+        Ok(())
     }
 
     pub fn snapshot(&self) -> Arc<Snapshot> {
@@ -373,31 +520,84 @@ impl WorktreeIndex {
         }
     }
 
-    /// Marks the current snapshot stale (e.g. watcher saw changes not yet indexed).
+    /// Records work queued but not indexed yet (e.g. watcher saw changes), or clears it.
     pub fn set_pending(&self, reason: Option<String>) {
-        let cur = self.snapshot.load_full();
-        let mut stale: Vec<String> = cur
-            .stale
+        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = reason;
+    }
+
+    /// Why results from `snap` may be out of date: its own reasons, then pending work.
+    pub fn stale_reasons(&self, snap: &Snapshot) -> Vec<String> {
+        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        snap.stale
             .iter()
-            .filter(|s| !s.starts_with("pending:"))
             .cloned()
-            .collect();
-        if let Some(r) = reason {
-            stale.push(format!("pending: {r}"));
+            .chain(pending.as_ref().map(|r| format!("pending: {r}")))
+            .collect()
+    }
+
+    /// Takes the worktree's interprocess writer lock: one for every tokenizer, whose lexical
+    /// indexes are separate while the items, manifest, vectors and journal are shared.
+    fn writer_lock(&self) -> anyhow::Result<fs::File> {
+        let path = self.dir.join(WRITER_LOCK);
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        match lock.try_lock() {
+            Ok(()) => Ok(lock),
+            Err(fs::TryLockError::WouldBlock) => anyhow::bail!(
+                "another lodestone process is indexing {}",
+                self.root.display()
+            ),
+            Err(fs::TryLockError::Error(e)) => Err(e.into()),
         }
-        if stale != cur.stale {
-            self.publish_from(
-                &cur,
-                cur.items.clone(),
-                cur.vectors.clone(),
-                cur.doc_vectors.clone(),
-                cur.searcher.clone(),
-                cur.graph.clone(),
-                cur.files_indexed,
-                cur.updated_at,
-                stale,
-            );
+    }
+
+    /// Replaces the lexical index's entries with `items`' and publishes it, in step.
+    fn rebuild_lexical(
+        &self,
+        st: &mut WriterState,
+        items: &HashMap<u64, Arc<ItemRow>>,
+    ) -> anyhow::Result<()> {
+        st.writer.delete_all_documents()?;
+        for r in items.values() {
+            self.lexical.add(&st.writer, r)?;
         }
+        st.writer.commit()?;
+        self.lexical.reload()?;
+        let snap = self.snapshot();
+        self.snapshot.store(Arc::new(Snapshot {
+            items: snap.items.clone(),
+            vectors: snap.vectors.clone(),
+            doc_vectors: snap.doc_vectors.clone(),
+            searcher: self.lexical.searcher(),
+            graph: snap.graph.clone(),
+            model_id: snap.model_id.clone(),
+            files_indexed: snap.files_indexed,
+            updated_at: snap.updated_at,
+            stale: snap.stale.clone(),
+            lexical_current: true,
+            version: snap.version + 1,
+        }));
+        Ok(())
+    }
+
+    /// Publishes the current snapshot again with `stale` as its reasons.
+    fn publish_stale(&self, stale: Vec<String>) {
+        let snap = self.snapshot();
+        self.publish_from(
+            &snap,
+            snap.items.clone(),
+            snap.vectors.clone(),
+            snap.doc_vectors.clone(),
+            snap.searcher.clone(),
+            snap.graph.clone(),
+            snap.files_indexed,
+            snap.updated_at,
+            stale,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -423,6 +623,7 @@ impl WorktreeIndex {
             files_indexed,
             updated_at,
             stale,
+            lexical_current: self.snapshot.load().lexical_current,
             version: cur.version + 1,
         }));
     }
@@ -445,23 +646,62 @@ impl WorktreeIndex {
     ) -> anyhow::Result<IndexReport> {
         let mut guard = self.writer.blocking_lock();
         if guard.is_none() {
+            // Taken before anything a writer recovers or rewrites.
+            let lock = self.writer_lock()?;
+            let writer = self.lexical.writer().context("acquiring lexical writer")?;
+            let mut manifest = self.manifest().unwrap_or_else(|| Manifest {
+                root: self.root.clone(),
+                model_id: self.model_id.clone(),
+                ..Manifest::default()
+            });
+            if manifest.generation != self.generation.load(Ordering::SeqCst) {
+                // Another process wrote the index since this one read it: read it again, and
+                // check it, before anything is decided from the old view.
+                self.load_snapshot(self.snapshot().version + 1)?;
+                self.repaired.store(false, Ordering::Relaxed);
+            }
             let items = ItemStore::open(&self.dir.join("items.sqlite"))?;
-            let next_id = items.max_id()? + 1;
+            // Ids are never reused: above every id stored, published, in the lexical index or
+            // ever allocated (`Manifest::next_id`), which a failed or interrupted batch, or
+            // another tokenizer's era, may have left differing.
+            let published = self.snapshot().items.keys().max().copied().unwrap_or(0);
+            let next_id = (items.max_id()?.max(published).max(self.lexical.max_id()?) + 1)
+                .max(manifest.next_id);
+            self.recover_batch(&mut manifest, next_id)?;
             *guard = Some(WriterState {
+                _lock: lock,
                 items,
-                writer: self.lexical.writer().context("acquiring lexical writer")?,
-                manifest: self.manifest().unwrap_or_else(|| Manifest {
-                    root: self.root.clone(),
-                    model_id: self.model_id.clone(),
-                    ..Manifest::default()
-                }),
+                writer,
+                manifest,
                 next_id,
             });
         }
         let st = guard.as_mut().expect("writer state initialized");
+        let scope = (!opts.force).then(|| opts.paths.clone()).flatten();
         let result = self.run(st, ctx, opts);
         if let (Ok(r), Ok(mut last)) = (&result, self.last_report.lock()) {
             *last = Some(r.clone());
+        }
+        if let Err(e) = &result {
+            // What the pass did not get to (changed or removed files, a rebuild) may still be
+            // served as it was: recorded, so the next pass (in any process) covers it, and
+            // reported until one succeeds.
+            match scope {
+                Some(paths) => {
+                    st.manifest.retry_paths.extend(paths);
+                    st.manifest.retry_paths.sort();
+                    st.manifest.retry_paths.dedup();
+                }
+                None => st.manifest.retry_full = true,
+            }
+            if let Err(e) = self.save_manifest(&mut st.manifest, st.next_id) {
+                tracing::warn!("recording the failed pass: {e:#}");
+            }
+            let mut stale = manifest_stale(&st.manifest);
+            stale.push(format!(
+                "the last indexing pass failed ({e:#}); results may be out of date"
+            ));
+            self.publish_stale(stale);
         }
         if let Ok(mut p) = self.progress.lock() {
             p.running = false;
@@ -477,18 +717,28 @@ impl WorktreeIndex {
     }
 
     /// Restores consistency after a crash: vectors missing from usearch come back from the
-    /// cache, lexical is rebuilt if its doc count disagrees, and manifest entries whose items
-    /// are incomplete are dropped so the file is re-indexed.
+    /// cache, vectors of items no longer stored are dropped, lexical is rebuilt if its doc count
+    /// disagrees, and manifest entries whose items are incomplete are dropped so the file is
+    /// re-indexed.
     fn repair(&self, st: &mut WriterState, ctx: &IndexContext) -> anyhow::Result<()> {
         let snap = self.snapshot();
         let mut vectors = snap.vectors.duplicate()?;
         let mut doc_vectors = snap.doc_vectors.duplicate()?;
+        let ids: HashSet<u64> = snap.items.keys().copied().collect();
+        if stray_count(&vectors, &ids) > 0 {
+            vectors = vectors.rebuilt(&ids)?;
+        }
+        if stray_count(&doc_vectors, &ids) > 0 {
+            doc_vectors = doc_vectors.rebuilt(&ids)?;
+        }
         let mut drop_paths: HashSet<String> = HashSet::new();
+        // Keyed by this index's model, not the stored key: an item kept through a model change
+        // (its file unreadable) has the old model's key, and the old model's vector.
         let code_missing: Vec<(&ItemRow, CacheKey)> = snap
             .items
             .values()
             .filter(|r| !vectors.contains(r.id))
-            .map(|r| (r.as_ref(), r.chunk_key))
+            .map(|r| (r.as_ref(), cache_key(&self.model_id, &r.item.text)))
             .collect();
         self.restore_from_cache(ctx, &mut vectors, &code_missing, &mut drop_paths)?;
         let doc_missing: Vec<(&ItemRow, CacheKey)> = snap
@@ -498,28 +748,20 @@ impl WorktreeIndex {
             .filter_map(|r| self.doc_entry(r).map(|(k, _)| (r.as_ref(), k)))
             .collect();
         self.restore_from_cache(ctx, &mut doc_vectors, &doc_missing, &mut drop_paths)?;
+        // A tokenizer change rebuilds the lexical index right after (see `run`).
         let searcher = self.lexical.searcher();
-        if searcher.num_docs() as usize != snap.items.len() {
-            st.writer.delete_all_documents()?;
-            for r in snap.items.values() {
-                self.lexical.add(&st.writer, r)?;
-            }
-            st.writer.commit()?;
-            self.lexical.reload()?;
+        if searcher.num_docs() as usize != snap.items.len()
+            && st.manifest.lexical_tokenizer == Some(self.tokenizer)
+        {
+            self.rebuild_lexical(st, &snap.items)?;
         }
         let present: HashSet<u64> = snap.items.keys().copied().collect();
         st.manifest.files.retain(|path, e| {
             !drop_paths.contains(path) && e.chunk_ids.iter().all(|id| present.contains(id))
         });
-        st.manifest.save(&self.dir.join("manifest.json"))?;
+        self.save_manifest(&mut st.manifest, st.next_id)?;
         vectors.save(&self.dir.join(VECTORS_FILE))?;
         doc_vectors.save(&self.dir.join(DOC_VECTORS_FILE))?;
-        let stale = snap
-            .stale
-            .iter()
-            .filter(|s| s.starts_with("pending:"))
-            .cloned()
-            .collect();
         self.publish_from(
             &snap,
             snap.items.clone(),
@@ -529,7 +771,7 @@ impl WorktreeIndex {
             snap.graph.clone(),
             st.manifest.files.len(),
             snap.updated_at,
-            stale,
+            manifest_stale(&st.manifest),
         );
         self.repaired.store(true, Ordering::Relaxed);
         Ok(())
@@ -548,33 +790,85 @@ impl WorktreeIndex {
             "index opened for {} but embedder is {model_id}",
             self.model_id
         );
-        if st.manifest.model_id != model_id || opts.force {
-            // Different model (or forced): vectors are incompatible, start over.
-            st.items.clear()?;
-            st.writer.delete_all_documents()?;
-            st.writer.commit()?;
-            self.lexical.reload()?;
-            st.manifest = Manifest {
-                root: self.root.clone(),
-                model_id: model_id.clone(),
-                ..Manifest::default()
-            };
+        // The first pass since this index was opened checks stored state against the tree.
+        let first_pass = !self.repaired.load(Ordering::Relaxed);
+        // Different model (or forced): every file is chunked and embedded again, from the whole
+        // tree, a batch at a time. Each batch replaces its files' items, so the index stays
+        // searchable throughout and a file that cannot be read keeps the items it had.
+        let new_model = st.manifest.model_id != model_id;
+        let rebuild = new_model || opts.force || st.manifest.rebuilding;
+        // Paths a failed batch may have left half-written: indexed again whatever their stat or
+        // hash says, until a pass succeeds.
+        let dirty: HashSet<String> = st.manifest.retry_paths.iter().cloned().collect();
+        // A failed pass's scope joins this one's: the whole tree, or its paths too.
+        let scope: Option<Vec<String>> = match opts.paths {
+            Some(mut paths) if !rebuild && !st.manifest.retry_full => {
+                paths.extend(st.manifest.retry_paths.iter().cloned());
+                paths.sort();
+                paths.dedup();
+                Some(paths)
+            }
+            _ => None,
+        };
+        let paths = scope.as_deref();
+        let registry = ctx.chunker.registry().clone();
+        let accepts = |p: &Path| registry.accepts(p);
+        let mut walked = match paths {
+            None => walk_tree(&self.root, &accepts),
+            // Watcher events: only files a full walk would index.
+            Some(paths) => walk_paths(&self.root, &accepts, paths),
+        };
+        if !walked.unread.is_empty() {
+            tracing::warn!(
+                "{}: could not read {}; their indexed files are kept",
+                self.root.display(),
+                walked.unread.join(", ")
+            );
+        }
+        if rebuild {
+            st.manifest.chunker.clear();
+            st.manifest.extensions.clear();
+            st.manifest.rebuilding = true;
+        }
+        if new_model {
+            // The old vectors cannot be searched with this model; items stay for lexical search
+            // until their files are embedded again. The empty checkpoints are written before the
+            // manifest names the new model, so a crash cannot pair the old vectors with it.
+            let vectors = VectorIndex::new(self.dim, self.precision)?;
+            let doc_vectors = VectorIndex::new(self.dim, self.precision)?;
+            vectors.save(&self.dir.join(VECTORS_FILE))?;
+            doc_vectors.save(&self.dir.join(DOC_VECTORS_FILE))?;
+            st.manifest.model_id = model_id.clone();
             let snap = self.snapshot();
             self.publish_from(
                 &snap,
-                Arc::new(HashMap::new()),
-                Arc::new(VectorIndex::new(self.dim, self.precision)?),
-                Arc::new(VectorIndex::new(self.dim, self.precision)?),
-                self.lexical.searcher(),
+                snap.items.clone(),
+                Arc::new(vectors),
+                Arc::new(doc_vectors),
+                snap.searcher.clone(),
                 snap.graph.clone(),
-                0,
-                0,
-                vec!["indexing from scratch".into()],
+                snap.files_indexed,
+                snap.updated_at,
+                manifest_stale(&st.manifest),
             );
             self.repaired.store(true, Ordering::Relaxed);
+        } else if rebuild {
+            self.publish_stale(manifest_stale(&st.manifest));
+        }
+        if rebuild {
+            // Recorded before any batch, so a pass that fails part-way is resumed.
+            self.save_manifest(&mut st.manifest, st.next_id)?;
         }
         if !self.repaired.load(Ordering::Relaxed) {
             self.repair(st, ctx)?;
+        }
+        if st.manifest.lexical_tokenizer != Some(self.tokenizer) {
+            // Another tokenizer's index was kept in step meanwhile, or none recorded which:
+            // this one may hold entries of items long gone, under ids since given to others.
+            let snap = self.snapshot();
+            self.rebuild_lexical(st, &snap.items)?;
+            st.manifest.lexical_tokenizer = Some(self.tokenizer);
+            self.save_manifest(&mut st.manifest, st.next_id)?;
         }
         ctx.cache.register_model(&model_id, self.dim, None)?;
         // Re-chunk unchanged files whose chunking changed since the last full pass: every file
@@ -582,7 +876,7 @@ impl WorktreeIndex {
         // changed. Embeddings stay cached.
         let chunker_fp = ctx.chunker.fingerprint();
         let extension_fps = ctx.chunker.registry().extension_fingerprints();
-        let full = opts.paths.is_none();
+        let full = paths.is_none();
         let rechunk_all = full && st.manifest.chunker != chunker_fp;
         let rechunk_extensions: HashSet<String> = extension_fps
             .iter()
@@ -592,38 +886,44 @@ impl WorktreeIndex {
         let rechunk = |rel: &str| {
             rechunk_all
                 || extension_of(Path::new(rel)).is_some_and(|e| rechunk_extensions.contains(&e))
+                || dirty.contains(rel)
         };
         let graph = Arc::new(ProjectGraph::build(&self.root));
+        self.reassign_units(st, &graph, first_pass)?;
+        // After the units it records are stored, so a crash between the two is seen as a change.
         fs::write(self.dir.join("graph.json"), serde_json::to_vec(&*graph)?)?;
-        let registry = ctx.chunker.registry().clone();
-        let accepts = |p: &Path| registry.accepts(p);
 
         // Decide which files changed.
-        let candidates: Vec<String> = match &opts.paths {
-            None => {
-                let (files, skipped) = walk(&self.root, &accepts);
-                st.manifest.skipped_extensions = skipped;
-                files
+        if full {
+            st.manifest.skipped_extensions = mem::take(&mut walked.skipped);
+            // Files the walk missed keep their items; those due for re-chunking get it once read.
+            for (rel, e) in st.manifest.files.iter_mut() {
+                if walked.missed(rel) && rechunk(rel) {
+                    e.file_hash.clear();
+                    e.mtime = 0;
+                }
             }
-            // Watcher events: only files a full walk would index.
-            Some(paths) => walk_paths(&self.root, &accepts, paths),
-        };
+        }
+        let candidates = mem::take(&mut walked.files);
         let candidate_set: HashSet<&str> = candidates.iter().map(String::as_str).collect();
-        let mut removed: Vec<String> = match &opts.paths {
-            None => {
-                let snap = self.snapshot();
-                let mut known: HashSet<String> = st.manifest.files.keys().cloned().collect();
-                known.extend(snap.items.values().map(|r| r.item.rel_path.clone()));
-                known
-                    .into_iter()
-                    .filter(|p| !candidate_set.contains(p.as_str()))
-                    .collect()
+        // Indexed paths a successful walk no longer lists; paths never indexed need no removal.
+        let mut removed: Vec<String> = {
+            let snap = self.snapshot();
+            let mut known: HashSet<String> = st.manifest.files.keys().cloned().collect();
+            known.extend(snap.items.values().map(|r| r.item.rel_path.clone()));
+            // So do paths a failed batch may have written to either store: stored but never
+            // published, or only in the lexical index, which only a delete by path reaches.
+            known.extend(st.items.stored_paths(paths)?);
+            known.extend(dirty.iter().cloned());
+            let gone = |p: &String| !candidate_set.contains(p.as_str()) && !walked.missed(p);
+            match paths {
+                None => known.into_iter().filter(gone).collect(),
+                Some(paths) => paths
+                    .iter()
+                    .filter(|p| known.contains(*p) && gone(p))
+                    .cloned()
+                    .collect(),
             }
-            Some(paths) => paths
-                .iter()
-                .filter(|p| !candidate_set.contains(p.as_str()))
-                .cloned()
-                .collect(),
         };
         removed.sort();
 
@@ -666,25 +966,38 @@ impl WorktreeIndex {
                 ..Progress::default()
             };
         });
+        let mut read_failed: Vec<String> = Vec::new();
 
         if !removed.is_empty() {
-            self.commit_batch(st, &removed, Vec::new(), &[], &[], &graph)?;
+            self.commit_or_record(st, &removed, Vec::new(), &[], &[], &graph)?;
             for p in &removed {
                 st.manifest.files.remove(p);
             }
-            st.manifest.save(&self.dir.join("manifest.json"))?;
+            self.save_manifest(&mut st.manifest, st.next_id)?;
         }
 
         for batch in changed.chunks(FILES_PER_BATCH) {
             // Read + hash; files whose content is unchanged only get their stat refreshed.
-            let read: Vec<(String, u64, i64, String, Vec<u8>)> = batch
-                .par_iter()
-                .filter_map(|(rel, size, mtime)| {
-                    let bytes = fs::read(self.root.join(rel)).ok()?;
-                    let hash = blake3::hash(&bytes).to_hex().to_string();
-                    Some((rel.clone(), *size, *mtime, hash, bytes))
-                })
-                .collect();
+            let (read, failed): (Vec<ReadFile>, Vec<String>) =
+                batch.par_iter().partition_map(|(rel, size, mtime)| {
+                    match fs::read(self.root.join(rel)) {
+                        Ok(bytes) => {
+                            let hash = blake3::hash(&bytes).to_hex().to_string();
+                            Either::Left((rel.clone(), *size, *mtime, hash, bytes))
+                        }
+                        Err(_) => Either::Right(rel.clone()),
+                    }
+                });
+            // An unreadable file keeps its items, and its due re-chunking, until it is read.
+            for rel in failed {
+                if let Some(e) = st.manifest.files.get_mut(&rel)
+                    && rechunk(&rel)
+                {
+                    e.file_hash.clear();
+                    e.mtime = 0;
+                }
+                read_failed.push(rel);
+            }
             let snap = self.snapshot();
             let indexed_paths: HashSet<&str> = snap
                 .items
@@ -743,7 +1056,7 @@ impl WorktreeIndex {
                 .zip(self.embed_cached(ctx, &doc_entries, &mut report)?)
                 .collect();
             let paths: Vec<String> = chunked.iter().map(|c| c.0.clone()).collect();
-            self.commit_batch(st, &paths, rows.clone(), &vectors, &doc_vectors, &graph)?;
+            self.commit_or_record(st, &paths, rows.clone(), &vectors, &doc_vectors, &graph)?;
             for (rel, size, mtime, hash, _) in chunked {
                 let ids = rows
                     .iter()
@@ -762,7 +1075,7 @@ impl WorktreeIndex {
             }
             report.files_changed += paths.len();
             report.items += rows.len();
-            st.manifest.save(&self.dir.join("manifest.json"))?;
+            self.save_manifest(&mut st.manifest, st.next_id)?;
             let elapsed = started.elapsed().as_secs_f64();
             self.set_progress(|p| {
                 p.files_done += batch.len();
@@ -771,23 +1084,49 @@ impl WorktreeIndex {
                     .then(|| (elapsed / p.files_done as f64 * left as f64) as u64);
             });
         }
-        if full {
-            st.manifest.chunker = chunker_fp;
-            st.manifest.extensions = extension_fps;
-        }
-        st.manifest.updated_at = now_secs();
-        st.manifest.save(&self.dir.join("manifest.json"))?;
         let snap = self.snapshot();
+        // The checkpoints go first: a rebuild is finished only once its vectors are on disk.
         if report.files_changed > 0 || report.files_removed > 0 || !snap.stale.is_empty() {
             snap.vectors.save(&self.dir.join(VECTORS_FILE))?;
             snap.doc_vectors.save(&self.dir.join(DOC_VECTORS_FILE))?;
         }
-        let stale = snap
-            .stale
-            .iter()
-            .filter(|s| s.starts_with("pending:"))
-            .cloned()
-            .collect();
+        if full {
+            st.manifest.chunker = chunker_fp;
+            st.manifest.extensions = extension_fps;
+            st.manifest.rebuilding = false;
+        }
+        // This pass covered what a failed one left (see `scope`), except dirty paths it could not
+        // read, whose stores may still disagree: they stay recorded until a pass reads them.
+        st.manifest.retry_full = false;
+        st.manifest
+            .retry_paths
+            .retain(|p| walked.missed(p) || read_failed.contains(p));
+        // A full pass finds every unread path again; a partial one settles those it was asked
+        // about (read, removed or gone), keeping those it still could not read.
+        let mut unread = if full {
+            mem::take(&mut walked.unread)
+        } else {
+            let mut kept = mem::take(&mut st.manifest.unread);
+            let requested = paths.unwrap_or_default();
+            kept.retain(|u| !requested.contains(u) || read_failed.contains(u));
+            kept.extend(walked.unread.iter().cloned());
+            kept
+        };
+        unread.extend(read_failed);
+        unread.sort();
+        unread.dedup();
+        st.manifest.unread = unread;
+        st.manifest.updated_at = now_secs();
+        self.save_manifest(&mut st.manifest, st.next_id)?;
+        // On the first pass too, so a lowered budget applies without new embeddings.
+        if report.chunks_embedded > 0 || first_pass {
+            let budget = (ctx.config.cache_max_gb * 1e9) as u64;
+            match ctx.cache.prune(budget) {
+                Ok(0) => {}
+                Ok(n) => tracing::info!("pruned {n} cached embeddings over cache_max_gb"),
+                Err(e) => tracing::warn!("pruning the embedding cache: {e:#}"),
+            }
+        }
         self.publish_from(
             &snap,
             snap.items.clone(),
@@ -797,10 +1136,61 @@ impl WorktreeIndex {
             graph,
             st.manifest.files.len(),
             st.manifest.updated_at,
-            stale,
+            manifest_stale(&st.manifest),
         );
         report.secs = started.elapsed().as_secs_f64();
         Ok(report)
+    }
+
+    /// Updates stored items' units to `graph` when it differs from the published one (a package
+    /// renamed, added or moved), since ownership then changes without any source file changing;
+    /// on the `first_pass` regardless, since the graph loaded with the index may not be the one
+    /// its units came from.
+    fn reassign_units(
+        &self,
+        st: &mut WriterState,
+        graph: &Arc<ProjectGraph>,
+        first_pass: bool,
+    ) -> anyhow::Result<()> {
+        let snap = self.snapshot();
+        if !first_pass && *snap.graph == **graph {
+            return Ok(());
+        }
+        let changed: Vec<(u64, Option<String>)> = snap
+            .items
+            .values()
+            .filter_map(|r| {
+                let unit = graph.unit_of(&r.item.rel_path).map(String::from);
+                (unit != r.unit).then_some((r.id, unit))
+            })
+            .collect();
+        if changed.is_empty() {
+            return Ok(());
+        }
+        st.items.set_units(&changed)?;
+        let mut items = (*snap.items).clone();
+        for (id, unit) in changed {
+            if let Some(row) = items.get_mut(&id) {
+                Arc::make_mut(row).unit = unit;
+            }
+        }
+        self.publish_from(
+            &snap,
+            Arc::new(items),
+            snap.vectors.clone(),
+            snap.doc_vectors.clone(),
+            snap.searcher.clone(),
+            graph.clone(),
+            snap.files_indexed,
+            snap.updated_at,
+            snap.stale.clone(),
+        );
+        Ok(())
+    }
+
+    /// Whether `v` can go into this index: of its dimension, and finite.
+    fn usable(&self, v: &[f32]) -> bool {
+        v.len() == self.dim && v.iter().all(|x| x.is_finite())
     }
 
     /// The doc vector's cache key and text for `row`, when doc vectors are on and it has a doc.
@@ -829,7 +1219,7 @@ impl WorktreeIndex {
         let mut add = Vec::new();
         for (r, k) in missing {
             match cached.get(k) {
-                Some(v) if v.len() == self.dim => add.push((r.id, v.as_slice())),
+                Some(v) if self.usable(v) => add.push((r.id, v.as_slice())),
                 _ => {
                     drop_paths.insert(r.item.rel_path.clone());
                 }
@@ -848,6 +1238,9 @@ impl WorktreeIndex {
     ) -> anyhow::Result<Vec<Vec<f32>>> {
         let keys: Vec<CacheKey> = entries.iter().map(|(k, _)| *k).collect();
         let mut cached = ctx.cache.get_many(&keys)?;
+        // An unusable cached vector (cached before vectors were checked) is a miss, replaced in
+        // the cache once re-embedded.
+        cached.retain(|_, v| self.usable(v));
         let mut miss_idx: Vec<usize> = Vec::new();
         let mut seen = HashSet::new();
         for (i, (k, _)) in entries.iter().enumerate() {
@@ -864,6 +1257,20 @@ impl WorktreeIndex {
         for group in miss_idx.chunks(EMBED_GROUP) {
             let texts: Vec<&str> = group.iter().map(|&i| entries[i].1).collect();
             let vecs = ctx.embedder.embed(&texts, InputKind::Document)?;
+            // Checked before caching: a bad vector in the shared cache outlives the bad response.
+            anyhow::ensure!(
+                vecs.len() == texts.len(),
+                "embedder returned {} vectors for {} texts",
+                vecs.len(),
+                texts.len()
+            );
+            if let Some(v) = vecs.iter().find(|v| !self.usable(v)) {
+                anyhow::bail!(
+                    "embedder returned an invalid vector ({} values, expected {} finite ones)",
+                    v.len(),
+                    self.dim
+                );
+            }
             let put: Vec<_> = group
                 .iter()
                 .zip(&vecs)
@@ -886,6 +1293,45 @@ impl WorktreeIndex {
             .collect()
     }
 
+    /// [`Self::commit_batch`], recording `paths` for the next pass to index again (see `dirty` in
+    /// `run`) if it fails, when the stores may hold part of it: in the manifest on an error, and
+    /// in a journal written first, for a crash between the stores' commits.
+    fn commit_or_record(
+        &self,
+        st: &mut WriterState,
+        paths: &[String],
+        rows: Vec<ItemRow>,
+        vectors: &[Vec<f32>],
+        doc_vectors: &[(u64, Vec<f32>)],
+        graph: &Arc<ProjectGraph>,
+    ) -> anyhow::Result<()> {
+        let journal = self.dir.join(BATCH_JOURNAL);
+        fs::write(&journal, serde_json::to_vec(paths)?)?;
+        self.commit_batch(st, paths, rows, vectors, doc_vectors, graph)
+            .inspect_err(|_| st.manifest.retry_paths.extend(paths.iter().cloned()))?;
+        match fs::remove_file(&journal) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Adds the paths of a batch interrupted by a crash (see [`Self::commit_or_record`]) to
+    /// `manifest`'s retry paths, saved before the journal goes.
+    fn recover_batch(&self, manifest: &mut Manifest, next_id: u64) -> anyhow::Result<()> {
+        let journal = self.dir.join(BATCH_JOURNAL);
+        let paths: Vec<String> = match fs::read(&journal) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        manifest.retry_paths.extend(paths);
+        manifest.retry_paths.sort();
+        manifest.retry_paths.dedup();
+        self.save_manifest(manifest, next_id)?;
+        fs::remove_file(&journal)?;
+        Ok(())
+    }
+
     /// Replaces the items of `paths` with `rows` in every store, then publishes a snapshot.
     /// Order: items.sqlite, lexical, vectors (in memory); the caller writes the manifest last.
     fn commit_batch(
@@ -898,13 +1344,34 @@ impl WorktreeIndex {
         graph: &Arc<ProjectGraph>,
     ) -> anyhow::Result<()> {
         let snap = self.snapshot();
-        let old_ids = st.items.ids_for_paths(paths)?;
-        st.items.replace_files(paths, &rows)?;
-        self.lexical.delete_paths(&st.writer, paths);
-        for r in &rows {
-            self.lexical.add(&st.writer, r)?;
-        }
-        st.writer.commit()?;
+        // The items stored and the items published for `paths` differ after a batch that failed
+        // between the two (stored, never published): both go.
+        let path_set: HashSet<&str> = paths.iter().map(String::as_str).collect();
+        let mut old_ids = st.items.ids_for_paths(paths)?;
+        old_ids.extend(
+            snap.items
+                .values()
+                .filter(|r| path_set.contains(r.item.rel_path.as_str()))
+                .map(|r| r.id),
+        );
+        old_ids.sort_unstable();
+        old_ids.dedup();
+        // One write for both: the items commit only once the lexical entries have, and a failed
+        // lexical write is rolled back, so neither store gets ahead of the other.
+        let WriterState { items, writer, .. } = st;
+        items.replace_files_with(paths, &rows, || {
+            self.lexical.delete_paths(writer, paths);
+            let written = rows
+                .iter()
+                .try_for_each(|r| self.lexical.add(writer, r))
+                .and_then(|()| Ok(writer.commit().map(|_| ())?));
+            if written.is_err()
+                && let Err(e) = writer.rollback()
+            {
+                tracing::warn!("rolling back the lexical index: {e:#}");
+            }
+            written
+        })?;
         self.lexical.reload()?;
         let mut vec_index = snap.vectors.duplicate()?;
         vec_index.remove_many(&old_ids);
@@ -970,7 +1437,8 @@ impl WorktreeIndex {
     /// Files whose (size, mtime) differ from the manifest, plus deletions. Read-only.
     pub fn pending_files(&self, accepts: &(dyn Fn(&Path) -> bool + Sync)) -> usize {
         let Some(m) = self.manifest() else { return 0 };
-        let (files, _) = walk(&self.root, accepts);
+        let walked = walk_tree(&self.root, accepts);
+        let files = &walked.files;
         let set: HashSet<&str> = files.iter().map(String::as_str).collect();
         let changed = files
             .iter()
@@ -981,6 +1449,46 @@ impl WorktreeIndex {
                 },
             )
             .count();
-        changed + m.files.keys().filter(|k| !set.contains(k.as_str())).count()
+        changed
+            + m.files
+                .keys()
+                .filter(|k| !set.contains(k.as_str()) && !walked.missed(k))
+                .count()
     }
+}
+
+/// Why an index with this manifest may be out of date: an unfinished rebuild (see
+/// [`Manifest::rebuilding`]), a failed pass's work (see [`Manifest::retry_full`]) or paths it
+/// could not read. Every snapshot a writer publishes takes its reasons from here, so none claims
+/// freshness the manifest does not.
+fn manifest_stale(m: &Manifest) -> Vec<String> {
+    let rebuilding = m
+        .rebuilding
+        .then(|| "a rebuild of the index has not finished; the next index resumes it".to_string());
+    let retry = (m.retry_full || !m.retry_paths.is_empty()).then(|| RETRY_REASON.to_string());
+    rebuilding
+        .into_iter()
+        .chain(retry)
+        .chain(unread_reason(&m.unread))
+        .collect()
+}
+
+/// Why an index with `unread` paths (see [`Manifest::unread`]) may be out of date.
+fn unread_reason(unread: &[String]) -> Option<String> {
+    let paths: Vec<&str> = unread
+        .iter()
+        .map(|u| if u.is_empty() { "." } else { u.as_str() })
+        .collect();
+    (!paths.is_empty()).then(|| {
+        format!(
+            "could not read {}; files there may be out of date",
+            paths.join(", ")
+        )
+    })
+}
+
+/// How many keys of `index` belong to no item in `ids`.
+fn stray_count(index: &VectorIndex, ids: &HashSet<u64>) -> usize {
+    let kept = ids.iter().filter(|id| index.contains(**id)).count();
+    index.len().saturating_sub(kept)
 }

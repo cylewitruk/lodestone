@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use super::lexical::TokenizerKind;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileEntry {
     pub file_hash: String,
@@ -34,6 +36,32 @@ pub struct Manifest {
     /// Unix seconds of the last completed indexing run.
     #[serde(default)]
     pub updated_at: u64,
+    /// Paths (`""`: the root) the last walk or read could not get at; their files keep the items
+    /// they had until a pass reads them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unread: Vec<String>,
+    /// A rebuild (forced, or for another model) started and has not finished a full pass; every
+    /// pass resumes it until one does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rebuilding: bool,
+    /// What a failed pass was to index, the whole tree (`retry_full`) or `retry_paths`: the next
+    /// pass covers it too, and only a successful one clears it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retry_full: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retry_paths: Vec<String>,
+    /// The tokenizer whose lexical index was last kept in step with the items; each tokenizer
+    /// has its own, left behind while another is in use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lexical_tokenizer: Option<TokenizerKind>,
+    /// Incremented on every save: a writer that finds another value than it last saw knows that
+    /// another process wrote the index meanwhile.
+    #[serde(default)]
+    pub generation: u64,
+    /// The lowest item id never allocated: ids are never reused, whichever tokenizer's lexical
+    /// index (each keeps its own) was in use.
+    #[serde(default)]
+    pub next_id: u64,
 }
 
 impl Manifest {

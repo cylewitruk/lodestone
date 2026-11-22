@@ -42,6 +42,9 @@ pub struct QuestionResult {
 pub struct BenchReport {
     pub model: String,
     pub backend: String,
+    /// The reranker the searches ran with; `None` without one.
+    #[serde(default)]
+    pub reranker: Option<String>,
     pub cold_index: Option<IndexReport>,
     pub noop_index_secs: f64,
     pub questions: Vec<QuestionResult>,
@@ -136,6 +139,7 @@ pub fn run(engine: &Engine, opts: &BenchOptions) -> anyhow::Result<BenchReport> 
             resp.stale_reasons
         );
     }
+    report.reranker = engine.reranker_model().map(String::from);
     let mut latencies = Vec::new();
     for q in &questions {
         let t = Instant::now();
@@ -318,7 +322,7 @@ impl BenchReport {
     }
 }
 
-/// Resolves `<eval-dir>` defaults: `questions.json` and `corpus/` inside it.
+/// Resolves an eval directory's defaults: `questions.json` and `corpus/` inside it.
 pub fn default_paths(eval_dir: &Path) -> (PathBuf, PathBuf) {
     (eval_dir.join("corpus"), eval_dir.join("questions.json"))
 }
@@ -332,8 +336,8 @@ mod tests {
     use crate::embed::HashEmbedder;
     use crate::testutil::tempdir;
 
-    #[test]
-    fn agent_view_and_hard_cases() {
+    /// Benchmarks a two-function corpus with `config` (its data directory set here).
+    fn bench(mut config: Config) -> anyhow::Result<BenchReport> {
         let corpus = tempdir().join("repo");
         std::fs::create_dir_all(corpus.join("src")).unwrap();
         std::fs::write(
@@ -353,18 +357,14 @@ mod tests {
             ]"#,
         )
         .unwrap();
-        let mut config = Config {
-            data_dir: Some(tempdir()),
-            ..Config::default()
-        };
-        config.rerank.enabled = false;
+        config.data_dir = Some(tempdir());
         let emb = Arc::new(HashEmbedder {
             dim: 64,
             id: "test/hash".into(),
             delay_ms: 0,
         });
         let engine = Engine::with_embedder(config, emb).unwrap();
-        let report = run(
+        run(
             &engine,
             &BenchOptions {
                 corpus,
@@ -375,7 +375,28 @@ mod tests {
                 include_tests: false,
             },
         )
-        .unwrap();
+    }
+
+    /// Without fastembed, a reranker on the remote backend has no runtime to load.
+    #[cfg(not(feature = "fastembed"))]
+    #[test]
+    fn a_requested_reranker_that_cannot_load_fails_the_bench() {
+        let mut config = Config::default();
+        config.rerank.enabled = true;
+        config.rerank.backend = Some(crate::config::Backend::Remote);
+        let err = bench(config).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("reranker unavailable"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn agent_view_and_hard_cases() {
+        let mut config = Config::default();
+        config.rerank.enabled = false;
+        let report = bench(config).unwrap();
+        assert_eq!(report.reranker, None);
         assert_eq!(report.answerable, 2);
         assert_eq!(report.agent_top_k, DEFAULT_TOP_K);
         assert_eq!(report.rank_at_agent_k, 0.5);

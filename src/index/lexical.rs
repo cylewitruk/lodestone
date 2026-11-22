@@ -301,6 +301,17 @@ impl Lexical {
         self.reader.searcher()
     }
 
+    /// The largest item id in the index as last committed, deleted entries included (0 when
+    /// empty).
+    pub fn max_id(&self) -> anyhow::Result<u64> {
+        self.reload()?;
+        let mut max = 0;
+        for seg in self.searcher().segment_readers() {
+            max = max.max(seg.fast_fields().u64("id")?.max_value());
+        }
+        Ok(max)
+    }
+
     pub fn delete_paths(&self, writer: &IndexWriter, paths: &[String]) {
         for p in paths {
             writer.delete_term(Term::from_field_text(self.fields.rel_path, p));

@@ -15,6 +15,7 @@ use crate::api::types::{
     StatusOverview, StatusReport,
 };
 use crate::cache::EmbeddingCache;
+use crate::checkout::Checkout;
 use crate::chunk::{Chunker, LanguageRegistry};
 use crate::config::Config;
 use crate::embed::{self, Embedder, InputKind};
@@ -37,16 +38,32 @@ struct RepoEntry {
     auto: bool,
 }
 
-fn read_registry(path: &Path) -> RegistryFile {
-    fs::read(path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+/// The registry at `path`; empty when the file does not exist yet. Any other failure is an
+/// error, so that nothing writes over a registry it could not read.
+fn read_registry(path: &Path) -> anyhow::Result<RegistryFile> {
+    let bytes = match fs::read(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(RegistryFile::default()),
+        r => r.with_context(|| format!("reading {}", path.display()))?,
+    };
+    serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "{} is not a valid registry; fix or remove it",
+            path.display()
+        )
+    })
+}
+
+/// [`read_registry`] for listing: an unreadable registry lists nothing, and is logged.
+fn list_registry(path: &Path) -> RegistryFile {
+    read_registry(path).unwrap_or_else(|e| {
+        tracing::warn!("{e:#}");
+        RegistryFile::default()
+    })
 }
 
 /// Registered worktree roots, read without starting an engine.
 pub fn registered_roots(config: &Config) -> Vec<PathBuf> {
-    read_registry(&config.data_dir().join("registry.json"))
+    list_registry(&config.data_dir().join("registry.json"))
         .repos
         .into_iter()
         .map(|r| r.root)
@@ -55,7 +72,7 @@ pub fn registered_roots(config: &Config) -> Vec<PathBuf> {
 
 /// Registered worktrees as (name, root), read without starting an engine.
 pub fn registered(config: &Config) -> Vec<(String, PathBuf)> {
-    read_registry(&config.data_dir().join("registry.json"))
+    list_registry(&config.data_dir().join("registry.json"))
         .repos
         .into_iter()
         .map(|r| (r.name, r.root))
@@ -132,44 +149,13 @@ pub fn place(roots: &[PathBuf], dir: &Path) -> Placement {
         (Some(root), Some(c))
             if c.top != root
                 && c.top.starts_with(&root)
-                && Checkout::of(&root).is_some_and(|rc| !c.git_dir.starts_with(&rc.common)) =>
+                && c.is_separate_from(Checkout::of(&root).as_ref()) =>
         {
             Placement::Unregistered(c.top)
         }
         (Some(root), _) => Placement::Registered(root),
         (None, Some(c)) => Placement::Unregistered(c.top),
         (None, None) => Placement::Outside,
-    }
-}
-
-/// The git checkout a directory is in.
-struct Checkout {
-    /// Its top-level directory: the nearest one holding `.git`.
-    top: PathBuf,
-    /// Its own git directory (`.git`, `.git/worktrees/<name>`, `.git/modules/<name>`).
-    git_dir: PathBuf,
-    /// The repository's shared git directory, the same for all of its worktrees.
-    common: PathBuf,
-}
-
-impl Checkout {
-    fn of(dir: &Path) -> Option<Self> {
-        let top = dir.ancestors().find(|d| d.join(".git").exists())?;
-        let git_dir = crate::watch::git_dir(top)?.canonicalize().ok()?;
-        let common = match fs::read_to_string(git_dir.join("commondir")) {
-            Ok(rel) => git_dir.join(rel.trim()).canonicalize().ok()?,
-            Err(_) => git_dir.clone(),
-        };
-        Some(Self {
-            top: top.to_path_buf(),
-            git_dir,
-            common,
-        })
-    }
-
-    /// A worktree added with `git worktree add`, rather than a repository's main checkout.
-    fn is_linked(&self) -> bool {
-        self.git_dir != self.common
     }
 }
 
@@ -212,6 +198,9 @@ pub fn root_of(roots: &[PathBuf], dir: &Path) -> Option<PathBuf> {
         .cloned()
 }
 
+/// A loaded reranker and its model, or why it failed to load.
+type LoadedReranker = Result<(Arc<dyn Reranker>, String), String>;
+
 pub struct Engine {
     pub config: Config,
     pub languages: Arc<LanguageRegistry>,
@@ -221,7 +210,9 @@ pub struct Engine {
     dim: usize,
     embedder: OnceLock<Arc<dyn Embedder>>,
     embedder_override: Option<Arc<dyn Embedder>>,
-    reranker: OnceLock<Option<Arc<dyn Reranker>>>,
+    /// The reranker and its model, or why it failed to load; unset until first use or while
+    /// disabled.
+    reranker: OnceLock<LoadedReranker>,
     worktrees: RwLock<BTreeMap<PathBuf, Arc<WorktreeIndex>>>,
     /// Watcher state per worktree, reported by `status` (set by the daemon).
     pub watcher_state: RwLock<BTreeMap<PathBuf, String>>,
@@ -240,7 +231,8 @@ impl Engine {
     }
 
     /// `new`, except `LODESTONE_TEST_EMBEDDER=hash` substitutes a deterministic embedder so the
-    /// binary can be exercised end to end without model downloads.
+    /// binary can be exercised end to end without model downloads; it fails documents while the
+    /// file `LODESTONE_TEST_EMBED_FAIL_FLAG` names exists.
     pub fn from_env(config: Config) -> anyhow::Result<Self> {
         match std::env::var("LODESTONE_TEST_EMBEDDER").as_deref() {
             Ok("hash") => {
@@ -250,14 +242,19 @@ impl Engine {
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(0);
-                Self::with_embedder(
-                    config,
-                    Arc::new(embed::HashEmbedder {
-                        dim: 64,
-                        id: "test/hash".into(),
-                        delay_ms,
+                let hash: Arc<dyn Embedder> = Arc::new(embed::HashEmbedder {
+                    dim: 64,
+                    id: "test/hash".into(),
+                    delay_ms,
+                });
+                let embedder = match std::env::var_os("LODESTONE_TEST_EMBED_FAIL_FLAG") {
+                    Some(flag) => Arc::new(crate::testutil::FailWhile {
+                        inner: hash,
+                        flag: flag.into(),
                     }),
-                )
+                    None => hash,
+                };
+                Self::with_embedder(config, embedder)
             }
             _ => Self::new(config),
         }
@@ -314,43 +311,52 @@ impl Engine {
         Ok(self.embedder.get_or_init(|| e).clone())
     }
 
+    /// The resident reranker, loaded on first use; `None` when disabled or it failed to load (see
+    /// [`Self::reranker_error`]).
     pub fn reranker(&self) -> Option<Arc<dyn Reranker>> {
-        self.reranker
-            .get_or_init(|| {
-                if !self.config.rerank.enabled {
-                    return None;
-                }
-                let data = self.config.data_dir().join("models");
-                let backend = self.config.rerank.backend.unwrap_or(self.config.backend);
-                let loaded: anyhow::Result<Arc<dyn Reranker>> = match backend {
-                    #[cfg(feature = "candle")]
-                    crate::config::Backend::CandleMetal | crate::config::Backend::CandleCpu => {
-                        search::rerank::candle_impl::CandleReranker::load(
-                            &self.config.rerank.hf_repo,
-                            backend,
-                            &data,
-                            self.config.rerank.max_tokens,
-                        )
-                        .map(|r| Arc::new(r) as Arc<dyn Reranker>)
-                    }
-                    #[cfg(feature = "fastembed")]
-                    _ => search::rerank::fastembed_impl::FastembedReranker::load(
-                        &self.config.rerank.model,
+        Some(self.load_reranker()?.as_ref().ok()?.0.clone())
+    }
+
+    /// The model the resident reranker runs, if one is loaded.
+    pub fn reranker_model(&self) -> Option<&str> {
+        Some(&self.load_reranker()?.as_ref().ok()?.1)
+    }
+
+    /// Why the enabled reranker is unavailable.
+    pub fn reranker_error(&self) -> Option<String> {
+        self.load_reranker()?.as_ref().err().cloned()
+    }
+
+    fn load_reranker(&self) -> Option<&LoadedReranker> {
+        if !self.config.rerank.enabled {
+            return None;
+        }
+        Some(self.reranker.get_or_init(|| {
+            let data = self.config.data_dir().join("models");
+            let rerank = &self.config.rerank;
+            let backend = rerank.backend.unwrap_or(self.config.backend);
+            let loaded: anyhow::Result<(Arc<dyn Reranker>, String)> = match backend {
+                #[cfg(feature = "candle")]
+                crate::config::Backend::CandleMetal | crate::config::Backend::CandleCpu => {
+                    search::rerank::candle_impl::CandleReranker::load(
+                        &rerank.hf_repo,
+                        backend,
                         &data,
+                        rerank.max_tokens,
                     )
-                    .map(|r| Arc::new(r) as Arc<dyn Reranker>),
-                    #[allow(unreachable_patterns)]
-                    _ => Err(anyhow::anyhow!("no reranker backend compiled in")),
-                };
-                match loaded {
-                    Ok(r) => Some(r),
-                    Err(e) => {
-                        tracing::warn!("reranker unavailable: {e:#}");
-                        None
-                    }
+                    .map(|r| (Arc::new(r) as Arc<dyn Reranker>, rerank.hf_repo.clone()))
                 }
+                #[cfg(feature = "fastembed")]
+                _ => search::rerank::fastembed_impl::FastembedReranker::load(&rerank.model, &data)
+                    .map(|r| (Arc::new(r) as Arc<dyn Reranker>, rerank.model.clone())),
+                #[allow(unreachable_patterns)]
+                _ => Err(anyhow::anyhow!("no reranker backend compiled in")),
+            };
+            loaded.map_err(|e| {
+                tracing::warn!("reranker unavailable: {e:#}");
+                format!("{e:#}")
             })
-            .clone()
+        }))
     }
 
     pub fn index_context(&self) -> anyhow::Result<IndexContext> {
@@ -366,12 +372,12 @@ impl Engine {
         self.config.data_dir().join("registry.json")
     }
 
-    fn registry_file(&self) -> RegistryFile {
+    fn registry_file(&self) -> anyhow::Result<RegistryFile> {
         read_registry(&self.registry_path())
     }
 
     pub fn repos(&self) -> Vec<RepoInfo> {
-        self.registry_file()
+        list_registry(&self.registry_path())
             .repos
             .into_iter()
             .map(|r| RepoInfo {
@@ -391,7 +397,7 @@ impl Engine {
     /// is registered on first use; a directory no registered worktree covers is an error.
     pub fn worktree_for(&self, dir: &Path) -> anyhow::Result<Arc<WorktreeIndex>> {
         let roots: Vec<PathBuf> = self
-            .registry_file()
+            .registry_file()?
             .repos
             .into_iter()
             .map(|r| r.root)
@@ -426,7 +432,7 @@ impl Engine {
             .registry_writes
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let mut reg = self.registry_file();
+        let mut reg = self.registry_file()?;
         let (gone, kept): (Vec<RepoEntry>, Vec<RepoEntry>) = reg
             .repos
             .into_iter()
@@ -479,7 +485,7 @@ impl Engine {
             .registry_writes
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let mut reg = self.registry_file();
+        let mut reg = self.registry_file()?;
         if !reg.repos.iter().any(|r| r.root == root) {
             let name = unique_name(&reg, &base_name(&reg, &root), &root);
             reg.repos.push(RepoEntry {
@@ -544,7 +550,7 @@ impl Engine {
     /// Resolves the `repo` argument: a registered name, a path (canonicalized here), or — when
     /// absent — the only registered repo.
     pub fn resolve(&self, repo: Option<&str>) -> anyhow::Result<Arc<WorktreeIndex>> {
-        let reg = self.registry_file();
+        let reg = self.registry_file()?;
         match repo {
             None => match reg.repos.as_slice() {
                 [only] => self.open_canonical(&only.root),
@@ -568,7 +574,7 @@ impl Engine {
     }
 
     pub fn repo_name(&self, root: &Path) -> String {
-        self.registry_file()
+        list_registry(&self.registry_path())
             .repos
             .into_iter()
             .find(|r| r.root == root)
@@ -636,9 +642,23 @@ impl Engine {
         };
         let top_k = req.top_k.clamp(1, 50);
         let reranker = self.reranker();
+        if let Some(e) = self.reranker_error() {
+            notes.push(format!("reranker unavailable ({e}); results not reranked"));
+        }
         let mut search_config = self.config.search.clone();
         if reranker.is_none() {
             search_config.doc_weight = 0.0;
+        }
+        if query_vec.is_none() {
+            // The lexical results promised above, even where the config weights them 0.
+            for w in [
+                &mut search_config.lexical_weight,
+                &mut search_config.identifier_lexical_weight,
+            ] {
+                if *w <= 0.0 {
+                    *w = 1.0;
+                }
+            }
         }
         let mut outcome = search::search(
             &snap,
@@ -703,7 +723,7 @@ impl Engine {
                 }
             })
             .collect();
-        let mut stale_reasons = snap.stale.clone();
+        let mut stale_reasons = w.stale_reasons(&snap);
         if w.is_writing() {
             stale_reasons.push("indexing in progress".into());
         }
@@ -713,6 +733,7 @@ impl Engine {
             stale_reasons,
             notes,
             results,
+            matching: Vec::new(),
             took_ms: started.elapsed().as_secs_f64() * 1000.0,
         })
     }
@@ -725,7 +746,7 @@ impl Engine {
     pub fn status_all(&self) -> StatusOverview {
         let mut repos = Vec::new();
         let mut failed = Vec::new();
-        for e in self.registry_file().repos {
+        for e in list_registry(&self.registry_path()).repos {
             match self.peek(&e.root) {
                 Ok(w) => repos.push(self.status_of(&w)),
                 Err(err) => failed.push(RepoFailure {
@@ -741,7 +762,7 @@ impl Engine {
         let snap = w.snapshot();
         let languages = self.languages.clone();
         let pending = w.pending_files(&|p: &Path| languages.accepts(p));
-        let mut stale_reasons = snap.stale.clone();
+        let mut stale_reasons = w.stale_reasons(&snap);
         if pending > 0 {
             stale_reasons.push(format!("{pending} files changed since last index"));
         }

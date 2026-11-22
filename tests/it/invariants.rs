@@ -737,3 +737,1185 @@ fn doc_vectors_follow_documented_items() {
     check(&w);
     assert!(!w.snapshot().stale.iter().any(|s| s.contains("no vector")));
 }
+
+/// A crash between a deletion's commit and the next vector checkpoint leaves the deleted items'
+/// vectors on disk. Repair removes them, so their ids can be allocated again.
+#[test]
+fn repair_removes_vectors_of_deleted_items() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    // The file holding the highest ids: deleting it frees them for reuse.
+    let last = {
+        let snap = w.snapshot();
+        let id = snap.items.keys().max().copied().unwrap();
+        snap.items[&id].item.rel_path.clone()
+    };
+    let vectors = w.dir.join("vectors.usearch");
+    let checkpoint = fs::read(&vectors).unwrap();
+    fs::remove_file(root.join(&last)).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    drop((e, w));
+    fs::write(&vectors, checkpoint).unwrap();
+
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    assert!(
+        w.snapshot()
+            .stale
+            .iter()
+            .any(|s| s.contains("deleted items"))
+    );
+    write(&root, "core/src/new.rs", "pub fn freshly_added() {}\n");
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let snap = w.snapshot();
+    assert_eq!(snap.vectors.len(), snap.items.len());
+    assert_eq!(
+        search(&e, &root, "freshly_added").results[0].name,
+        "freshly_added"
+    );
+}
+
+/// A repository nested in a registered one is served by its own index; a submodule belongs to
+/// the repository that contains it.
+#[test]
+fn nested_checkouts_are_left_to_their_own_index() {
+    let root = fixture();
+    fs::create_dir_all(root.join(".git/modules/sub")).unwrap();
+    write(&root, "checkouts/other/.git/HEAD", "ref: refs/heads/main\n");
+    write(
+        &root,
+        "checkouts/other/other.rs",
+        "pub fn other_checkout() {}\n",
+    );
+    write(&root, "sub/.git", "gitdir: ../.git/modules/sub\n");
+    write(&root, "sub/sub.rs", "pub fn in_submodule() {}\n");
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let names: BTreeSet<String> = w
+        .snapshot()
+        .items
+        .values()
+        .map(|r| r.item.name.clone())
+        .collect();
+    assert!(names.contains("in_submodule"), "{names:?}");
+    assert!(!names.contains("other_checkout"), "{names:?}");
+}
+
+/// A subtree the walk cannot read keeps its indexed files instead of losing them as deleted.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_subtree_keeps_its_index() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let items = w.snapshot().items.len();
+    let web = root.join("web");
+    let repo = root.to_string_lossy().to_string();
+    fs::set_permissions(&web, fs::Permissions::from_mode(0o000)).unwrap();
+    let report = e.index_blocking(&w, IndexOptions::default());
+    // A forced rebuild keeps what it cannot read again.
+    let forced = e.index_blocking(
+        &w,
+        IndexOptions {
+            force: true,
+            paths: None,
+        },
+    );
+    let status = e.status(Some(&repo)).unwrap();
+    fs::set_permissions(&web, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(report.unwrap().files_removed, 0);
+    assert_eq!(forced.unwrap().files_removed, 0);
+    assert_eq!(w.snapshot().items.len(), items);
+    assert_eq!(status.pending_changes, 0);
+    assert!(
+        status
+            .stale_reasons
+            .iter()
+            .any(|r| r.contains("could not read web")),
+        "{status:?}"
+    );
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert!(!e.status(Some(&repo)).unwrap().stale);
+}
+
+/// A file that cannot be read when its turn comes keeps its items through edits and rebuilds
+/// (forced, or for another model), and the index says so, also after reopening, until it is read.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_file_keeps_its_items_and_is_reported() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = fixture();
+    let data = tempdir();
+    let repo = root.to_string_lossy().to_string();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let items = w.snapshot().items.len();
+    let file = root.join("tools/gen.py");
+    write(&root, "tools/gen.py", "def changed():\n    pass\n");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+    let has_report = |w: &lodestone::index::WorktreeIndex| {
+        w.snapshot()
+            .items
+            .values()
+            .any(|r| r.item.name == "generate_report")
+    };
+    let forced = e.index_blocking(
+        &w,
+        IndexOptions {
+            force: true,
+            paths: None,
+        },
+    );
+    let kept_forced = has_report(&w);
+    let incremental = e.index_blocking(&w, IndexOptions::default());
+    drop((e, w));
+    let (e, _) = engine(&data);
+    let reopened = e.status(Some(&repo)).unwrap();
+    drop(e);
+    // Another model: the file's items stay for lexical search.
+    let other = || {
+        let mut config = Config {
+            data_dir: Some(data.clone()),
+            ..Config::default()
+        };
+        config.rerank.enabled = false;
+        let embedder = HashEmbedder {
+            dim: 64,
+            id: "test/other".into(),
+            delay_ms: 0,
+        };
+        Engine::with_embedder(config, Arc::new(embedder)).unwrap()
+    };
+    let e = other();
+    let w = e.register(&root).unwrap();
+    let new_model = e.index_blocking(&w, IndexOptions::default());
+    let kept_new_model = has_report(&w);
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+    forced.unwrap();
+    incremental.unwrap();
+    new_model.unwrap();
+    assert!(kept_forced && kept_new_model);
+    assert_eq!(reopened.items, items);
+    assert!(
+        reopened
+            .stale_reasons
+            .iter()
+            .any(|r| r.contains("could not read tools/gen.py")),
+        "{reopened:?}"
+    );
+    assert_eq!(
+        e.index_blocking(&w, IndexOptions::default())
+            .unwrap()
+            .files_changed,
+        1
+    );
+    assert!(!e.status(Some(&repo)).unwrap().stale);
+    assert!(!has_report(&w));
+}
+
+/// A file that could not be read, then deleted, is no longer reported once a watcher pass sees it
+/// gone.
+#[cfg(unix)]
+#[test]
+fn a_deleted_unreadable_file_is_no_longer_reported() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = fixture();
+    let data = tempdir();
+    let repo = root.to_string_lossy().to_string();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let file = root.join("tools/gen.py");
+    write(&root, "tools/gen.py", "def changed():\n    pass\n");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+    let scoped = || IndexOptions {
+        force: false,
+        paths: Some(vec!["tools/gen.py".into()]),
+    };
+    e.index_blocking(&w, scoped()).unwrap();
+    assert!(e.status(Some(&repo)).unwrap().stale);
+    fs::remove_file(&file).unwrap();
+    assert_eq!(e.index_blocking(&w, scoped()).unwrap().files_removed, 1);
+    assert!(!e.status(Some(&repo)).unwrap().stale);
+}
+
+/// An engine on `data` embedding as `id` (a model other than `engine`'s when not "test/hash").
+fn engine_as(data: &Path, id: &str) -> Engine {
+    let mut config = Config {
+        data_dir: Some(data.to_path_buf()),
+        ..Config::default()
+    };
+    config.rerank.enabled = false;
+    let embedder = HashEmbedder {
+        dim: 64,
+        id: id.into(),
+        delay_ms: 0,
+    };
+    Engine::with_embedder(config, Arc::new(embedder)).unwrap()
+}
+
+/// Items kept through a model change (their file unreadable) get no vector of the old model from
+/// the cache, and stay findable by name.
+#[cfg(unix)]
+#[test]
+fn items_kept_through_a_model_change_get_no_old_vector() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = fixture();
+    let data = tempdir();
+    let e = engine_as(&data, "test/hash");
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    drop((e, w));
+    let file = root.join("tools/gen.py");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+    let e = engine_as(&data, "test/other");
+    let w = e.register(&root).unwrap();
+    let migrated = e.index_blocking(&w, IndexOptions::default());
+    drop((e, w));
+    // Reopened: the first pass repairs missing vectors from the cache.
+    let e = engine_as(&data, "test/other");
+    let w = e.register(&root).unwrap();
+    let repaired = e.index_blocking(&w, IndexOptions::default());
+    let snap = w.snapshot();
+    let kept: Vec<u64> = snap
+        .items
+        .values()
+        .filter(|r| r.item.rel_path == "tools/gen.py")
+        .map(|r| r.id)
+        .collect();
+    let found = search(&e, &root, "generate_report");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+    migrated.unwrap();
+    repaired.unwrap();
+    assert!(!kept.is_empty());
+    assert!(kept.iter().all(|id| !snap.vectors.contains(*id)));
+    assert_eq!(found.results[0].name, "generate_report");
+}
+
+/// Embeds nothing: a model change that fails part-way.
+struct FailingEmbedder;
+
+impl Embedder for FailingEmbedder {
+    fn model_id(&self) -> &str {
+        "test/other"
+    }
+    fn dim(&self) -> usize {
+        64
+    }
+    fn backend(&self) -> lodestone::config::Backend {
+        lodestone::config::Backend::Remote
+    }
+    fn embed(&self, _: &[&str], _: InputKind) -> anyhow::Result<Vec<Vec<f32>>> {
+        anyhow::bail!("embedding failed")
+    }
+}
+
+/// A model change that fails after saving the manifest never leaves the old model's vectors on
+/// disk under the new model's name.
+#[test]
+fn a_failed_model_change_leaves_no_old_vectors_under_the_new_model() {
+    let root = fixture();
+    let data = tempdir();
+    let e = engine_as(&data, "test/hash");
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    drop((e, w));
+    // A removal is committed (and the manifest saved) before embedding fails.
+    fs::remove_file(root.join("notes.txt")).unwrap();
+    let mut config = Config {
+        data_dir: Some(data.clone()),
+        ..Config::default()
+    };
+    config.rerank.enabled = false;
+    let e = Engine::with_embedder(config.clone(), Arc::new(FailingEmbedder)).unwrap();
+    let w = e.register(&root).unwrap();
+    assert!(e.index_blocking(&w, IndexOptions::default()).is_err());
+    // A watcher pass for an unrelated file resumes the rebuild rather than calling it done.
+    let repo = root.to_string_lossy().to_string();
+    write(&root, "core/src/empty.rs", "");
+    let scoped = || IndexOptions {
+        force: false,
+        paths: Some(vec!["core/src/empty.rs".into()]),
+    };
+    assert!(e.index_blocking(&w, scoped()).is_err());
+    assert!(e.status(Some(&repo)).unwrap().stale);
+    drop((e, w));
+    // Restarted during the outage: the first pass repairs, then fails again. Searches still say
+    // the index is being rebuilt.
+    let e = Engine::with_embedder(config.clone(), Arc::new(FailingEmbedder)).unwrap();
+    let w = e.register(&root).unwrap();
+    assert!(e.index_blocking(&w, scoped()).is_err());
+    let resp = search(&e, &root, "retry_with_backoff");
+    assert!(resp.stale, "{resp:?}");
+    assert!(
+        resp.stale_reasons.iter().any(|r| r.contains("rebuild")),
+        "{resp:?}"
+    );
+    drop((e, w));
+    let e = engine_as(&data, "test/other");
+    let w = e.register(&root).unwrap();
+    assert_eq!(w.snapshot().vectors.len(), 0);
+    let status = e.status(Some(&repo)).unwrap();
+    assert!(
+        status.stale_reasons.iter().any(|r| r.contains("rebuild")),
+        "{status:?}"
+    );
+    e.index_blocking(&w, scoped()).unwrap();
+    let snap = w.snapshot();
+    assert_eq!(snap.vectors.len(), snap.items.len());
+    assert!(!e.status(Some(&repo)).unwrap().stale);
+    assert_eq!(
+        search(&e, &root, "retry with exponential backoff").results[0].name,
+        "retry_with_backoff"
+    );
+}
+
+/// A pass that fails under the same model (the embedding service down for indexing), forced or
+/// not, leaves searches saying so until a pass succeeds.
+#[test]
+fn a_failed_pass_leaves_searches_stale_until_one_succeeds() {
+    let root = fixture();
+    let data = tempdir();
+    let flag = data.join("down");
+    let mut config = Config {
+        data_dir: Some(data.clone()),
+        ..Config::default()
+    };
+    config.rerank.enabled = false;
+    let embedder = lodestone::testutil::FailWhile {
+        inner: Arc::new(hash_embedder()),
+        flag: flag.clone(),
+    };
+    let e = Engine::with_embedder(config, Arc::new(embedder)).unwrap();
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    write(
+        &root,
+        "core/src/lib.rs",
+        "/// Retry with a new name.\npub fn renamed_retry() {}\n",
+    );
+    fs::write(&flag, "").unwrap();
+    for force in [false, true] {
+        let opts = IndexOptions { force, paths: None };
+        assert!(e.index_blocking(&w, opts).is_err());
+        let resp = search(&e, &root, "retry_with_backoff");
+        assert!(resp.stale, "force {force}: {resp:?}");
+        assert!(
+            resp.stale_reasons.iter().any(|r| r.contains("failed")),
+            "force {force}: {resp:?}"
+        );
+    }
+    fs::remove_file(&flag).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let resp = search(&e, &root, "renamed_retry");
+    assert!(!resp.stale, "{resp:?}");
+    assert_eq!(resp.results[0].name, "renamed_retry");
+    assert!(
+        search(&e, &root, "retry_with_backoff")
+            .results
+            .iter()
+            .all(|r| r.name != "retry_with_backoff")
+    );
+}
+
+/// What a failed pass was to index is recorded with the index: another process reports it, and
+/// its next pass, even one for another file, indexes it.
+#[test]
+fn a_failed_pass_is_retried_by_the_next_one_in_any_process() {
+    for failed_scope in [None, Some(vec!["core/src/lib.rs".to_string()])] {
+        let root = fixture();
+        let data = tempdir();
+        let flag = data.join("down");
+        let repo = root.to_string_lossy().to_string();
+        let mut config = Config {
+            data_dir: Some(data.clone()),
+            ..Config::default()
+        };
+        config.rerank.enabled = false;
+        let flaky = || {
+            let embedder = lodestone::testutil::FailWhile {
+                inner: Arc::new(hash_embedder()),
+                flag: flag.clone(),
+            };
+            Engine::with_embedder(config.clone(), Arc::new(embedder)).unwrap()
+        };
+        let e = flaky();
+        let w = e.register(&root).unwrap();
+        e.index_blocking(&w, IndexOptions::default()).unwrap();
+        drop((e, w));
+        write(
+            &root,
+            "core/src/lib.rs",
+            "/// Retry with a new name.\npub fn renamed_retry() {}\n",
+        );
+        fs::write(&flag, "").unwrap();
+        let e = flaky();
+        let w = e.register(&root).unwrap();
+        let opts = IndexOptions {
+            force: false,
+            paths: failed_scope.clone(),
+        };
+        assert!(e.index_blocking(&w, opts).is_err());
+        drop((e, w));
+        fs::remove_file(&flag).unwrap();
+        // Another process: it says so, and its next pass, for another file, retries the change.
+        let e = flaky();
+        let status = e.status(Some(&repo)).unwrap();
+        assert!(
+            status.stale_reasons.iter().any(|r| r.contains("retries")),
+            "{failed_scope:?}: {status:?}"
+        );
+        let w = e.register(&root).unwrap();
+        write(&root, "notes.txt", "Other notes.\n");
+        let opts = IndexOptions {
+            force: false,
+            paths: Some(vec!["notes.txt".into()]),
+        };
+        e.index_blocking(&w, opts).unwrap();
+        let resp = search(&e, &root, "renamed_retry");
+        assert!(!resp.stale, "{failed_scope:?}: {resp:?}");
+        assert_eq!(resp.results[0].name, "renamed_retry", "{failed_scope:?}");
+    }
+}
+
+/// A batch whose lexical write failed is fully replaced by the retry, in the running index: no
+/// obsolete item or vector stays.
+#[cfg(unix)]
+#[test]
+fn a_retry_replaces_a_batch_whose_lexical_write_failed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let (items, vectors) = (w.snapshot().items.len(), w.snapshot().vectors.len());
+    write(
+        &root,
+        "core/src/lib.rs",
+        "/// Retry with a new name.\npub fn renamed_retry() {}\n\n/// Copy a directory tree recursively.\npub fn copy_dir_all() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn copy_dir_all_works() {}\n}\n",
+    );
+    let lexical = w.dir.join("lexical");
+    fs::set_permissions(&lexical, fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = e.index_blocking(&w, IndexOptions::default());
+    fs::set_permissions(&lexical, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(failed.is_err());
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let snap = w.snapshot();
+    assert_eq!((snap.items.len(), snap.vectors.len()), (items, vectors));
+    let names: Vec<&str> = snap.items.values().map(|r| r.item.name.as_str()).collect();
+    assert!(!names.contains(&"retry_with_backoff"), "{names:?}");
+    assert!(names.contains(&"renamed_retry"), "{names:?}");
+    let resp = search(&e, &root, "retry_with_backoff");
+    assert!(!resp.stale, "{resp:?}");
+    assert!(resp.results.iter().all(|r| r.name != "retry_with_backoff"));
+}
+
+/// Rows of `rel_path` in a worktree's `items.sqlite`.
+fn stored_rows(dir: &Path, rel_path: &str) -> i64 {
+    rusqlite::Connection::open(dir.join("items.sqlite"))
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM items WHERE rel_path = ?1",
+            [rel_path],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// A deletion whose lexical write fails leaves both stores as they were. Restoring the file and
+/// adding another, then indexing with a reopened writer, keeps both files' items, each id its own.
+#[cfg(unix)]
+#[test]
+fn a_failed_deletion_changes_neither_store_and_ids_stay_unique() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let items = w.snapshot().items.len();
+    let file = root.join("tools/gen.py");
+    let bytes = fs::read(&file).unwrap();
+    fs::remove_file(&file).unwrap();
+    let lexical = w.dir.join("lexical");
+    fs::set_permissions(&lexical, fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = e.index_blocking(&w, IndexOptions::default());
+    fs::set_permissions(&lexical, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(failed.is_err());
+    assert!(stored_rows(&w.dir, "tools/gen.py") > 0, "rolled back");
+    fs::write(&file, bytes).unwrap();
+    write(&root, "core/src/new.rs", "pub fn brand_new() {}\n");
+    w.release_writer();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let snap = w.snapshot();
+    assert_eq!(snap.items.len(), items + 1);
+    assert_eq!(snap.vectors.len(), snap.items.len());
+    for name in ["generate_report", "brand_new"] {
+        let resp = search(&e, &root, name);
+        assert!(!resp.stale, "{resp:?}");
+        assert_eq!(resp.results[0].name, name);
+    }
+}
+
+/// A path a failed batch may have half-written (recorded for retry) is indexed again even though
+/// its stat and hash are unchanged.
+#[test]
+fn a_recorded_path_is_indexed_again_whatever_its_stat() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let dir = w.dir.clone();
+    drop((e, w));
+    let path = dir.join("manifest.json");
+    let mut manifest = lodestone::index::Manifest::load(&path).unwrap().unwrap();
+    manifest.retry_paths = vec!["tools/gen.py".into()];
+    manifest.save(&path).unwrap();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    let r = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert_eq!(r.files_changed, 1);
+    assert!(
+        lodestone::index::Manifest::load(&path)
+            .unwrap()
+            .unwrap()
+            .retry_paths
+            .is_empty()
+    );
+}
+
+/// An engine on `data` searching by keyword only: a vector search returns nearest items for any
+/// query.
+fn keyword_engine(data: &Path) -> Engine {
+    keyword_engine_with(data, lodestone::index::TokenizerKind::Code)
+}
+
+/// [`keyword_engine`] with the lexical `tokenizer`.
+fn keyword_engine_with(data: &Path, tokenizer: lodestone::index::TokenizerKind) -> Engine {
+    let mut config = Config {
+        data_dir: Some(data.to_path_buf()),
+        lexical_tokenizer: tokenizer,
+        ..Config::default()
+    };
+    config.rerank.enabled = false;
+    config.search.lexical_weight = 1.0;
+    config.search.identifier_lexical_weight = 1.0;
+    config.search.vector_weight = 0.0;
+    config.search.sentence_weight = 0.0;
+    Engine::with_embedder(config, Arc::new(hash_embedder())).unwrap()
+}
+
+/// What a crash between a batch's lexical and SQLite commits leaves in the index at `dir`: a
+/// lexical entry for `rel_path` (a function `name`) under the id the next item would get, and the
+/// journal naming the path.
+fn crash_between_commits(dir: &Path, rel_path: &str, name: &str) {
+    use lodestone::chunk::Item;
+    use lodestone::index::{ItemRow, ItemStore, Lexical, TokenizerKind};
+
+    let next = ItemStore::open(&dir.join("items.sqlite"))
+        .unwrap()
+        .max_id()
+        .unwrap()
+        + 1;
+    let lexical = Lexical::open(&dir.join("lexical"), TokenizerKind::Code).unwrap();
+    let mut writer = lexical.writer().unwrap();
+    let row = ItemRow {
+        id: next,
+        item: Item {
+            rel_path: rel_path.into(),
+            language: "rust".into(),
+            kind: "function".into(),
+            name: name.into(),
+            qualified_name: name.into(),
+            line_start: 1,
+            line_end: 1,
+            name_line: 1,
+            name_column: 4,
+            signature: format!("fn {name}()"),
+            doc: String::new(),
+            is_test: false,
+            tagged: true,
+            text: format!("fn {name}() {{}}"),
+        },
+        unit: None,
+        chunk_key: [0; 32],
+    };
+    lexical.add(&writer, &row).unwrap();
+    writer.commit().unwrap();
+    fs::write(dir.join("batch.json"), format!("[\"{rel_path}\"]")).unwrap();
+}
+
+/// A crash between the lexical and SQLite commits leaves a lexical-only entry, which no store
+/// but the journal knows. The next pass deletes it, and the id another file gets next is not its
+/// id, so it matches nothing.
+#[test]
+fn a_lexical_only_entry_from_a_crashed_batch_is_deleted() {
+    let root = fixture();
+    let data = tempdir();
+    let e = keyword_engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let dir = w.dir.clone();
+    drop((e, w));
+    crash_between_commits(&dir, "ghost.rs", "xyloquokka");
+
+    let e = keyword_engine(&data);
+    let repo = root.to_string_lossy().to_string();
+    assert!(e.status(Some(&repo)).unwrap().stale);
+    let w = e.register(&root).unwrap();
+    write(&root, "core/src/current.rs", "pub fn elephant() {}\n");
+    let r = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert_eq!(r.files_removed, 1);
+    let resp = search(&e, &root, "xyloquokka");
+    assert!(!resp.stale, "{resp:?}");
+    assert!(resp.results.is_empty(), "{resp:?}");
+    assert_eq!(search(&e, &root, "elephant").results[0].name, "elephant");
+}
+
+/// The crashed batch's file is unreadable when the next pass runs, then deleted: its lexical entry
+/// matches nothing meanwhile, its path stays recorded, and the pass that finds it gone removes it.
+#[cfg(unix)]
+#[test]
+fn a_crashed_batch_for_an_unreadable_file_never_matches_another() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = fixture();
+    let data = tempdir();
+    let e = keyword_engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    // The same index stays open (as in a daemon, where no reopening repair runs); only its
+    // writer goes, as between watcher passes.
+    w.release_writer();
+    write(&root, "ghost.rs", "fn xyloquokka() {}\n");
+    let ghost = root.join("ghost.rs");
+    fs::set_permissions(&ghost, fs::Permissions::from_mode(0o000)).unwrap();
+    crash_between_commits(&w.dir, "ghost.rs", "xyloquokka");
+
+    let repo = root.to_string_lossy().to_string();
+    write(&root, "core/src/current.rs", "pub fn elephant() {}\n");
+    let pass = e.index_blocking(&w, IndexOptions::default());
+    fs::remove_file(&ghost).unwrap();
+    pass.unwrap();
+    let resp = search(&e, &root, "xyloquokka");
+    assert!(
+        resp.results.iter().all(|r| r.name != "elephant"),
+        "{resp:?}"
+    );
+    assert!(resp.stale, "still recorded: {resp:?}");
+    let r = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert_eq!(r.files_removed, 1);
+    let resp = search(&e, &root, "xyloquokka");
+    assert!(!resp.stale && resp.results.is_empty(), "{resp:?}");
+    assert!(!e.status(Some(&repo)).unwrap().stale);
+}
+
+/// Switching the lexical tokenizer and back never serves the entries the other left behind: a
+/// deleted function's name matches nothing, before the next index (keyword results are left out,
+/// and the index says why) and after it, and no id is given out twice.
+#[test]
+fn switching_tokenizers_never_serves_stale_entries() {
+    use lodestone::index::TokenizerKind::{Code, Default};
+
+    let root = fixture();
+    let data = tempdir();
+    let index = |tokenizer| {
+        let e = keyword_engine_with(&data, tokenizer);
+        let w = e.register(&root).unwrap();
+        e.index_blocking(&w, IndexOptions::default()).unwrap();
+        (e, w)
+    };
+    let id_of = |w: &lodestone::index::WorktreeIndex, name: &str| {
+        w.snapshot()
+            .items
+            .values()
+            .find(|r| r.item.name == name)
+            .map(|r| r.id)
+            .unwrap()
+    };
+    write(&root, "core/src/ghost.rs", "pub fn xyloquokka() {}\n");
+    let (_, w) = index(Code);
+    let ghost = id_of(&w, "xyloquokka");
+    drop(w);
+    fs::remove_file(root.join("core/src/ghost.rs")).unwrap();
+    drop(index(Default));
+    write(&root, "core/src/current.rs", "pub fn elephant() {}\n");
+    let (_, w) = index(Default);
+    assert!(id_of(&w, "elephant") > ghost, "ids are never reused");
+    drop(w);
+    // Back to code, searched before any index runs.
+    let e = keyword_engine_with(&data, Code);
+    let resp = search(&e, &root, "xyloquokka");
+    assert!(resp.results.is_empty(), "{resp:?}");
+    assert!(
+        resp.stale_reasons.iter().any(|r| r.contains("tokenizer")),
+        "{resp:?}"
+    );
+    drop(e);
+    let (e, _) = index(Code);
+    let resp = search(&e, &root, "xyloquokka");
+    assert!(resp.results.is_empty() && !resp.stale, "{resp:?}");
+    assert_eq!(search(&e, &root, "elephant").results[0].name, "elephant");
+}
+
+/// A long-lived index (a daemon's) takes up what another process's writer committed while it did
+/// not hold the lock, rather than deciding from its old view.
+#[test]
+fn another_writers_commits_are_taken_up() {
+    use lodestone::index::TokenizerKind::{Code, Default};
+
+    let root = fixture();
+    let data = tempdir();
+    let daemon = keyword_engine_with(&data, Code);
+    let w = daemon.register(&root).unwrap();
+    daemon.index_blocking(&w, IndexOptions::default()).unwrap();
+    w.release_writer();
+    write(
+        &root,
+        "core/src/lib.rs",
+        "/// Renamed.\npub fn harborpencil() {}\n",
+    );
+    let cli = keyword_engine_with(&data, Default);
+    let wc = cli.register(&root).unwrap();
+    cli.index_blocking(&wc, IndexOptions::default()).unwrap();
+    drop((cli, wc));
+    daemon.index_blocking(&w, IndexOptions::default()).unwrap();
+    let resp = search(&daemon, &root, "harborpencil");
+    assert!(!resp.stale, "{resp:?}");
+    assert_eq!(resp.results[0].name, "harborpencil");
+    assert!(
+        w.snapshot()
+            .items
+            .values()
+            .all(|r| r.item.name != "retry_with_backoff")
+    );
+}
+
+/// A failed read of another writer's commits is read again by the next pass, not taken as done.
+#[cfg(unix)]
+#[test]
+fn a_failed_reload_is_retried() {
+    use lodestone::index::TokenizerKind::{Code, Default};
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = fixture();
+    let data = tempdir();
+    let daemon = keyword_engine_with(&data, Code);
+    let w = daemon.register(&root).unwrap();
+    daemon.index_blocking(&w, IndexOptions::default()).unwrap();
+    w.release_writer();
+    write(
+        &root,
+        "core/src/lib.rs",
+        "/// Renamed.\npub fn harborpencil() {}\n",
+    );
+    let cli = keyword_engine_with(&data, Default);
+    let wc = cli.register(&root).unwrap();
+    cli.index_blocking(&wc, IndexOptions::default()).unwrap();
+    drop((cli, wc));
+    let items = w.dir.join("items.sqlite");
+    fs::set_permissions(&items, fs::Permissions::from_mode(0o000)).unwrap();
+    let failed = daemon.index_blocking(&w, IndexOptions::default());
+    fs::set_permissions(&items, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(failed.is_err());
+    w.release_writer();
+    daemon.index_blocking(&w, IndexOptions::default()).unwrap();
+    let resp = search(&daemon, &root, "harborpencil");
+    assert!(!resp.stale, "{resp:?}");
+    assert_eq!(resp.results[0].name, "harborpencil");
+}
+
+/// A writer using the other tokenizer (its own lexical directory) cannot take the worktree's
+/// writer lock either.
+#[test]
+fn one_writer_lock_covers_every_tokenizer() {
+    let root = fixture();
+    let data = tempdir();
+    let a = keyword_engine_with(&data, lodestone::index::TokenizerKind::Code);
+    let wa = a.register(&root).unwrap();
+    a.index_blocking(&wa, IndexOptions::default()).unwrap();
+    let journal = wa.dir.join("batch.json");
+    fs::write(&journal, "[\"core/src/lib.rs\"]").unwrap();
+    let b = keyword_engine_with(&data, lodestone::index::TokenizerKind::Default);
+    let wb = b.register(&root).unwrap();
+    let err = b.index_blocking(&wb, IndexOptions::default()).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("another lodestone process"),
+        "{err:#}"
+    );
+    assert!(journal.exists());
+}
+
+/// A writer that cannot take the index's writer lock leaves the batch journal of the one that
+/// holds it alone.
+#[test]
+fn only_the_lock_holder_recovers_the_batch_journal() {
+    let root = fixture();
+    let data = tempdir();
+    let (a, _) = engine(&data);
+    let wa = a.register(&root).unwrap();
+    a.index_blocking(&wa, IndexOptions::default()).unwrap();
+    // `a` keeps its writer, and its lock, between passes; a batch of its is in flight.
+    let journal = wa.dir.join("batch.json");
+    fs::write(&journal, "[\"core/src/lib.rs\"]").unwrap();
+    let (b, _) = engine(&data);
+    let wb = b.register(&root).unwrap();
+    assert!(b.index_blocking(&wb, IndexOptions::default()).is_err());
+    assert!(journal.exists());
+}
+
+/// Items stored but never published (left by a failed batch) are removed once their file is
+/// found gone.
+#[test]
+fn stored_items_of_a_missing_file_are_removed() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    rusqlite::Connection::open(w.dir.join("items.sqlite"))
+        .unwrap()
+        .execute(
+            "INSERT INTO items (id, rel_path, language, kind, name, qualified_name, line_start,
+               line_end, signature, doc, unit, is_test, chunk_key, tagged, text, name_line,
+               name_column)
+             VALUES (9999, 'ghost.rs', 'rust', 'function', 'ghost', 'ghost', 1, 1, 'fn ghost()',
+               '', NULL, 0, zeroblob(32), 1, 'fn ghost() {}', 1, 4)",
+            [],
+        )
+        .unwrap();
+    let r = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert_eq!(r.files_removed, 1);
+    assert_eq!(stored_rows(&w.dir, "ghost.rs"), 0);
+}
+
+/// A rebuild whose last vector checkpoint cannot be written is not recorded as finished.
+#[test]
+fn a_rebuild_is_finished_only_once_its_vectors_are_saved() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    // A directory where the checkpoint goes: saving it fails.
+    let vectors = w.dir.join("vectors.usearch");
+    fs::remove_file(&vectors).unwrap();
+    fs::create_dir(&vectors).unwrap();
+    let forced = IndexOptions {
+        force: true,
+        paths: None,
+    };
+    assert!(e.index_blocking(&w, forced).is_err());
+    let manifest = lodestone::index::Manifest::load(&w.dir.join("manifest.json"))
+        .unwrap()
+        .unwrap();
+    assert!(manifest.rebuilding);
+    fs::remove_dir(&vectors).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let manifest = lodestone::index::Manifest::load(&w.dir.join("manifest.json"))
+        .unwrap()
+        .unwrap();
+    assert!(!manifest.rebuilding);
+}
+
+/// A file unreadable from the start, then deleted, is no longer reported once a watcher pass
+/// sees it gone.
+#[cfg(unix)]
+#[test]
+fn a_never_indexed_unreadable_file_is_forgotten_once_deleted() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = fixture();
+    let data = tempdir();
+    let repo = root.to_string_lossy().to_string();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let file = root.join("core/src/new.rs");
+    write(&root, "core/src/new.rs", "pub fn brand_new() {}\n");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+    let scoped = || IndexOptions {
+        force: false,
+        paths: Some(vec!["core/src/new.rs".into()]),
+    };
+    e.index_blocking(&w, scoped()).unwrap();
+    assert!(e.status(Some(&repo)).unwrap().stale);
+    fs::remove_file(&file).unwrap();
+    e.index_blocking(&w, scoped()).unwrap();
+    assert!(!e.status(Some(&repo)).unwrap().stale);
+}
+
+/// A rebuild covers the whole tree, even when asked for some paths.
+#[test]
+fn a_rebuild_ignores_a_path_scope() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let items = w.snapshot().items.len();
+    e.index_blocking(
+        &w,
+        IndexOptions {
+            force: true,
+            paths: Some(vec!["core/src/lib.rs".into()]),
+        },
+    )
+    .unwrap();
+    assert_eq!(w.snapshot().items.len(), items);
+}
+
+/// A chunking change while a subtree is unreadable re-chunks its files once they can be read.
+#[cfg(unix)]
+#[test]
+fn files_missed_during_a_chunking_change_are_rechunked_later() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    drop((e, w));
+    let web = root.join("web");
+    fs::set_permissions(&web, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut config = Config {
+        data_dir: Some(data.clone()),
+        chunk_tokens: 50,
+        ..Config::default()
+    };
+    config.rerank.enabled = false;
+    let e = Engine::with_embedder(config, Arc::new(hash_embedder())).unwrap();
+    let w = e.register(&root).unwrap();
+    let missed = e.index_blocking(&w, IndexOptions::default());
+    fs::set_permissions(&web, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(missed.is_ok());
+    let r = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert_eq!(r.files_changed, 1, "web/ui.ts, re-chunked");
+}
+
+/// Units are checked against the build graph on the first pass, whatever graph the index was
+/// opened with (here none: `graph.json` is gone, and the graph built on opening is the new one).
+#[test]
+fn units_are_reconciled_when_the_graph_checkpoint_is_lost() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let dir = w.dir.clone();
+    drop((e, w));
+    write(&root, "core/Cargo.toml", "[package]\nname = \"kernel\"\n");
+    fs::remove_file(dir.join("graph.json")).unwrap();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let resp = e
+        .search(&SearchRequest {
+            query: "retry_with_backoff".into(),
+            repo: Some(root.to_string_lossy().to_string()),
+            from_unit: Some("kernel".into()),
+            top_k: 8,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(resp.results[0].name, "retry_with_backoff");
+}
+
+/// A cached vector that cannot be used (cached before vectors were checked) is re-embedded and
+/// replaced, not reused.
+#[test]
+fn unusable_cached_vectors_are_replaced() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let (entries, _) = e.cache.stats().unwrap();
+    rusqlite::Connection::open(data.join("cache.sqlite"))
+        .unwrap()
+        .execute("UPDATE embeddings SET vector = x''", [])
+        .unwrap();
+    let r = e
+        .index_blocking(
+            &w,
+            IndexOptions {
+                force: true,
+                paths: None,
+            },
+        )
+        .unwrap();
+    assert_eq!((r.chunks_cached, r.chunks_embedded > 0), (0, true));
+    assert_eq!(e.cache.stats().unwrap(), (entries, entries * 64 * 4));
+}
+
+/// A watcher event for a file that was never indexed removes nothing and commits nothing.
+#[test]
+fn an_unindexed_path_is_not_removed() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let version = w.snapshot().version;
+    write(&root, "build.out", "artifact\n");
+    let r = e
+        .index_blocking(
+            &w,
+            IndexOptions {
+                force: false,
+                paths: Some(vec!["build.out".into(), "gone.rs".into()]),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        (r.files_scanned, r.files_changed, r.files_removed),
+        (0, 0, 0)
+    );
+    // Only the end-of-pass publication, no batch commit.
+    assert_eq!(w.snapshot().version, version + 1);
+}
+
+/// Renaming a package moves its items to the new unit without any source file changing.
+#[test]
+fn a_renamed_package_moves_its_items() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    write(&root, "core/Cargo.toml", "[package]\nname = \"kernel\"\n");
+    write(
+        &root,
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\n[dependencies]\nkernel = { path = \"../core\" }\n",
+    );
+    let r = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert_eq!(r.files_changed, 0, "no source file changed");
+    let resp = e
+        .search(&SearchRequest {
+            query: "retry_with_backoff".into(),
+            repo: Some(root.to_string_lossy().to_string()),
+            from_unit: Some("kernel".into()),
+            top_k: 8,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(resp.results[0].name, "retry_with_backoff");
+    assert_eq!(resp.results[0].unit.as_deref(), Some("kernel"));
+    // The change is stored, not only published.
+    drop((e, w));
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    assert!(
+        w.snapshot()
+            .items
+            .values()
+            .filter(|r| r.item.rel_path.starts_with("core/"))
+            .all(|r| r.unit.as_deref() == Some("kernel"))
+    );
+}
+
+/// Without query vectors (an index built with another model), a search falls back to lexical
+/// results even though the default config weights them 0.
+#[test]
+fn a_model_mismatch_falls_back_to_lexical_results() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    drop((e, w));
+    let mut config = Config {
+        data_dir: Some(data.clone()),
+        ..Config::default()
+    };
+    config.rerank.enabled = false;
+    let other = HashEmbedder {
+        dim: 64,
+        id: "test/other".into(),
+        delay_ms: 0,
+    };
+    let e = Engine::with_embedder(config, Arc::new(other)).unwrap();
+    let resp = search(&e, &root, "retry_with_backoff");
+    assert!(
+        resp.notes
+            .iter()
+            .any(|n| n.contains("lexical results only"))
+    );
+    assert_eq!(resp.results[0].name, "retry_with_backoff");
+}
+
+/// `cache_max_gb` bounds the embedding cache after indexing.
+#[test]
+fn indexing_prunes_the_cache_to_its_budget() {
+    let root = fixture();
+    let data = tempdir();
+    let mut config = Config {
+        data_dir: Some(data.clone()),
+        cache_max_gb: 0.0,
+        ..Config::default()
+    };
+    config.rerank.enabled = false;
+    let e = Engine::with_embedder(config, Arc::new(hash_embedder())).unwrap();
+    let w = e.register(&root).unwrap();
+    let r = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert!(r.chunks_embedded > 0);
+    assert_eq!(e.cache.stats().unwrap(), (0, 0));
+    assert!(!search(&e, &root, "retry_with_backoff").results.is_empty());
+}
+
+/// A lowered budget applies on the first pass, though nothing is embedded.
+#[test]
+fn a_lowered_cache_budget_applies_without_new_embeddings() {
+    let root = fixture();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert!(e.cache.stats().unwrap().0 > 0);
+    drop((e, w));
+    let mut config = Config {
+        data_dir: Some(data.clone()),
+        cache_max_gb: 0.0,
+        ..Config::default()
+    };
+    config.rerank.enabled = false;
+    let e = Engine::with_embedder(config, Arc::new(hash_embedder())).unwrap();
+    let w = e.register(&root).unwrap();
+    let r = e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert_eq!(r.chunks_embedded, 0);
+    assert_eq!(e.cache.stats().unwrap(), (0, 0));
+}
+
+/// A registry that cannot be read is reported, never overwritten.
+#[test]
+fn an_unreadable_registry_is_not_overwritten() {
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let registry = data.join("registry.json");
+    fs::write(&registry, "{ not json").unwrap();
+    let err = e.register(&fixture()).err().unwrap();
+    assert!(
+        format!("{err:#}").contains("not a valid registry"),
+        "{err:#}"
+    );
+    assert_eq!(fs::read_to_string(&registry).unwrap(), "{ not json");
+}

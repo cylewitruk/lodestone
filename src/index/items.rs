@@ -108,6 +108,17 @@ impl ItemStore {
 
     /// Deletes every item of `paths` and inserts `rows`, atomically.
     pub fn replace_files(&mut self, paths: &[String], rows: &[ItemRow]) -> anyhow::Result<()> {
+        self.replace_files_with(paths, rows, || Ok(()))
+    }
+
+    /// [`Self::replace_files`], committing only if `before_commit` (another store's matching
+    /// write) succeeds.
+    pub fn replace_files_with(
+        &mut self,
+        paths: &[String],
+        rows: &[ItemRow],
+        before_commit: impl FnOnce() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         let tx = self.conn.transaction()?;
         {
             let mut del = tx.prepare_cached("DELETE FROM items WHERE rel_path = ?1")?;
@@ -138,6 +149,41 @@ impl ItemStore {
                     i.name_line,
                     i.name_column
                 ])?;
+            }
+        }
+        before_commit()?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The paths that have items: every one, or those among `among`.
+    pub fn stored_paths(&self, among: Option<&[String]>) -> anyhow::Result<Vec<String>> {
+        let Some(among) = among else {
+            let mut stmt = self.conn.prepare("SELECT DISTINCT rel_path FROM items")?;
+            let paths = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<Result<Vec<String>, _>>()?;
+            return Ok(paths);
+        };
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT 1 FROM items WHERE rel_path = ?1 LIMIT 1")?;
+        let mut out = Vec::new();
+        for p in among {
+            if stmt.exists([p])? {
+                out.push(p.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    /// Sets the unit of each `(id, unit)`, atomically.
+    pub fn set_units(&mut self, units: &[(u64, Option<String>)]) -> anyhow::Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached("UPDATE items SET unit = ?2 WHERE id = ?1")?;
+            for (id, unit) in units {
+                stmt.execute(params![*id as i64, unit])?;
             }
         }
         tx.commit()?;

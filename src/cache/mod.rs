@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 pub type CacheKey = [u8; 32];
 
@@ -78,13 +78,14 @@ impl EmbeddingCache {
         Ok(out)
     }
 
+    /// Stores `entries`, replacing any already stored under their keys.
     pub fn put_many(&self, model_id: &str, entries: &[(CacheKey, &[f32])]) -> anyhow::Result<()> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare_cached(
-                "INSERT OR IGNORE INTO embeddings (key, model_id, dim, vector, created) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT OR REPLACE INTO embeddings (key, model_id, dim, vector, created) VALUES (?1, ?2, ?3, ?4, ?5)",
             )?;
             for (key, v) in entries {
                 stmt.execute(params![&key[..], model_id, v.len() as i64, encode(v), now])?;
@@ -103,29 +104,42 @@ impl EmbeddingCache {
         )?)
     }
 
-    /// Deletes oldest entries until vector data fits in `max_bytes`. Returns rows deleted.
+    /// Deletes oldest entries until vector data fits in `max_bytes`. The total is taken and the
+    /// entries deleted under one write lock, so concurrent prunes (other worktrees, other
+    /// processes) never delete on the strength of a total another has already reduced. Returns
+    /// rows deleted.
     pub fn prune(&self, max_bytes: u64) -> anyhow::Result<u64> {
-        let (_, bytes) = self.stats()?;
-        if bytes <= max_bytes {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let bytes: i64 = tx.query_row(
+            "SELECT COALESCE(SUM(LENGTH(vector)), 0) FROM embeddings",
+            [],
+            |r| r.get(0),
+        )?;
+        let excess = (bytes as u64).saturating_sub(max_bytes);
+        if excess == 0 {
             return Ok(0);
         }
-        let conn = self.conn();
-        let mut excess = (bytes - max_bytes) as i64;
-        let mut deleted = 0u64;
-        let mut stmt =
-            conn.prepare("SELECT key, LENGTH(vector) FROM embeddings ORDER BY created ASC")?;
-        let rows: Vec<(Vec<u8>, i64)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<_, _>>()?;
-        for (key, len) in rows {
-            if excess <= 0 {
-                break;
+        // Oldest first (by the `created` index), reading only as many as cover the excess.
+        let mut doomed = Vec::new();
+        {
+            let mut oldest =
+                tx.prepare("SELECT key, LENGTH(vector) FROM embeddings ORDER BY created")?;
+            let mut rows = oldest.query([])?;
+            let mut freed = 0u64;
+            while freed < excess
+                && let Some(row) = rows.next()?
+            {
+                doomed.push(row.get::<_, Vec<u8>>(0)?);
+                freed += row.get::<_, i64>(1)? as u64;
             }
-            conn.execute("DELETE FROM embeddings WHERE key = ?1", [&key])?;
-            excess -= len;
-            deleted += 1;
+            let mut delete = tx.prepare("DELETE FROM embeddings WHERE key = ?1")?;
+            for key in &doomed {
+                delete.execute([key])?;
+            }
         }
-        Ok(deleted)
+        tx.commit()?;
+        Ok(doomed.len() as u64)
     }
 }
 
@@ -171,5 +185,29 @@ mod tests {
         assert_eq!(cache.stats().unwrap(), (2, 16));
         assert_eq!(cache.prune(8).unwrap(), 1);
         assert_eq!(cache.stats().unwrap().0, 1);
+        assert_eq!(cache.prune(8).unwrap(), 0);
+        assert_eq!(cache.prune(0).unwrap(), 1);
+        assert_eq!(cache.stats().unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn concurrent_prunes_stop_at_the_budget() {
+        let path = crate::testutil::tempdir().join("cache.sqlite");
+        let keys: Vec<CacheKey> = (0..100).map(|i| cache_key("m", &i.to_string())).collect();
+        let entries: Vec<(CacheKey, &[f32])> = keys.iter().map(|k| (*k, &[1.0, 2.0][..])).collect();
+        EmbeddingCache::open(&path)
+            .unwrap()
+            .put_many("m", &entries)
+            .unwrap();
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                let path = &path;
+                s.spawn(move || EmbeddingCache::open(path).unwrap().prune(400).unwrap());
+            }
+        });
+        assert_eq!(
+            EmbeddingCache::open(&path).unwrap().stats().unwrap(),
+            (50, 400)
+        );
     }
 }

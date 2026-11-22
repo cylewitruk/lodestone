@@ -16,8 +16,8 @@ a second.
   Ruby, PHP, Lua, Elixir, Swift, Clarity and Markdown. Add more without code.
 - **Runs locally:** embeddings are computed on your machine (Metal GPU on macOS), so your code
   stays there.
-- **Always fresh:** a background daemon re-indexes on file changes, for every repository and
-  worktree.
+- **Stays fresh:** the daemon re-indexes on file changes in the worktrees agent sessions work in
+  (every registered one with `lode serve`), and catches up when a session starts.
 - **Cheap worktrees:** a shared embedding cache means a new worktree re-embeds only what changed.
 - **Agent-ready:** one command sets up Claude Code and Codex: MCP tools, a skill and reminders.
 
@@ -50,13 +50,15 @@ starts the new daemon.
 ## Quick start
 
 ```bash
-lode register ~/src/my-repo        # index a repository
+cd ~/src/my-repo
+lode register                      # register this repository; indexing starts in the background
 lode install                       # set up Claude Code and/or Codex
-lode search "retry an HTTP call with exponential backoff"
+lode status                        # indexing progress; results are complete once it is done
+lode search "retry an HTTP call with exponential backoff"   # searches the repository you are in
 ```
 
 There is nothing to keep running: the daemon starts when needed and exits when idle. The model
-(about 300 MB) downloads on first use. Every command is listed in [docs/daemon.md](docs/daemon.md#cli);
+(about 300 MB) downloads on first use, so the first index takes longer. Every command is listed in [docs/daemon.md](docs/daemon.md#cli);
 `lode <command> --help` has the details.
 
 ## Writing queries
