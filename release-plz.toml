@@ -21,12 +21,30 @@ User-facing changes per release. Measurements and design decisions are in
 
 ## [Unreleased]
 """
-# Commits are `area: summary`, not Conventional Commits: everything lands under "Changed"
-# unless it uses a conventional prefix. Edit the entry in the release PR.
+# PR titles (the squash-merge commit) are Conventional Commits: `type(area): summary`.
+# The "<!-- N -->" prefix orders the sections; the body template strips it from the heading.
 commit_parsers = [
   { message = "^Merge ", skip = true },
-  { message = "^feat", group = "Added" },
-  { message = "^fix", group = "Fixed" },
-  { message = "^(docs|chore|ci|test|style)(\\(.*\\))?:", skip = true },
-  { message = ".*", group = "Changed" },
+  { message = "^[a-z]+(\\(.*\\))?!:", group = "<!-- 0 -->💥 Breaking" },
+  { footer = "^BREAKING[ -]CHANGE", group = "<!-- 0 -->💥 Breaking" },
+  { message = "^feat", group = "<!-- 1 -->✨ Added" },
+  { message = "^fix", group = "<!-- 2 -->🐛 Fixed" },
+  { message = "^perf", group = "<!-- 3 -->⚡ Performance" },
+  { message = "^(docs|chore|ci|test|style|build|refactor)(\\(.*\\))?:", skip = true },
+  { message = ".*", group = "<!-- 4 -->♻️ Changed" },
 ]
+# release-plz's default body, minus the inline breaking marker (breaking changes have their own
+# section) and with the ordering comment stripped from group headings.
+body = """
+## [{{ version }}]{%- if release_link -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+
+{% for commit in commits %}
+{%- if commit.scope -%}
+- *({{commit.scope}})* {{ commit.message }}{%- if commit.links %} ({% for link in commit.links %}[{{link.text}}]({{link.href}}) {% endfor -%}){% endif %}
+{% else -%}
+- {{ commit.message }}
+{% endif -%}
+{% endfor -%}
+{% endfor %}"""
