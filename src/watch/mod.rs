@@ -5,7 +5,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
@@ -34,6 +34,15 @@ struct Handle {
     tx: mpsc::UnboundedSender<Change>,
     /// The fallback rescan timer, when the watcher failed.
     poll: Option<tokio::task::JoinHandle<()>>,
+    /// The index this handle's worker writes.
+    index: Arc<WorktreeIndex>,
+}
+
+impl Handle {
+    /// Whether the index is still in use, not retired (see [`WorktreeIndex::retire`]).
+    fn live(&self) -> bool {
+        !self.index.is_retired()
+    }
 }
 
 impl Drop for Handle {
@@ -47,7 +56,7 @@ impl Drop for Handle {
 
 #[derive(Default)]
 pub struct Watchers {
-    handles: Mutex<HashMap<PathBuf, Handle>>,
+    handles: Arc<Mutex<HashMap<PathBuf, Handle>>>,
     /// Indexing passes running now, including those of worktrees no longer watched.
     busy: Arc<AtomicUsize>,
 }
@@ -207,10 +216,11 @@ impl Watchers {
         }
     }
 
-    /// Starts watching `w` (idempotent) and its indexing task.
+    /// Starts watching `w` (idempotent) and its indexing task, replacing the watch of a retired
+    /// index of the same root.
     pub fn watch(&self, engine: &Arc<Engine>, w: Arc<WorktreeIndex>) {
         let mut handles = self.handles.lock().unwrap_or_else(|e| e.into_inner());
-        if handles.contains_key(&w.root) {
+        if handles.get(&w.root).is_some_and(Handle::live) {
             return;
         }
         let (tx, rx) = mpsc::unbounded_channel::<Change>();
@@ -296,15 +306,38 @@ impl Watchers {
                 None
             }
         };
-        tokio::spawn(worker(engine.clone(), w.clone(), rx, self.busy.clone()));
+        tokio::spawn(worker(
+            engine.clone(),
+            w.clone(),
+            rx,
+            self.busy.clone(),
+            Arc::downgrade(&self.handles),
+        ));
         handles.insert(
             w.root.clone(),
             Handle {
                 _debouncer: debouncer,
                 tx,
                 poll,
+                index: w.clone(),
             },
         );
+    }
+
+    /// Stops watching the indexes retired since they were watched, and returns their roots; a
+    /// watch started since for a new index of the same root is kept.
+    pub fn unwatch_retired(&self) -> Vec<PathBuf> {
+        let mut dropped = Vec::new();
+        self.handles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|root, h| {
+                h.live() || {
+                    dropped.push(root.clone());
+                    false
+                }
+            });
+        dropped
     }
 
     /// Stops watching `root`. Its worker finishes any queued pass, then exits.
@@ -323,7 +356,8 @@ impl Watchers {
         self.handles
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .contains_key(root)
+            .get(root)
+            .is_some_and(Handle::live)
     }
 
     /// Whether an indexing pass is running.
@@ -423,6 +457,7 @@ async fn worker(
     w: Arc<WorktreeIndex>,
     mut rx: mpsc::UnboundedReceiver<Change>,
     busy: Arc<AtomicUsize>,
+    handles: Weak<Mutex<HashMap<PathBuf, Handle>>>,
 ) {
     // (rescan, paths) a failed pass left.
     let mut left: Option<(bool, BTreeSet<String>)> = None;
@@ -477,6 +512,22 @@ async fn worker(
                 tracing::warn!("{}: indexing failed: {e:#}", w.root.display());
                 left = Some((rescan, paths));
             }
+        }
+        if w.is_retired() {
+            // Unregistered, here or by another process: stops watching it, unless a new index of
+            // the same worktree is watched already.
+            let Some(handles) = handles.upgrade() else {
+                break;
+            };
+            let mut handles = handles.lock().unwrap_or_else(|e| e.into_inner());
+            if handles
+                .get(&w.root)
+                .is_some_and(|h| Arc::ptr_eq(&h.index, &w))
+            {
+                handles.remove(&w.root);
+                Watchers::set_state(&engine, &w.root, "not watched (unregistered)".into());
+            }
+            break;
         }
         if rx.is_empty() {
             w.set_pending(

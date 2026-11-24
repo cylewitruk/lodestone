@@ -26,7 +26,7 @@ use mcp::LodestoneMcp;
 use sessions::Leases;
 use types::{
     DEFAULT_TOP_K, ErrorBody, IndexRequest, IndexResponse, NOT_LOCAL, RegisterRequest, RepoInfo,
-    SearchRequest, SessionRequest, SessionResponse, ToolRequest,
+    SearchRequest, SessionRequest, SessionResponse, ToolRequest, UnregisterRequest,
 };
 
 /// How long a request that names a repository keeps it watched by an on-demand daemon (at most
@@ -60,6 +60,27 @@ impl AppState {
             self.watchers
                 .spawn_index(&self.engine, w, IndexOptions::default());
         }
+    }
+
+    /// Runs `remove`, which may retire indexes, off the async runtime. Then stops the watches of
+    /// retired indexes and watches again the worktrees watched before that are still registered
+    /// (whose removal failed and was undone), also when their worker already stopped.
+    async fn removing<T: Send + 'static>(
+        &self,
+        remove: impl FnOnce(&Engine) -> anyhow::Result<T> + Send + 'static,
+    ) -> ApiResult<T> {
+        let watched = self.watchers.watched();
+        let engine = self.engine.clone();
+        let removed = blocking(move || remove(&engine)).await;
+        self.watchers.unwatch_retired();
+        for root in watched {
+            if !self.watchers.is_watched(&root)
+                && let Ok(w) = self.engine.open_canonical(&root)
+            {
+                self.activate(w);
+            }
+        }
+        removed
     }
 
     /// Keeps a worktree a request names watched for a while (on-demand daemons only).
@@ -213,6 +234,16 @@ async fn register(
     }))
 }
 
+async fn unregister(
+    State(s): State<AppState>,
+    Json(req): Json<UnregisterRequest>,
+) -> ApiResult<Json<RepoInfo>> {
+    let info = s
+        .removing(move |e| e.unregister(req.repo.as_deref(), req.cwd.as_deref().map(Path::new)))
+        .await?;
+    Ok(Json(info))
+}
+
 async fn index(
     State(s): State<AppState>,
     Json(req): Json<IndexRequest>,
@@ -362,6 +393,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/status", get(status))
         .route("/v1/status/all", get(status_all))
         .route("/v1/register", post(register))
+        .route("/v1/unregister", post(unregister))
         .route("/v1/index", post(index))
         .route("/v1/repos", get(repos))
         .route("/v1/sessions", post(session_renew))
@@ -409,13 +441,13 @@ pub async fn serve(config: Config, on_demand: bool) -> anyhow::Result<()> {
         stop_requested: Arc::new(tokio::sync::Notify::new()),
     };
     let stop_requested = state.stop_requested.clone();
-    tidy_worktrees(&state);
+    tidy_worktrees(&state).await;
     tokio::spawn({
         let state = state.clone();
         async move {
             loop {
                 tokio::time::sleep(PRUNE).await;
-                tidy_worktrees(&state);
+                tidy_worktrees(&state).await;
             }
         }
     });
@@ -476,18 +508,17 @@ pub async fn serve(config: Config, on_demand: bool) -> anyhow::Result<()> {
 
 /// Drops automatically registered worktrees whose directory is gone (see
 /// [`Engine::tidy_worktrees`]).
-fn tidy_worktrees(s: &AppState) {
-    match s.engine.tidy_worktrees() {
+async fn tidy_worktrees(s: &AppState) {
+    match s.removing(Engine::tidy_worktrees).await {
         Ok(gone) => {
             for root in gone {
-                s.watchers.unwatch(&s.engine, &root);
                 eprintln!(
                     "lodestone: {} was removed; dropped its index",
                     root.display()
                 );
             }
         }
-        Err(e) => tracing::warn!("pruning removed worktrees: {e:#}"),
+        Err(ApiError(_, e)) => tracing::warn!("pruning removed worktrees: {e}"),
     }
 }
 
@@ -527,5 +558,76 @@ async fn sweep(s: AppState, idle_timeout: Duration, idle: Arc<tokio::sync::Notif
             idle.notify_one();
             return;
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    use super::*;
+    use crate::config::Config;
+    use crate::embed::HashEmbedder;
+    use crate::testutil::tempdir;
+    use crate::watch::Watchers;
+
+    fn wait(what: &str, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// A removal undone after the retired index's worker stopped its watch watches it again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_removal_rewatches_a_worktree_whose_worker_stopped() {
+        let data = tempdir();
+        let root = tempdir().canonicalize().unwrap();
+        fs::write(root.join("lib.rs"), "pub fn f() {}\n").unwrap();
+        let config = Config {
+            data_dir: Some(data),
+            ..Config::default()
+        };
+        let embedder = Arc::new(HashEmbedder {
+            dim: 64,
+            id: "test/hash".into(),
+            delay_ms: 0,
+        });
+        let s = AppState {
+            engine: Arc::new(Engine::with_embedder(config, embedder).unwrap()),
+            watchers: Arc::new(Watchers::default()),
+            leases: Arc::new(Mutex::new(Leases::new(Instant::now()))),
+            on_demand: false,
+            request_lease: Duration::ZERO,
+            stop_requested: Arc::new(tokio::sync::Notify::new()),
+        };
+        let w = s.engine.register(&root).unwrap();
+        s.activate(w.clone());
+        wait("the first index", || {
+            w.manifest().is_some() && !w.is_writing()
+        });
+
+        // Moved aside, but not deleted.
+        let chmod = |p: &Path, m| fs::set_permissions(p, fs::Permissions::from_mode(m)).unwrap();
+        chmod(&w.dir, 0o555);
+        let (watchers, repo) = (s.watchers.clone(), root.to_string_lossy().into_owned());
+        let removed = s
+            .removing(move |e| {
+                let removed = e.unregister(Some(&repo), None);
+                // A change: the retired index's worker runs a pass, then stops its watch.
+                fs::write(Path::new(&repo).join("new.rs"), "pub fn g() {}\n").unwrap();
+                wait("the watch to end", || {
+                    !watchers.watched().contains(&PathBuf::from(&repo))
+                });
+                removed
+            })
+            .await;
+        chmod(&w.dir.with_extension("deleting"), 0o755);
+        assert!(removed.is_err());
+        assert!(s.watchers.is_watched(&root));
     }
 }

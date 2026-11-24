@@ -14,6 +14,7 @@ use serde::de::DeserializeOwned;
 use crate::api::types::{
     ErrorBody, IndexRequest, IndexResponse, NOT_LOCAL, RegisterRequest, RepoInfo, SearchRequest,
     SearchResponse, SessionRequest, SessionResponse, StatusOverview, StatusReport, ToolRequest,
+    UnregisterRequest,
 };
 use crate::config::{Config, Endpoint};
 
@@ -233,6 +234,14 @@ impl Client {
         Self::decode(
             self.agent
                 .post(format!("{}/v1/register", self.base))
+                .send_json(req)?,
+        )
+    }
+
+    pub fn unregister(&self, req: &UnregisterRequest) -> anyhow::Result<RepoInfo> {
+        Self::decode(
+            self.agent
+                .post(format!("{}/v1/unregister", self.base))
                 .send_json(req)?,
         )
     }

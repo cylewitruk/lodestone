@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use lodestone::agents::{self, Harness, HookEvent, Scope, Target};
 use lodestone::api::types::{
     DEFAULT_TOP_K, IndexRequest, RegisterRequest, SearchRequest, StatusOverview, StatusReport,
+    UnregisterRequest,
 };
 use lodestone::bench::{self, BenchOptions};
 use lodestone::client::{self, Client};
@@ -51,6 +52,10 @@ enum Cmd {
     /// Register a worktree: canonicalize, add to the registry, watch, index if needed. Without a
     /// path, the git checkout of the current directory.
     Register { path: Option<PathBuf> },
+    /// Unregister a worktree and delete its index: a registered name or a path in the worktree
+    /// (which need not exist any more), by default the current directory.
+    #[command(visible_alias = "rm")]
+    Unregister { repo: Option<String> },
     /// Index a worktree (incremental unless --force): the registered worktree containing `path`,
     /// by default the current directory.
     Index {
@@ -206,7 +211,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let mut config = Config::load(cli.config.as_deref())?;
     // `search`, `register` and `index` start an on-demand daemon when none runs, like `lode mcp`;
-    // `status` only uses one that is already running.
+    // `status` and `unregister` only use one that is already running.
     let daemon = |start: bool| -> anyhow::Result<Option<Client>> {
         Ok(match (cli.local, start) {
             (true, _) => None,
@@ -266,6 +271,23 @@ fn main() -> anyhow::Result<()> {
             let w = engine.register(&path)?;
             let report = engine.index_blocking(&w, IndexOptions::default())?;
             println!("registered {}; {}", w.root.display(), describe(&report));
+            Ok(())
+        }
+        Cmd::Unregister { repo } => {
+            // Resolved by the engine, under the registry lock: a name may be one being removed.
+            // Gone when it was in a deleted checkout.
+            let cwd = std::env::current_dir().ok();
+            let info = match daemon(false)? {
+                Some(c) => c.unregister(&UnregisterRequest {
+                    repo,
+                    cwd: cwd.as_ref().map(|d| d.to_string_lossy().into_owned()),
+                })?,
+                None => Engine::from_env(config)?.unregister(repo.as_deref(), cwd.as_deref())?,
+            };
+            println!(
+                "unregistered {} ({}); deleted its index",
+                info.root, info.name
+            );
             Ok(())
         }
         Cmd::Index { path, force } => {

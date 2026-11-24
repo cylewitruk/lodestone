@@ -467,6 +467,17 @@ pub struct RegisterRequest {
     pub path: String,
 }
 
+/// See [`crate::registry::Engine::unregister`].
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct UnregisterRequest {
+    /// A registered name, or a path relative to `cwd`; by default `cwd`.
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// The caller's directory, if it still exists.
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct IndexRequest {
     #[serde(default)]
@@ -550,6 +561,10 @@ mod tests {
         roundtrip(st);
         roundtrip(ExtensionCount::default());
         roundtrip(RegisterRequest { path: "/x".into() });
+        roundtrip(UnregisterRequest {
+            repo: Some("x".into()),
+            cwd: Some("/x".into()),
+        });
         roundtrip(IndexRequest {
             repo: Some("r".into()),
             force: true,

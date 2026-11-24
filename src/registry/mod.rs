@@ -3,8 +3,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context, bail};
@@ -36,6 +36,27 @@ struct RepoEntry {
     /// index and all, once its directory is gone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     auto: bool,
+    /// Being unregistered: no longer served, kept until its index is deleted, so that a removal
+    /// interrupted part-way is finished by the next (see [`Engine::tidy_worktrees`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    removing: bool,
+}
+
+impl RegistryFile {
+    /// The entries registered, without those being removed.
+    fn live(&self) -> impl Iterator<Item = &RepoEntry> {
+        self.repos.iter().filter(|r| !r.removing)
+    }
+}
+
+impl RepoEntry {
+    fn info(self) -> RepoInfo {
+        RepoInfo {
+            worktree_id: crate::index::worktree_id(&self.root),
+            root: self.root.to_string_lossy().to_string(),
+            name: self.name,
+        }
+    }
 }
 
 /// The registry at `path`; empty when the file does not exist yet. Any other failure is an
@@ -53,12 +74,15 @@ fn read_registry(path: &Path) -> anyhow::Result<RegistryFile> {
     })
 }
 
-/// [`read_registry`] for listing: an unreadable registry lists nothing, and is logged.
+/// [`read_registry`] for listing: only the worktrees registered (see [`RegistryFile::live`]); an
+/// unreadable registry lists nothing, and is logged.
 fn list_registry(path: &Path) -> RegistryFile {
-    read_registry(path).unwrap_or_else(|e| {
+    let mut reg = read_registry(path).unwrap_or_else(|e| {
         tracing::warn!("{e:#}");
         RegistryFile::default()
-    })
+    });
+    reg.repos.retain(|r| !r.removing);
+    reg
 }
 
 /// Registered worktree roots, read without starting an engine.
@@ -187,6 +211,59 @@ fn unique_name(reg: &RegistryFile, base: &str, root: &Path) -> String {
     name
 }
 
+/// The entry `repo` names in `reg`, including one being removed: a registered name; else the
+/// path `repo` (relative to `cwd`; by default `cwd` itself), when it exists, of the registered
+/// worktree it is the root of or is in (see [`place`]); else the registered root it names once
+/// resolved (see [`resolve_missing`]). `cwd` is needed only for a relative path or the default.
+fn find(
+    reg: &RegistryFile,
+    repo: Option<&str>,
+    cwd: Option<&Path>,
+) -> anyhow::Result<Option<usize>> {
+    if let Some(i) = reg.repos.iter().position(|r| Some(r.name.as_str()) == repo) {
+        return Ok(Some(i));
+    }
+    let path = match (repo, cwd) {
+        (Some(r), _) if Path::new(r).is_absolute() => PathBuf::from(r),
+        (Some(r), Some(cwd)) => cwd.join(r),
+        (None, Some(cwd)) => cwd.to_path_buf(),
+        (_, None) => {
+            bail!("the current directory is gone: name the worktree, or give its absolute path")
+        }
+    };
+    let path = std::path::absolute(path)?;
+    let at = |root: &Path| reg.repos.iter().position(|r| r.root == root);
+    if !path.exists() {
+        return Ok(resolve_missing(&path).and_then(|p| at(&p)));
+    }
+    let path = canonicalize(&path)?;
+    if let Some(i) = at(&path) {
+        return Ok(Some(i));
+    }
+    let roots: Vec<PathBuf> = reg.repos.iter().map(|r| r.root.clone()).collect();
+    Ok(match place(&roots, &path) {
+        Placement::Registered(root) => at(&root),
+        _ => None,
+    })
+}
+
+/// An absolute path that does not exist, canonical up to its nearest existing ancestor and
+/// resolved lexically below it (where there are no symlinks to follow).
+fn resolve_missing(path: &Path) -> Option<PathBuf> {
+    let base = path.ancestors().find(|a| a.exists())?;
+    let mut out = base.canonicalize().ok()?;
+    for c in path.strip_prefix(base).ok()?.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(n) => out.push(n),
+            _ => {}
+        }
+    }
+    Some(out)
+}
+
 /// The registered worktree containing `dir` (the innermost, for nested worktrees).
 pub fn root_of(roots: &[PathBuf], dir: &Path) -> Option<PathBuf> {
     // A directory that no longer exists (e.g. a removed worktree) is matched as given.
@@ -196,6 +273,17 @@ pub fn root_of(roots: &[PathBuf], dir: &Path) -> Option<PathBuf> {
         .filter(|r| dir.starts_with(r))
         .max_by_key(|r| r.as_os_str().len())
         .cloned()
+}
+
+/// Held while `registry.json` is read, updated and written (see [`Engine::lock_registry`]).
+struct RegistryLock<'a> {
+    _thread: MutexGuard<'a, ()>,
+    _process: fs::File,
+}
+
+/// The registry lock held shared (see [`Engine::share_registry`]).
+struct RegistryShare {
+    _file: fs::File,
 }
 
 /// A loaded reranker and its model, or why it failed to load.
@@ -216,7 +304,8 @@ pub struct Engine {
     worktrees: RwLock<BTreeMap<PathBuf, Arc<WorktreeIndex>>>,
     /// Watcher state per worktree, reported by `status` (set by the daemon).
     pub watcher_state: RwLock<BTreeMap<PathBuf, String>>,
-    /// Serializes read-modify-write updates of `registry.json`.
+    /// Serializes this process's read-modify-write updates of `registry.json` (see
+    /// [`Engine::lock_registry`]).
     registry_writes: Mutex<()>,
 }
 
@@ -380,11 +469,7 @@ impl Engine {
         list_registry(&self.registry_path())
             .repos
             .into_iter()
-            .map(|r| RepoInfo {
-                worktree_id: crate::index::worktree_id(&r.root),
-                root: r.root.to_string_lossy().to_string(),
-                name: r.name,
-            })
+            .map(RepoEntry::info)
             .collect()
     }
 
@@ -398,9 +483,8 @@ impl Engine {
     pub fn worktree_for(&self, dir: &Path) -> anyhow::Result<Arc<WorktreeIndex>> {
         let roots: Vec<PathBuf> = self
             .registry_file()?
-            .repos
-            .into_iter()
-            .map(|r| r.root)
+            .live()
+            .map(|r| r.root.clone())
             .collect();
         match place(&roots, dir) {
             Placement::Registered(root) => self.open_canonical(&root),
@@ -425,22 +509,23 @@ impl Engine {
     }
 
     /// Unregisters automatically registered worktrees whose directory is gone and deletes their
-    /// indexes, and names the others after their repository (`<repository>:<worktree>`). Returns
-    /// the roots unregistered.
+    /// indexes, finishes removals interrupted part-way, and names the others after their
+    /// repository (`<repository>:<worktree>`). Returns the roots unregistered. Must not be called
+    /// from async context.
     pub fn tidy_worktrees(&self) -> anyhow::Result<Vec<PathBuf>> {
-        let _write = self
-            .registry_writes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _write = self.lock_registry()?;
         let mut reg = self.registry_file()?;
-        let (gone, kept): (Vec<RepoEntry>, Vec<RepoEntry>) = reg
-            .repos
-            .into_iter()
-            .partition(|r| r.auto && !r.root.exists());
-        reg.repos = kept;
+        // An entry already marked was left by a removal that stopped: none is under way while
+        // this holds the registry lock.
+        for r in &mut reg.repos {
+            r.removing |= r.auto && !r.root.exists();
+        }
         let mut renamed = false;
         for i in 0..reg.repos.len() {
             let r = &reg.repos[i];
+            if r.removing {
+                continue;
+            }
             let base = base_name(&reg, &r.root);
             let suffixed = r
                 .name
@@ -451,24 +536,139 @@ impl Engine {
                 renamed = true;
             }
         }
-        if gone.is_empty() && !renamed {
+        if !renamed && !reg.repos.iter().any(|r| r.removing) {
             return Ok(Vec::new());
         }
-        self.write_registry(&reg)?;
-        let mut open = self
-            .worktrees
-            .write()
-            .map_err(|_| anyhow::anyhow!("poisoned"))?;
-        for r in &gone {
-            open.remove(&r.root);
-            let dir = crate::index::index_dir(&self.config, &r.root);
-            if let Err(e) = fs::remove_dir_all(&dir)
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                tracing::warn!("removing {}: {e}", dir.display());
+        let mut removed = Vec::new();
+        for (root, deleted) in self.unregister_marked(reg)? {
+            match deleted {
+                Ok(()) => removed.push(root),
+                Err(e) => tracing::warn!("{e:#}"),
             }
         }
-        Ok(gone.into_iter().map(|r| r.root).collect())
+        Ok(removed)
+    }
+
+    /// Unregisters `repo` (a registered name, or a path relative to `cwd` in a registered
+    /// worktree or naming the root of one since deleted; by default `cwd`) and deletes its index.
+    /// `cwd` is needed only for a relative path or the default. A failure to delete it leaves it
+    /// registered; one that stops part-way is finished by the next attempt. Must not be called
+    /// from async context.
+    pub fn unregister(&self, repo: Option<&str>, cwd: Option<&Path>) -> anyhow::Result<RepoInfo> {
+        let _write = self.lock_registry()?;
+        let mut reg = self.registry_file()?;
+        let Some(i) = find(&reg, repo, cwd)? else {
+            bail!(
+                "{} is not a registered worktree",
+                repo.map_or_else(
+                    || cwd.unwrap_or(Path::new(".")).display().to_string(),
+                    str::to_string
+                )
+            );
+        };
+        reg.repos[i].removing = true;
+        let entry = reg.repos[i].clone();
+        for (root, deleted) in self.unregister_marked(reg)? {
+            if root == entry.root {
+                deleted?;
+            }
+        }
+        Ok(entry.info())
+    }
+
+    /// Writes `reg`, then deletes the indexes of its entries marked `removing` and drops them. An
+    /// entry whose index could not be deleted is registered again, so that removing it can be
+    /// retried. Returns each marked root with its outcome. The caller holds
+    /// [`Self::lock_registry`], so nothing loads their indexes meanwhile (see [`Self::load`]).
+    /// Must not be called from async context.
+    fn unregister_marked(
+        &self,
+        mut reg: RegistryFile,
+    ) -> anyhow::Result<Vec<(PathBuf, anyhow::Result<()>)>> {
+        self.write_registry(&reg)?;
+        let roots: Vec<PathBuf> = reg
+            .repos
+            .iter()
+            .filter(|r| r.removing)
+            .map(|r| r.root.clone())
+            .collect();
+        let closed: Vec<Arc<WorktreeIndex>> = {
+            let mut open = self
+                .worktrees
+                .write()
+                .map_err(|_| anyhow::anyhow!("poisoned"))?;
+            roots.iter().filter_map(|r| open.remove(r)).collect()
+        };
+        let outcomes: Vec<(PathBuf, anyhow::Result<()>)> = roots
+            .into_iter()
+            .map(|root| {
+                let deleted = self.delete_index(&root, &closed);
+                (root, deleted)
+            })
+            .collect();
+        let errors: Vec<String> = outcomes
+            .iter()
+            .filter_map(|(_, deleted)| Some(format!("{:#}", deleted.as_ref().err()?)))
+            .collect();
+        let context = || match errors.as_slice() {
+            [] => "finishing the removal".to_string(),
+            e => format!(
+                "registering again what could not be deleted ({})",
+                e.join("; ")
+            ),
+        };
+        reg.repos.retain_mut(|r| {
+            let failed = outcomes
+                .iter()
+                .any(|(root, deleted)| *root == r.root && deleted.is_err());
+            let keep = !r.removing || failed;
+            r.removing = false;
+            keep
+        });
+        self.write_registry(&reg).with_context(context)?;
+        Ok(outcomes)
+    }
+
+    /// The registry lock file, shared by every process using this data directory.
+    fn registry_lock_file(&self) -> anyhow::Result<fs::File> {
+        let path = self.config.data_dir().join("registry.lock");
+        fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))
+    }
+
+    /// Takes the registry lock, across this process's threads and other processes, for a
+    /// read-modify-write update of `registry.json`.
+    fn lock_registry(&self) -> anyhow::Result<RegistryLock<'_>> {
+        let thread = self
+            .registry_writes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let process = self.registry_lock_file()?;
+        process.lock().context("locking the registry")?;
+        Ok(RegistryLock {
+            _thread: thread,
+            _process: process,
+        })
+    }
+
+    /// Takes the registry lock shared, as [`Self::load`] needs it.
+    fn share_registry(&self) -> anyhow::Result<RegistryShare> {
+        let file = self.registry_lock_file()?;
+        file.lock_shared().context("locking the registry")?;
+        Ok(RegistryShare { _file: file })
+    }
+
+    /// Stops indexing `root` (see [`WorktreeIndex::retire`]) and deletes its index; `closed` are
+    /// the open handles closed for it. Must not be called from async context.
+    fn delete_index(&self, root: &Path, closed: &[Arc<WorktreeIndex>]) -> anyhow::Result<()> {
+        for w in closed.iter().filter(|w| w.root == root) {
+            w.retire();
+        }
+        crate::index::delete(&crate::index::index_dir(&self.config, root), root)
     }
 
     fn write_registry(&self, reg: &RegistryFile) -> anyhow::Result<()> {
@@ -481,50 +681,77 @@ impl Engine {
     fn add(&self, path: &Path, auto: bool) -> anyhow::Result<Arc<WorktreeIndex>> {
         let root = canonicalize(path)?;
         anyhow::ensure!(root.is_dir(), "{} is not a directory", root.display());
-        let _write = self
-            .registry_writes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut reg = self.registry_file()?;
-        if !reg.repos.iter().any(|r| r.root == root) {
-            let name = unique_name(&reg, &base_name(&reg, &root), &root);
-            reg.repos.push(RepoEntry {
-                root: root.clone(),
-                name,
-                auto,
-            });
-            self.write_registry(&reg)?;
-        } else if !auto && let Some(e) = reg.repos.iter_mut().find(|r| r.root == root && r.auto) {
-            // Registered by hand after being registered automatically: keep it.
-            e.auto = false;
-            self.write_registry(&reg)?;
+        {
+            // Released before the index is opened, which takes it shared.
+            let _write = self.lock_registry()?;
+            let mut reg = self.registry_file()?;
+            match reg.repos.iter_mut().find(|r| r.root == root) {
+                None => {
+                    let name = unique_name(&reg, &base_name(&reg, &root), &root);
+                    reg.repos.push(RepoEntry {
+                        root: root.clone(),
+                        name,
+                        auto,
+                        removing: false,
+                    });
+                    self.write_registry(&reg)?;
+                }
+                Some(e) => {
+                    // Registered by hand after being registered automatically: keep it. One
+                    // whose removal stopped part-way has it finished, then is registered again.
+                    if e.removing {
+                        self.delete_index(&root, &[])?;
+                    }
+                    let changed = e.removing || (!auto && e.auto);
+                    e.removing = false;
+                    e.auto &= auto;
+                    if changed {
+                        self.write_registry(&reg)?;
+                    }
+                }
+            }
         }
         self.open_canonical(&root)
     }
 
-    /// Index handle for an already-canonical root, opened once per process.
+    /// Index handle for an already-canonical root, opened once per process. A handle whose index
+    /// another process deleted (`lode --local unregister`), and maybe created again, is replaced
+    /// and abandoned (see [`WorktreeIndex::is_current`]).
     pub fn open_canonical(&self, root: &Path) -> anyhow::Result<Arc<WorktreeIndex>> {
         if let Some(w) = self
             .worktrees
             .read()
             .map_err(|_| anyhow::anyhow!("poisoned"))?
             .get(root)
+            .filter(|w| w.is_current())
         {
             return Ok(w.clone());
         }
+        let shared = self.share_registry()?;
         let mut map = self
             .worktrees
             .write()
             .map_err(|_| anyhow::anyhow!("poisoned"))?;
         if let Some(w) = map.get(root) {
-            return Ok(w.clone());
+            if w.is_current() {
+                return Ok(w.clone());
+            }
+            w.abandon();
+            map.remove(root);
         }
-        let w = Arc::new(self.load(root)?);
+        let w = Arc::new(self.load(root, &shared)?);
         map.insert(root.to_path_buf(), w.clone());
         Ok(w)
     }
 
-    fn load(&self, root: &Path) -> anyhow::Result<WorktreeIndex> {
+    /// Opens the index of `root`, which must be registered. The registry lock is held shared, so
+    /// no process removes it meanwhile, which would have this create it again.
+    fn load(&self, root: &Path, _shared: &RegistryShare) -> anyhow::Result<WorktreeIndex> {
+        anyhow::ensure!(
+            self.registry_file()?.live().any(|r| r.root == root),
+            "{} is not a registered worktree",
+            root.display()
+        );
         WorktreeIndex::open(root, &self.config, &self.model_id, self.dim)
     }
 
@@ -535,8 +762,12 @@ impl Engine {
             .read()
             .map_err(|_| anyhow::anyhow!("poisoned"))?
             .get(root)
+            .filter(|w| w.is_current())
             .cloned();
-        open.map_or_else(|| self.load(root).map(Arc::new), Ok)
+        match open {
+            Some(w) => Ok(w),
+            None => self.load(root, &self.share_registry()?).map(Arc::new),
+        }
     }
 
     /// Closes every open index that is neither in `keep` nor in use (watched, indexing or
@@ -550,7 +781,8 @@ impl Engine {
     /// Resolves the `repo` argument: a registered name, a path (canonicalized here), or — when
     /// absent — the only registered repo.
     pub fn resolve(&self, repo: Option<&str>) -> anyhow::Result<Arc<WorktreeIndex>> {
-        let reg = self.registry_file()?;
+        let mut reg = self.registry_file()?;
+        reg.repos.retain(|r| !r.removing);
         match repo {
             None => match reg.repos.as_slice() {
                 [only] => self.open_canonical(&only.root),

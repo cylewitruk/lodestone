@@ -14,6 +14,7 @@ use lodestone::index::{IndexOptions, worktree_id};
 use lodestone::registry::Engine;
 use lodestone::search::{Filters, SearchParams};
 use lodestone::testutil::tempdir;
+use lodestone::watch::Watchers;
 
 fn write(root: &Path, rel: &str, text: &str) {
     let p = root.join(rel);
@@ -1918,4 +1919,588 @@ fn an_unreadable_registry_is_not_overwritten() {
         "{err:#}"
     );
     assert_eq!(fs::read_to_string(&registry).unwrap(), "{ not json");
+}
+
+/// A worktree is unregistered by name or by a path in it, even once deleted, and its index goes
+/// with it; other worktrees are untouched.
+#[test]
+fn unregister_drops_the_worktree_and_its_index() {
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let (a, b, c) = (fixture(), fixture(), fixture());
+    let indexed = |root: &Path| {
+        let w = e.register(root).unwrap();
+        e.index_blocking(&w, IndexOptions::default()).unwrap();
+        let dir = data.join("worktrees").join(&w.id);
+        assert!(dir.exists());
+        (e.repo_name(&w.root), w.root.clone(), dir)
+    };
+    let (a_name, a_root, a_dir) = indexed(&a);
+    let (_, b_root, b_dir) = indexed(&b);
+    let (_, c_root, c_dir) = indexed(&c);
+    let roots = || -> Vec<String> { e.repos().into_iter().map(|r| r.root).collect() };
+
+    let info = e.unregister(Some(&a_name), None).unwrap();
+    assert_eq!(
+        (info.name, Path::new(&info.root)),
+        (a_name, a_root.as_path())
+    );
+    assert!(!a_dir.exists());
+    assert!(b_dir.exists() && c_dir.exists());
+    assert_eq!(roots().len(), 2);
+
+    e.unregister(Some(&b.join("core/src").to_string_lossy()), None)
+        .unwrap();
+    assert!(!b_dir.exists());
+
+    fs::remove_dir_all(&c).unwrap();
+    e.unregister(Some(&c_root.to_string_lossy()), None).unwrap();
+    assert!(!c_dir.exists());
+    assert!(roots().is_empty());
+
+    let err = e
+        .unregister(Some(&b_root.to_string_lossy()), None)
+        .err()
+        .unwrap();
+    assert!(
+        format!("{err:#}").contains("not a registered worktree"),
+        "{err:#}"
+    );
+}
+
+/// Unregistering stops a running pass at its next batch, and no later pass writes the deleted
+/// index back.
+#[test]
+fn unregister_stops_indexing_and_leaves_no_index_behind() {
+    let root = fixture();
+    for i in 0..300 {
+        write(
+            &root,
+            &format!("core/src/gen{i}.rs"),
+            &format!("/// Generated helper {i}.\npub fn generated_{i}() {{}}\n"),
+        );
+    }
+    let data = tempdir();
+    let (e, emb) = engine(&data);
+    let e = Arc::new(e);
+    let w = e.register(&root).unwrap();
+    emb.slow.store(true, Ordering::SeqCst);
+    let pass = {
+        let (e, w) = (e.clone(), w.clone());
+        std::thread::spawn(move || e.index_blocking(&w, IndexOptions::default()))
+    };
+    while !w.is_writing() {
+        std::thread::yield_now();
+    }
+    e.unregister(Some(&root.to_string_lossy()), None).unwrap();
+    let err = pass.join().unwrap().expect_err("the pass stops");
+    assert!(format!("{err:#}").contains("unregistered"), "{err:#}");
+    assert!(!w.dir.exists());
+    assert!(e.index_blocking(&w, IndexOptions::default()).is_err());
+    assert!(!w.dir.exists());
+}
+
+/// Sibling worktrees `alpha`, `bravo` and `gone` (canonical) in one directory, each registered.
+fn siblings(e: &Engine) -> (PathBuf, PathBuf, PathBuf) {
+    let base = tempdir().canonicalize().unwrap();
+    let roots = ["alpha", "bravo", "gone"].map(|n| {
+        let root = base.join(n);
+        write(&root, "lib.rs", "pub fn f() {}\n");
+        e.register(&root).unwrap();
+        root
+    });
+    let [a, b, g] = roots;
+    (a, b, g)
+}
+
+/// A name no longer registered, or a missing path, never falls back to the worktree it would be
+/// inside; a missing path names the registered root it resolves to.
+#[test]
+fn unregister_matches_a_missing_path_only_to_the_root_it_names() {
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let (alpha, _bravo, gone) = siblings(&e);
+    let roots = || -> Vec<String> { e.repos().into_iter().map(|r| r.root).collect() };
+
+    // `lode rm bravo` run twice from `alpha`: the second names the missing `alpha/bravo`.
+    e.unregister(Some("bravo"), None).unwrap();
+    let err = e
+        .unregister(Some(&alpha.join("bravo").to_string_lossy()), None)
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("not a registered worktree"),
+        "{err:#}"
+    );
+    assert_eq!(roots().len(), 2);
+
+    // `lode rm ../gone` from `alpha`, once `gone` is deleted.
+    fs::remove_dir_all(&gone).unwrap();
+    let info = e
+        .unregister(Some(&alpha.join("../gone").to_string_lossy()), None)
+        .unwrap();
+    assert_eq!(Path::new(&info.root), gone);
+    assert_eq!(roots(), [alpha.to_string_lossy()]);
+}
+
+/// A repository's main checkout and a linked worktree of it (as `git worktree add` leaves them),
+/// canonical, each with a source file.
+fn linked_worktree() -> (PathBuf, PathBuf) {
+    let base = tempdir().canonicalize().unwrap();
+    let (main, wt) = (base.join("main"), base.join("wt"));
+    let git_dir = main.join(".git/worktrees/wt");
+    write(&git_dir, "commondir", "../..\n");
+    write(&wt, ".git", &format!("gitdir: {}\n", git_dir.display()));
+    write(&main, "main.rs", "pub fn in_main() {}\n");
+    write(&wt, "wt.rs", "pub fn in_wt() {}\n");
+    (main, wt)
+}
+
+/// A registered root inside a linked git worktree is removed itself, not the worktree around it
+/// that requests in it are routed to.
+#[test]
+fn unregister_takes_an_exact_registered_root_inside_a_linked_worktree() {
+    let (_, wt) = linked_worktree();
+    write(&wt, "package/lib.rs", "pub fn f() {}\n");
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let package = wt.join("package");
+    let (w, p) = (e.register(&wt).unwrap(), e.register(&package).unwrap());
+    let info = e
+        .unregister(Some(&package.to_string_lossy()), None)
+        .unwrap();
+    assert_eq!(Path::new(&info.root), package);
+    assert_eq!(
+        e.repos().into_iter().map(|r| r.root).collect::<Vec<_>>(),
+        [wt.to_string_lossy()]
+    );
+    assert!(w.dir.exists() && !p.dir.exists());
+}
+
+/// An index another process is writing is neither deleted nor unregistered, and that process's
+/// pass is unaffected.
+#[test]
+fn unregister_leaves_an_index_another_process_is_writing() {
+    let root = fixture();
+    for i in 0..300 {
+        write(
+            &root,
+            &format!("core/src/gen{i}.rs"),
+            &format!("/// Generated helper {i}.\npub fn generated_{i}() {{}}\n"),
+        );
+    }
+    let data = tempdir();
+    // Two engines over one data directory, as two processes.
+    let ((writer, emb), (remover, _)) = (engine(&data), engine(&data));
+    let writer = Arc::new(writer);
+    let w = writer.register(&root).unwrap();
+    emb.slow.store(true, Ordering::SeqCst);
+    let pass = {
+        let (e, w) = (writer.clone(), w.clone());
+        std::thread::spawn(move || e.index_blocking(&w, IndexOptions::default()))
+    };
+    while !w.is_writing() {
+        std::thread::yield_now();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let err = remover
+        .unregister(Some(&root.to_string_lossy()), None)
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("another lodestone process"),
+        "{err:#}"
+    );
+    assert_eq!(remover.repos().len(), 1);
+    pass.join().unwrap().unwrap();
+    assert!(w.dir.exists());
+    // Once that process is done with it (here, has dropped its writer).
+    w.release_writer();
+    remover
+        .unregister(Some(&root.to_string_lossy()), None)
+        .unwrap();
+    assert!(!w.dir.exists());
+}
+
+/// An index that cannot be deleted is reported and stays registered, so removal can be retried;
+/// it is left either intact or gone, never half-deleted.
+#[cfg(unix)]
+#[test]
+fn a_failed_deletion_keeps_the_registration() {
+    use std::os::unix::fs::PermissionsExt;
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let root = fixture();
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let chmod = |p: &Path, m| fs::set_permissions(p, fs::Permissions::from_mode(m)).unwrap();
+    let unregister = || e.unregister(Some(&root.to_string_lossy()), None);
+
+    // It cannot be moved aside: intact.
+    chmod(&data.join("worktrees"), 0o555);
+    let err = unregister().unwrap_err();
+    chmod(&data.join("worktrees"), 0o755);
+    assert!(format!("{err:#}").contains("deleting"), "{err:#}");
+    assert_eq!(e.repos().len(), 1);
+    assert!(!search(&e, &root, "retry with backoff").results.is_empty());
+
+    // Moved aside, but not deleted: gone, its leftovers removed by the retry.
+    chmod(&w.dir, 0o555);
+    let err = unregister().unwrap_err();
+    let aside = w.dir.with_extension("deleting");
+    chmod(&aside, 0o755);
+    assert!(format!("{err:#}").contains("deleting"), "{err:#}");
+    assert_eq!(e.repos().len(), 1);
+    assert!(!w.dir.exists());
+    unregister().unwrap();
+    assert!(e.repos().is_empty() && !aside.exists());
+}
+
+/// A request that looked a worktree up before it was unregistered does not reopen its index.
+#[test]
+fn an_unregistered_index_is_not_reopened() {
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let root = fs::canonicalize(fixture()).unwrap();
+    let w = e.register(&root).unwrap();
+    e.unregister(Some(&root.to_string_lossy()), None).unwrap();
+    let err = e.open_canonical(&root).err().unwrap();
+    assert!(
+        format!("{err:#}").contains("not a registered worktree"),
+        "{err:#}"
+    );
+    assert!(!w.dir.exists());
+}
+
+/// A worktree registered again right after it was unregistered keeps the watch started for it;
+/// only the retired index's watch is dropped.
+#[test]
+fn a_new_registration_keeps_its_watch_through_the_old_ones_teardown() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _rt = rt.enter();
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let e = Arc::new(e);
+    let root = fs::canonicalize(fixture()).unwrap();
+    let watchers = Watchers::default();
+    watchers.watch(&e, e.register(&root).unwrap());
+    e.unregister(Some(&root.to_string_lossy()), None).unwrap();
+    assert!(!watchers.is_watched(&root));
+    let w = e.register(&root).unwrap();
+    watchers.watch(&e, w.clone());
+    watchers.unwatch_retired();
+    assert!(watchers.is_watched(&root) && !w.is_retired());
+}
+
+/// A process that had the index open while another deleted it (`lode --local rm` beside a
+/// daemon) reopens it once registered again, instead of writing to the deleted directory.
+#[test]
+fn an_index_deleted_by_another_process_is_reopened() {
+    let data = tempdir();
+    let ((daemon, _), (local, _)) = (engine(&data), engine(&data));
+    let root = fs::canonicalize(fixture()).unwrap();
+    let old = daemon.register(&root).unwrap();
+    daemon
+        .index_blocking(&old, IndexOptions::default())
+        .unwrap();
+    old.release_writer();
+    local
+        .unregister(Some(&root.to_string_lossy()), None)
+        .unwrap();
+    let new = daemon.register(&root).unwrap();
+    assert!(!Arc::ptr_eq(&old, &new) && old.is_retired());
+    daemon
+        .index_blocking(&new, IndexOptions::default())
+        .unwrap();
+    assert!(
+        !search(&daemon, &root, "retry with backoff")
+            .results
+            .is_empty()
+    );
+}
+
+/// Registry updates from several processes at once all land.
+#[test]
+fn concurrent_processes_unregister_without_losing_updates() {
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let base = tempdir().canonicalize().unwrap();
+    let roots: Vec<PathBuf> = (0..12)
+        .map(|i| {
+            let root = base.join(format!("r{i}"));
+            write(&root, "lib.rs", "pub fn f() {}\n");
+            e.register(&root).unwrap();
+            root
+        })
+        .collect();
+    let removers: Vec<_> = roots
+        .into_iter()
+        .map(|root| {
+            let data = data.clone();
+            std::thread::spawn(move || {
+                engine(&data)
+                    .0
+                    .unregister(Some(&root.to_string_lossy()), None)
+            })
+        })
+        .collect();
+    for r in removers {
+        r.join().unwrap().unwrap();
+    }
+    assert!(e.repos().is_empty(), "{:?}", e.repos());
+}
+
+/// An index that cannot even be looked at is not taken for one already gone.
+#[cfg(unix)]
+#[test]
+fn an_inaccessible_index_is_not_taken_for_a_missing_one() {
+    use std::os::unix::fs::PermissionsExt;
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let root = fixture();
+    let w = e.register(&root).unwrap();
+    let worktrees = data.join("worktrees");
+    let mode = |m| fs::set_permissions(&worktrees, fs::Permissions::from_mode(m)).unwrap();
+    mode(0o600);
+    let err = e
+        .unregister(Some(&root.to_string_lossy()), None)
+        .unwrap_err();
+    mode(0o755);
+    assert!(format!("{err:#}").contains("deleting"), "{err:#}");
+    assert_eq!(e.repos().len(), 1);
+    assert!(w.dir.exists());
+}
+
+/// An index directory that is a symlink is removed as the link, never what it points to.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_index_is_removed_as_the_link() {
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let root = fixture();
+    let w = e.register(&root).unwrap();
+    let elsewhere = tempdir();
+    write(&elsewhere, "keep.txt", "unrelated\n");
+    fs::remove_dir_all(&w.dir).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &w.dir).unwrap();
+    e.unregister(Some(&root.to_string_lossy()), None).unwrap();
+    assert!(fs::symlink_metadata(&w.dir).is_err());
+    assert!(elsewhere.join("keep.txt").exists());
+}
+
+/// A removed linked worktree whose index cannot be deleted yet stays registered, and is pruned
+/// once it can be.
+#[test]
+fn a_failed_prune_is_retried() {
+    let (main, wt) = linked_worktree();
+    let data = tempdir();
+    let ((e, _), (other, _)) = (engine(&data), engine(&data));
+    e.register(&main).unwrap();
+    e.worktree_for(&wt).unwrap();
+    // Another process holds the worktree's writer lock.
+    let held = other.worktree_for(&wt).unwrap();
+    other
+        .index_blocking(&held, IndexOptions::default())
+        .unwrap();
+    fs::remove_dir_all(&wt).unwrap();
+    assert!(e.tidy_worktrees().unwrap().is_empty());
+    assert_eq!(e.repos().len(), 2);
+    held.release_writer();
+    assert_eq!(e.tidy_worktrees().unwrap(), [wt]);
+    assert_eq!(e.repos().len(), 1);
+    assert!(!held.dir.exists());
+}
+
+/// Result names for `query` in `root`.
+fn found(e: &Engine, root: &Path, query: &str) -> BTreeSet<String> {
+    search(e, root, query)
+        .results
+        .into_iter()
+        .map(|r| r.name)
+        .collect()
+}
+
+/// An index deleted and created again by another process (`--local rm`, then `--local register`)
+/// is told apart from the one a process had open, which it then reopens.
+#[test]
+fn an_index_created_again_by_another_process_is_reopened() {
+    let data = tempdir();
+    let ((daemon, _), (local, _)) = (engine(&data), engine(&data));
+    let root = fs::canonicalize(fixture()).unwrap();
+    let old = daemon.register(&root).unwrap();
+    daemon
+        .index_blocking(&old, IndexOptions::default())
+        .unwrap();
+    old.release_writer();
+    local
+        .unregister(Some(&root.to_string_lossy()), None)
+        .unwrap();
+    fs::remove_file(root.join("core/src/lib.rs")).unwrap();
+    write(
+        &root,
+        "core/src/new.rs",
+        "/// Freshly added.\npub fn freshly_added() {}\n",
+    );
+    let w = local.register(&root).unwrap();
+    local.index_blocking(&w, IndexOptions::default()).unwrap();
+
+    let names = found(&daemon, &root, "freshly_added retry_with_backoff");
+    assert!(names.contains("freshly_added"), "{names:?}");
+    assert!(!names.contains("retry_with_backoff"), "{names:?}");
+    assert!(old.is_retired());
+    let err = daemon
+        .index_blocking(&old, IndexOptions::default())
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("unregistered"), "{err:#}");
+}
+
+/// A watch whose worktree another process unregisters ends at its next pass, without writing
+/// the deleted index back.
+#[test]
+fn a_watch_ends_when_another_process_unregisters_its_worktree() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _rt = rt.enter();
+    let data = tempdir();
+    let ((daemon, _), (local, _)) = (engine(&data), engine(&data));
+    let daemon = Arc::new(daemon);
+    let root = fs::canonicalize(fixture()).unwrap();
+    let w = daemon.register(&root).unwrap();
+    let watchers = Watchers::default();
+    watchers.spawn_index(&daemon, w.clone(), IndexOptions::default());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while w.manifest().is_none() || w.is_writing() {
+        assert!(std::time::Instant::now() < deadline, "first index");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    local
+        .unregister(Some(&root.to_string_lossy()), None)
+        .unwrap();
+    write(&root, "core/src/edited.rs", "pub fn edited() {}\n");
+    while watchers.watched().contains(&root) {
+        assert!(std::time::Instant::now() < deadline, "the watch to end");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(w.is_retired() && !w.dir.exists());
+}
+
+/// Dropping the watchers ends their workers, which release their indexes.
+#[test]
+fn dropped_watchers_end_their_workers() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _rt = rt.enter();
+    let data = tempdir();
+    let e = Arc::new(engine(&data).0);
+    let root = fs::canonicalize(fixture()).unwrap();
+    let w = e.register(&root).unwrap();
+    let unwatched = Arc::strong_count(&w);
+    let watchers = Watchers::default();
+    watchers.watch(&e, w.clone());
+    assert!(Arc::strong_count(&w) > unwatched);
+    drop(watchers);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while Arc::strong_count(&w) > unwatched {
+        assert!(std::time::Instant::now() < deadline, "the worker to end");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// The writer lock file outlives removal, so a writer that opened it before and one after a
+/// removal and registration again lock the same file.
+#[test]
+fn the_writer_lock_file_survives_removal() {
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let root = fs::canonicalize(fixture()).unwrap();
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    w.release_writer();
+    let lock_path = w.dir.with_extension("lock");
+    let before = fs::OpenOptions::new().write(true).open(&lock_path).unwrap();
+    e.unregister(Some(&root.to_string_lossy()), None).unwrap();
+    assert!(lock_path.exists());
+    let again = e.register(&root).unwrap();
+    // Keeps its writer, and so the lock, after the pass.
+    e.index_blocking(&again, IndexOptions::default()).unwrap();
+    std::assert_matches!(before.try_lock(), Err(fs::TryLockError::WouldBlock));
+}
+
+/// Marks `root`'s entry in the registry under `data` as being removed, as a removal that
+/// stopped part-way leaves it.
+fn mark_removing(data: &Path, root: &Path) {
+    let path = data.join("registry.json");
+    let mut reg: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for r in reg["repos"].as_array_mut().unwrap() {
+        if Path::new(r["root"].as_str().unwrap()) == root {
+            r["removing"] = true.into();
+        }
+    }
+    fs::write(&path, serde_json::to_vec(&reg).unwrap()).unwrap();
+}
+
+/// A removal that stopped part-way (here, once the index was moved aside) is no longer served,
+/// and is finished by the next attempt or the daemon's tidying.
+#[test]
+fn an_interrupted_removal_is_finished_later() {
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let interrupted = || {
+        let root = fs::canonicalize(fixture()).unwrap();
+        let w = e.register(&root).unwrap();
+        e.index_blocking(&w, IndexOptions::default()).unwrap();
+        w.release_writer();
+        let aside = w.dir.with_extension("deleting");
+        fs::rename(&w.dir, &aside).unwrap();
+        mark_removing(&data, &root);
+        (root, aside)
+    };
+
+    let (root, aside) = interrupted();
+    assert!(e.repos().is_empty());
+    assert!(e.resolve(Some(&root.to_string_lossy())).is_err());
+    e.unregister(Some(&root.to_string_lossy()), None).unwrap();
+    assert!(!aside.exists());
+
+    let (root, aside) = interrupted();
+    assert_eq!(e.tidy_worktrees().unwrap(), [root]);
+    assert!(!aside.exists());
+    let raw = fs::read_to_string(data.join("registry.json")).unwrap();
+    assert!(!raw.contains("repo\""), "{raw}");
+
+    // Registering it again finishes the removal first.
+    let (root, aside) = interrupted();
+    let w = e.register(&root).unwrap();
+    assert!(!aside.exists());
+    assert_eq!(e.repos().len(), 1);
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    assert!(!search(&e, &root, "a function").results.is_empty());
+}
+
+/// An index is not created again by a process that looked its worktree up while another was
+/// removing it.
+#[test]
+fn a_load_waits_for_a_removal_in_another_process() {
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let root = fs::canonicalize(fixture()).unwrap();
+    let dir = e.register(&root).unwrap().dir.clone();
+    let (fresh, _) = engine(&data);
+    // Another process removing it: holds the registry lock until the entry and index are gone.
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .open(data.join("registry.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let opening = {
+        let root = root.clone();
+        std::thread::spawn(move || fresh.open_canonical(&root).map(|_| ()))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!opening.is_finished());
+    fs::write(data.join("registry.json"), "{\"repos\": []}").unwrap();
+    fs::remove_dir_all(&dir).unwrap();
+    drop(lock);
+    let err = opening.join().unwrap().unwrap_err();
+    assert!(
+        format!("{err:#}").contains("not a registered worktree"),
+        "{err:#}"
+    );
+    assert!(!dir.exists());
 }
