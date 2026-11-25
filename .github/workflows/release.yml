@@ -260,7 +260,21 @@ jobs:
           name: artifacts-dist-manifest
           path: dist-manifest.json
       # Create a GitHub Release while uploading all files to it
+      # Hand-edited (dist `allow-dirty = ["ci"]`): an artifact uploaded moments earlier in the
+      # same job can be listed but not yet downloadable (actions/download-artifact#505), so retry.
       - name: "Download GitHub Artifacts"
+        id: download-artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: artifacts
+          merge-multiple: true
+      - name: "Wait before retrying artifact download"
+        if: steps.download-artifacts.outcome == 'failure'
+        run: sleep 30
+      - name: "Download GitHub Artifacts (retry)"
+        if: steps.download-artifacts.outcome == 'failure'
         uses: actions/download-artifact@v8
         with:
           pattern: artifacts-*
