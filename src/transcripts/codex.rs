@@ -7,6 +7,8 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use crate::file_url;
+
 use super::{Call, Event, Kind, Target, query_of, text_of, time};
 
 /// Per-file state carried between lines (and runs): the session the file belongs to.
@@ -62,7 +64,7 @@ pub fn parse(line: &str, ctx: &mut Context) -> Vec<Event> {
     };
     match item["type"].as_str() {
         Some("CommandExecution") => {
-            let cwd = item["cwd"].as_str().map(local_path);
+            let cwd = item["cwd"].as_str().map(file_url::local_path);
             item["parsed_cmd"]
                 .as_array()
                 .into_iter()
@@ -120,42 +122,5 @@ pub fn parse(line: &str, ctx: &mut Context) -> Vec<Event> {
             ))]
         }
         _ => Vec::new(),
-    }
-}
-
-/// A path, given plainly or as a `file://` URL (newer Codex versions record command directories
-/// as URLs).
-fn local_path(s: &str) -> PathBuf {
-    let Some(rest) = s.strip_prefix("file://") else {
-        return PathBuf::from(s);
-    };
-    let hex = |c: Option<u8>| c.and_then(|c| (c as char).to_digit(16));
-    let mut bytes = Vec::with_capacity(rest.len());
-    let mut it = rest.bytes();
-    while let Some(b) = it.next() {
-        if b != b'%' {
-            bytes.push(b);
-            continue;
-        }
-        let (hi, lo) = (it.next(), it.next());
-        match (hex(hi), hex(lo)) {
-            (Some(h), Some(l)) => bytes.push((h * 16 + l) as u8),
-            _ => bytes.extend([Some(b), hi, lo].into_iter().flatten()),
-        }
-    }
-    PathBuf::from(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn command_directories_as_urls() {
-        assert_eq!(local_path("/a/b"), PathBuf::from("/a/b"));
-        assert_eq!(
-            local_path("file:///a/my%20repo"),
-            PathBuf::from("/a/my repo")
-        );
     }
 }

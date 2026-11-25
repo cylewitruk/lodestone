@@ -2,22 +2,29 @@
 //! daemon (starting an on-demand one when none runs), leases the session's worktree while the
 //! session lasts, and relays tool calls; a call without `repo` searches that worktree.
 //!
-//! The session's directory is the one its hooks recorded (see [`marker`]) when Claude Code names the
-//! session (`CLAUDE_CODE_SESSION_ID`), otherwise this process's: Claude Code in the desktop app
-//! starts MCP servers in the main checkout of a worktree session.
+//! A client on MCP `2026-07-28` or later that has roots is asked for them with each call, which then
+//! searches the first (Antigravity starts the server in its plugin directory, and may serve several
+//! workspaces from it); each root has a lease of its own. Otherwise the session's directory is the
+//! one its hooks recorded (see [`marker`]) when Claude Code names the session
+//! (`CLAUDE_CODE_SESSION_ID`): Claude Code in the desktop app starts MCP servers in the main checkout
+//! of a worktree session. Failing both, it is this process's directory.
 
 use std::mem;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, InputRequest,
+    InputRequests, InputRequiredResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
+    ServerCapabilities, ServerConfig,
 };
+#[expect(deprecated, reason = "roots are how Antigravity names its workspace")]
+use rmcp::model::{ListRootsRequest, ListRootsResult};
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
+use serde::Deserialize;
 use tokio::sync::watch;
 
 use super::marker;
@@ -25,6 +32,7 @@ use crate::api::mcp::{server_info, tools};
 use crate::api::types::{NOT_LOCAL, SessionRequest, ToolRequest};
 use crate::client::{Client, START_WAIT, connect_or_start};
 use crate::config::Config;
+use crate::file_url;
 
 const LEASE: Duration = Duration::from_secs(90);
 const RENEW: Duration = Duration::from_secs(30);
@@ -32,6 +40,10 @@ const RENEW: Duration = Duration::from_secs(30);
 const LOCALITY_WAIT: Duration = Duration::from_secs(2);
 /// Claude Code's id for the session that started this process.
 const SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
+/// A call's error when its client named no roots, and the call no `repo`.
+const NO_ROOTS: &str = "the client named no workspace roots; pass `repo`";
+/// The key of the roots request in a call's input requests and responses.
+const ROOTS_INPUT: &str = "roots";
 
 struct Daemon {
     config: Config,
@@ -41,6 +53,8 @@ struct Daemon {
     cwd: PathBuf,
     /// The harness session's marker, written by its hooks.
     marker: Option<PathBuf>,
+    /// The roots calls have searched; the `i`th is leased as [`Self::root_id`]`(i)`.
+    roots: Mutex<Vec<PathBuf>>,
     /// The directory the lease last named.
     leased: Mutex<PathBuf>,
     client: Mutex<Option<Arc<Client>>>,
@@ -63,25 +77,52 @@ impl Daemon {
             .unwrap_or_else(|| self.cwd.clone())
     }
 
-    fn lease(&self) -> SessionRequest {
-        let dir = self.dir();
-        let cwd = dir.to_string_lossy().into_owned();
-        *self.leased.lock().unwrap_or_else(|e| e.into_inner()) = dir;
-        SessionRequest {
-            id: self.session.clone(),
-            cwd,
-            ttl_secs: LEASE.as_secs(),
-        }
+    fn root_id(&self, i: usize) -> String {
+        format!("{}-root{i}", self.session)
+    }
+
+    /// The lease id for calls in the client's root `root`, which the renewals keep from now on.
+    fn root_session(&self, root: &Path) -> String {
+        let mut roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
+        let i = roots.iter().position(|r| r == root).unwrap_or_else(|| {
+            roots.push(root.to_path_buf());
+            roots.len() - 1
+        });
+        self.root_id(i)
+    }
+
+    /// Every lease id this process holds.
+    fn lease_ids(&self) -> Vec<String> {
+        let roots = self.roots.lock().unwrap_or_else(|e| e.into_inner()).len();
+        let mut ids = vec![self.session.clone()];
+        ids.extend((0..roots).map(|i| self.root_id(i)));
+        ids
     }
 
     fn listed_local(&self) -> bool {
         self.listed_local.load(Ordering::SeqCst)
     }
 
-    /// Takes or renews the lease from `c`'s daemon (only one keeping code on this machine, when
-    /// `local_only`), noting whether it keeps code on this machine.
+    /// Takes or renews the session's lease and every root's from `c`'s daemon.
     fn take_lease(&self, c: &Client, local_only: bool) -> anyhow::Result<()> {
-        let req = self.lease();
+        let dir = self.dir();
+        *self.leased.lock().unwrap_or_else(|e| e.into_inner()) = dir.clone();
+        self.lease(c, local_only, &self.session, &dir)?;
+        let roots = self.roots.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        for (i, root) in roots.iter().enumerate() {
+            self.lease(c, local_only, &self.root_id(i), root)?;
+        }
+        Ok(())
+    }
+
+    /// Takes or renews lease `id` on `dir` from `c`'s daemon (only one keeping code on this
+    /// machine, when `local_only`), noting whether it keeps code on this machine.
+    fn lease(&self, c: &Client, local_only: bool, id: &str, dir: &Path) -> anyhow::Result<()> {
+        let req = SessionRequest {
+            id: id.to_string(),
+            cwd: dir.to_string_lossy().into_owned(),
+            ttl_secs: LEASE.as_secs(),
+        };
         let resp = if local_only {
             c.session_local(&req)?
         } else {
@@ -175,25 +216,54 @@ impl ServerHandler for Relay {
         Ok(ListToolsResult::with_all_items(tools(local)))
     }
 
+    /// Asks the client for its roots first, when [`offers_roots`]: the client calls again with
+    /// them. Each call asks, since a client may serve sessions in several workspaces. A client
+    /// that names no roots must name the call's `repo`.
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let d = self.daemon.clone();
+        let roots = request
+            .input_responses
+            .as_ref()
+            .and_then(|r| r.get(ROOTS_INPUT));
+        if roots.is_none() && offers_roots(&context) {
+            return Ok(ask_roots().into());
+        }
+        let root = roots.and_then(first_root);
+        let names_repo = request
+            .arguments
+            .as_ref()
+            .is_some_and(|a| a.get("repo").is_some_and(|r| r.is_string()));
+        if roots.is_some() && root.is_none() && !names_repo {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(NO_ROOTS)]).into());
+        }
         // Fixed when the call is accepted: a re-list while it waits does not loosen it.
         let local_only = d.listed_local();
         let req = ToolRequest {
             name: request.name.to_string(),
             arguments: request.arguments.unwrap_or_default(),
-            session: Some(d.session.clone()),
+            session: None,
             cwd: None,
         };
         let out = tokio::task::spawn_blocking(move || {
             d.with_client(local_only, |c| {
-                d.follow_dir(c, local_only)?;
+                let (session, dir) = match &root {
+                    Some(root) => {
+                        let id = d.root_session(root);
+                        d.lease(c, local_only, &id, root)?;
+                        (id, root.clone())
+                    }
+                    None => {
+                        d.follow_dir(c, local_only)?;
+                        (d.session.clone(), d.dir())
+                    }
+                };
                 let req = ToolRequest {
-                    cwd: Some(d.dir().to_string_lossy().into_owned()),
+                    session: Some(session),
+                    cwd: Some(dir.to_string_lossy().into_owned()),
                     ..req.clone()
                 };
                 if local_only {
@@ -220,7 +290,34 @@ impl ServerHandler for Relay {
     }
 }
 
-/// Serves the relay on stdin/stdout until the harness closes it, then releases the lease.
+/// Whether the client has roots and can send them with a call (MCP `2026-07-28` or later).
+fn offers_roots(context: &RequestContext<RoleServer>) -> bool {
+    context
+        .client_capabilities()
+        .is_some_and(|c| c.roots.is_some())
+        && context
+            .protocol_version()
+            .is_some_and(|v| v >= ProtocolVersion::V_2026_07_28)
+}
+
+/// A call's answer asking the client for its roots.
+#[expect(deprecated, reason = "roots are how Antigravity names its workspace")]
+fn ask_roots() -> InputRequiredResult {
+    InputRequiredResult::from_input_requests(InputRequests::from([(
+        ROOTS_INPUT.to_string(),
+        InputRequest::ListRoots(ListRootsRequest::default()),
+    )]))
+}
+
+/// The path of the first root in a client's `roots/list` result.
+#[expect(deprecated, reason = "roots are how Antigravity names its workspace")]
+fn first_root(result: &serde_json::Value) -> Option<PathBuf> {
+    let result = ListRootsResult::deserialize(result).ok()?;
+    let root = result.roots.first()?;
+    Some(file_url::local_path(&root.uri))
+}
+
+/// Serves the relay on stdin/stdout until the harness closes it, then releases the leases.
 pub async fn run(config: Config, config_path: Option<PathBuf>) -> anyhow::Result<()> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -237,6 +334,7 @@ pub async fn run(config: Config, config_path: Option<PathBuf>) -> anyhow::Result
         leased: Mutex::new(cwd.clone()),
         cwd,
         marker,
+        roots: Mutex::new(Vec::new()),
         client: Mutex::new(None),
         local: watch::Sender::new(None),
         listed_local: AtomicBool::new(false),
@@ -280,7 +378,9 @@ pub async fn run(config: Config, config_path: Option<PathBuf>) -> anyhow::Result
     notify.abort();
     tokio::task::spawn_blocking(move || {
         if let Some(c) = daemon.current() {
-            let _ = c.release(&daemon.session);
+            for id in daemon.lease_ids() {
+                let _ = c.release(&id);
+            }
         }
     })
     .await?;

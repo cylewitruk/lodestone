@@ -9,6 +9,7 @@ pub mod chunk;
 pub mod client;
 pub mod config;
 pub mod embed;
+pub mod file_url;
 pub mod graph;
 pub mod index;
 pub mod registry;

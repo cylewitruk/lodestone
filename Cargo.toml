@@ -70,6 +70,7 @@ tree-sitter-swift = { version = "0.7.4", optional = true }
 tree-sitter-tags = "0.27.2"
 tree-sitter-typescript = { version = "0.23.2", optional = true }
 ureq = { version = "3.5.1", features = ["json"] }
+url = "2.5.8"
 # SIMD distance kernels (numkong) are enabled per target below.
 usearch = { version = "2.26.6", default-features = false }
 tree-sitter-svelte-ng = { version = "1.0.2", optional = true }

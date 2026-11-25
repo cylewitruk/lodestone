@@ -16,6 +16,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::config::Config;
 use crate::index::{IndexOptions, WorktreeIndex};
@@ -340,6 +341,10 @@ async fn tool_local(s: State<AppState>, req: Json<ToolRequest>) -> ApiResult<Str
 }
 
 async fn tool(State(s): State<AppState>, Json(mut req): Json<ToolRequest>) -> ApiResult<String> {
+    // Omitted, as the tools read it: the session decides.
+    if req.arguments.get("repo").is_some_and(Value::is_null) {
+        req.arguments.remove("repo");
+    }
     if let Some(id) = req.session.as_deref()
         && let Some(repo) = req.arguments.get("repo").and_then(|r| r.as_str())
         && let Ok(w) = s.engine.resolve(Some(repo))

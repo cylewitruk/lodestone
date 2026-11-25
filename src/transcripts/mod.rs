@@ -20,7 +20,6 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::agents::Harness;
 use crate::config::Config;
 use crate::index::mtime_nanos;
 pub use report::{Filter, Group, Report, Search};
@@ -138,8 +137,25 @@ pub enum Event {
     },
 }
 
+/// A harness whose transcripts can be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    Claude,
+    Codex,
+}
+
+impl Format {
+    /// The harness's name in statistics (`claude`, `codex`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Format::Claude => "claude",
+            Format::Codex => "codex",
+        }
+    }
+}
+
 /// Where a harness keeps its transcripts by default.
-pub fn default_dir(h: Harness) -> PathBuf {
+pub fn default_dir(h: Format) -> PathBuf {
     let home = dirs::home_dir().unwrap_or_default();
     let config = |var: &str, dir: &str| {
         std::env::var_os(var)
@@ -147,8 +163,8 @@ pub fn default_dir(h: Harness) -> PathBuf {
             .unwrap_or_else(|| home.join(dir))
     };
     match h {
-        Harness::Claude => config("CLAUDE_CONFIG_DIR", ".claude").join("projects"),
-        Harness::Codex => config("CODEX_HOME", ".codex").join("sessions"),
+        Format::Claude => config("CLAUDE_CONFIG_DIR", ".claude").join("projects"),
+        Format::Codex => config("CODEX_HOME", ".codex").join("sessions"),
     }
 }
 
@@ -160,7 +176,7 @@ pub struct ScanSummary {
 }
 
 /// Reads what is new in the transcripts under each source directory.
-pub fn scan(config: &Config, sources: &[(Harness, PathBuf)]) -> anyhow::Result<ScanSummary> {
+pub fn scan(config: &Config, sources: &[(Format, PathBuf)]) -> anyhow::Result<ScanSummary> {
     fs::create_dir_all(config.data_dir())?;
     let store = Store::open(&config.data_dir().join("transcripts.sqlite"))?;
     let repos = Repos::new(config);
@@ -182,7 +198,7 @@ pub fn report(config: &Config, filter: &Filter) -> anyhow::Result<Report> {
 
 fn read_file(
     store: &Store,
-    harness: Harness,
+    harness: Format,
     path: &Path,
     repos: &Repos,
     summary: &mut ScanSummary,
@@ -239,20 +255,20 @@ fn read_file(
         }
         let text = String::from_utf8_lossy(&line);
         let events = match harness {
-            Harness::Claude => claude::parse(&text),
-            Harness::Codex => codex::parse(&text, &mut codex),
+            Format::Claude => claude::parse(&text),
+            Format::Codex => codex::parse(&text, &mut codex),
         };
         for event in events {
             match event {
                 Event::Session { id, cwd, ts } => {
-                    let id = format!("{}:{id}", harness.program());
+                    let id = format!("{}:{id}", harness.name());
                     let repo = repos.of_path(&cwd);
                     let known = session
                         .as_ref()
                         .is_some_and(|(s, r)| *s == id && *r == repo);
                     if !known {
                         let repo = repo.as_ref().map(|r| r.to_string_lossy().into_owned());
-                        store.add_session(&id, harness.program(), repo.as_deref(), ts)?;
+                        store.add_session(&id, harness.name(), repo.as_deref(), ts)?;
                     }
                     state.cwd = Some(cwd.to_string_lossy().into_owned());
                     state.session = Some(id.clone());
@@ -282,7 +298,7 @@ fn read_file(
                     }
                 }
                 Event::Tools { id, loaded } => {
-                    store.set_tools(&format!("{}:{id}", harness.program()), loaded)?;
+                    store.set_tools(&format!("{}:{id}", harness.name()), loaded)?;
                 }
                 Event::Done {
                     id,
