@@ -18,3 +18,5 @@ hosting = "github"
 # Whether to install an updater program
 install-updater = false
 dispatch-releases = true
+# release.yml is hand-edited (artifact download retry in the host job); reapply after `dist init`
+allow-dirty = ["ci"]
