@@ -19,7 +19,7 @@ a second.
 - **Stays fresh:** the daemon re-indexes on file changes in the worktrees agent sessions work in
   (every registered one with `lode serve`), and catches up when a session starts.
 - **Cheap worktrees:** a shared embedding cache means a new worktree re-embeds only what changed.
-- **Agent-ready:** one command sets up Claude Code and Codex: MCP tools, a skill and reminders.
+- **Agent-ready:** one command sets up Claude Code, Codex and Antigravity: MCP tools, a skill and reminders.
 
 ## Install
 

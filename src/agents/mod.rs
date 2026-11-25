@@ -1,5 +1,5 @@
-//! Integration with coding-agent harnesses (Claude Code, Codex): the lodestone skill, the
-//! session reminder hooks, the `lode mcp` stdio relay, and installing all three.
+//! Integration with coding-agent harnesses (Claude Code, Codex, Antigravity): the lodestone skill,
+//! the session reminder hooks, the `lode mcp` stdio relay, and installing all three.
 
 mod install;
 mod marker;
@@ -101,19 +101,27 @@ impl HookEvent {
     }
 }
 
-/// `context` as the hook output that adds it to the model's context.
-fn output(event: HookEvent, context: &str) -> String {
-    json!({
-        "hookSpecificOutput": {
-            "hookEventName": event.name(),
-            "additionalContext": context,
-        }
-    })
-    .to_string()
+/// What `client`'s `event` hook prints to add `context` to the model's context, or to add
+/// nothing (`None`). Antigravity reads a JSON object from every hook.
+pub fn output(client: Harness, event: HookEvent, context: Option<&str>) -> Option<String> {
+    let out = match (client, context) {
+        (Harness::Claude | Harness::Codex, None) => return None,
+        (Harness::Claude | Harness::Codex, Some(context)) => json!({
+            "hookSpecificOutput": {
+                "hookEventName": event.name(),
+                "additionalContext": context,
+            }
+        }),
+        (Harness::Antigravity, None) => json!({}),
+        (Harness::Antigravity, Some(context)) => json!({
+            "injectSteps": [{ "systemMessage": { "systemMessage": context } }]
+        }),
+    };
+    Some(out.to_string())
 }
 
-/// The hook's output for `event` in session `session` (the harness's id) in `dir`: the reminder
-/// as hook JSON when `dir` is in a registered worktree, otherwise `None`.
+/// The context `event`'s hook adds in session `session` (the harness's id) in `dir`: the
+/// reminder when `dir` is in a registered worktree, otherwise `None`.
 ///
 /// The session's own hooks keep its marker (see `marker`) current. `UserPromptSubmit` adds the
 /// reminder only when it writes a session's first marker, so never without a session id;
@@ -151,10 +159,10 @@ pub fn hook(
         HookEvent::PreToolUse => false,
     };
     let served = remind.then(|| serves(dir, config, config_path)).flatten()?;
-    Some(output(event, &reminder(&served)))
+    Some(reminder(&served))
 }
 
-/// The `PreToolUse` hook's output for shell `command` run in `dir`: a pointer to
+/// The `PreToolUse` hook's context for shell `command` run in `dir`: a pointer to
 /// `semantic_code_search` when the command searches a tree lodestone serves for `GUESSES` or
 /// more alternative names, otherwise `None`. It decides nothing about the command.
 pub fn nudge(
@@ -184,11 +192,10 @@ pub fn nudge(
             registry::listing(&repos)
         ),
     };
-    let context = format!(
+    Some(format!(
         "{NUDGE_OPENING}{} names. lodestone's `semantic_code_search` finds code by what it does, without the name: describe the behaviour in `query` and give the guesses as `example_identifiers`.{repo} A text search suits exact strings.",
         search.alternatives
-    );
-    Some(output(HookEvent::PreToolUse, &context))
+    ))
 }
 
 /// What the daemon serves `dir`, if anything.

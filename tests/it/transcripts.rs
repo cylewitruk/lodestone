@@ -4,10 +4,9 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use lodestone::agents::Harness;
 use lodestone::config::Config;
 use lodestone::testutil::tempdir;
-use lodestone::transcripts::{self, Filter, Report};
+use lodestone::transcripts::{self, Filter, Format, Report};
 use serde_json::{Value, json};
 
 const T0: &str = "2026-11-11T10:00:0";
@@ -75,8 +74,8 @@ impl Setup {
         transcripts::scan(
             &self.config,
             &[
-                (Harness::Claude, self.claude.clone()),
-                (Harness::Codex, self.codex.clone()),
+                (Format::Claude, self.claude.clone()),
+                (Format::Codex, self.codex.clone()),
             ],
         )
         .unwrap()
@@ -411,8 +410,13 @@ fn reads_sessions_in_registered_repositories_incrementally() {
     let before = calls(&s.report(), "claude");
     assert!(before.iter().any(|c| c.3 == 2), "{before:?}");
     s.register(&[&s.repo, &s.other]);
-    transcripts::scan(&s.config, &[(Harness::Codex, s.codex.clone())]).unwrap();
+    transcripts::scan(&s.config, &[(Format::Codex, s.codex.clone())]).unwrap();
     assert_eq!(calls(&s.report(), "claude"), before);
+}
+
+/// `dir` as a `file://` URL, as Codex records command directories.
+fn file_url(dir: &Path) -> String {
+    url::Url::from_file_path(dir).unwrap().to_string()
 }
 
 #[test]
@@ -492,7 +496,7 @@ fn counts_calls_towards_the_repository_they_worked_in() {
                 3,
                 3,
                 json!({ "type": "CommandExecution", "id": "e1",
-                "cwd": format!("file://{}", s.repo.display()),
+                "cwd": file_url(&s.repo),
                 "parsed_cmd": [{ "type": "read", "cmd": "cat core/a.rs", "name": "a.rs", "path": "core/a.rs" }] }),
             ),
             codex_item(
@@ -506,7 +510,7 @@ fn counts_calls_towards_the_repository_they_worked_in() {
                 4,
                 4,
                 json!({ "type": "CommandExecution", "id": "e2",
-                "cwd": format!("file://{}", s.other.display()),
+                "cwd": file_url(&s.other),
                 "parsed_cmd": [{ "type": "search", "cmd": "rg x", "query": "x", "path": null }] }),
             ),
         ],

@@ -1037,9 +1037,10 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
     assert!(ok);
 
     // The session hook counts the worktree as served (and starts the daemon).
-    let hook = |event: &str, input: Value| {
+    let hook = |args: &str, input: Value| {
         let mut hook = lode(&home)
-            .args(["hook", event])
+            .arg("hook")
+            .args(args.split(' '))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -1056,6 +1057,20 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
     let core = feat.join("core");
     let started = hook("session-start", json!({ "cwd": core, "session_id": "s1" }));
     assert!(started.contains("additionalContext"), "{started}");
+    // Antigravity's hook gets its own format, and a JSON object also when it adds nothing.
+    let agy = |cwd: &Path| {
+        let out = hook(
+            "session-start --client antigravity",
+            json!({ "cwd": cwd, "conversationId": "a1", "hookEventName": "SessionStart" }),
+        );
+        serde_json::from_str::<Value>(&out).unwrap()
+    };
+    let reminder = agy(&core)["injectSteps"][0]["systemMessage"]["systemMessage"].clone();
+    assert!(
+        reminder.as_str().unwrap().contains("semantic_code_search"),
+        "{reminder}"
+    );
+    assert_eq!(agy(&stray), json!({}));
     // The first-prompt hook adds the reminder once, to a session no other hook has reminded.
     let prompt = |id: Option<&str>| {
         hook(
@@ -1752,6 +1767,110 @@ fn mcp_relay_starts_the_daemon_and_searches_the_session_worktree() {
     });
 }
 
+#[test]
+fn a_relay_outside_the_workspace_searches_the_clients_root() {
+    use std::io::{BufRead, BufReader, Write};
+
+    // `helper_3` is in `root` only.
+    let root = repo(5);
+    let other = repo(2);
+    let home = on_demand_home(3);
+    for r in [&other, &root] {
+        let ok = lode(&home)
+            .args(["--local", "register"])
+            .arg(r)
+            .stdout(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+    }
+    // As Antigravity runs it: in its plugin directory, over stateless MCP, with roots; started
+    // from a Claude Code terminal, it inherits a session id no hook recorded.
+    let outside = tempdir();
+    let mut relay = lode(&home)
+        .arg("mcp")
+        .env("CLAUDE_CODE_SESSION_ID", "inherited")
+        .current_dir(&outside)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = relay.stdin.take().unwrap();
+    let mut lines = BufReader::new(relay.stdout.take().unwrap()).lines();
+    let meta = json!({
+        "io.modelcontextprotocol/clientCapabilities": { "roots": { "listChanged": true } },
+        "io.modelcontextprotocol/clientInfo": { "name": "antigravity-client", "version": "v1.0.0" },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    });
+    // Calls again with `roots`, the URIs of the client's roots; with `repo`, if given.
+    let mut send = |id: u64, roots: Option<&[String]>, repo: Option<Value>| {
+        let mut params = json!({
+            "_meta": meta, "name": "semantic_code_search", "arguments": { "query": "helper_3" },
+        });
+        if let Some(repo) = repo {
+            params["arguments"]["repo"] = repo;
+        }
+        if let Some(roots) = roots {
+            let roots: Vec<Value> = roots.iter().map(|uri| json!({ "uri": uri })).collect();
+            params["inputResponses"] = json!({ "roots": { "roots": roots } });
+        }
+        writeln!(
+            stdin,
+            "{}",
+            json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params })
+        )
+        .unwrap();
+    };
+    // The call asks for the client's roots, and searches the first when it calls again with them.
+    send(1, None, None);
+    let ask = rpc_response(&mut lines, 1)["result"].clone();
+    assert_eq!(ask["resultType"], "input_required", "{ask}");
+    assert_eq!(
+        ask["inputRequests"]["roots"]["method"], "roots/list",
+        "{ask}"
+    );
+    let uri = |p: &Path| url::Url::from_file_path(p).unwrap();
+    let mut on_localhost = uri(&root.join("core"));
+    on_localhost.set_host(Some("localhost")).unwrap();
+    send(2, Some(&[on_localhost.to_string()]), None);
+    let out = rpc_response(&mut lines, 2)["result"].clone();
+    let text = out["content"][0]["text"].as_str().unwrap();
+    assert_eq!(out["isError"], false, "{text}");
+    assert!(text.contains("core/src/m3.rs"), "{text}");
+    // A client naming no roots must name the repository.
+    for (id, repo) in [(3, None), (4, Some(Value::Null))] {
+        send(id, Some(&[]), repo);
+        let out = rpc_response(&mut lines, id)["result"].clone();
+        assert_eq!(out["isError"], true, "{out}");
+        let text = out["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("named no workspace roots"), "{text}");
+    }
+    // Interleaved calls in two roots each search their own.
+    let uri = |p: &Path| uri(p).to_string();
+    let calls: Vec<u64> = (5..25).collect();
+    for &id in &calls {
+        let dir = if id % 2 == 0 { &root } else { &other };
+        send(id, Some(&[uri(dir)]), None);
+    }
+    let mut answers = std::collections::HashMap::new();
+    while answers.len() < calls.len() {
+        let v: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        if let Some(id) = v["id"].as_u64() {
+            answers.insert(id, v["result"].clone());
+        }
+    }
+    for id in calls {
+        let out = &answers[&id];
+        let text = out["content"][0]["text"].as_str().unwrap();
+        assert_eq!(out["isError"], false, "{id}: {text}");
+        assert_eq!(text.contains("core/src/m3.rs"), id % 2 == 0, "{id}: {text}");
+    }
+    drop(stdin);
+    assert!(relay.wait().unwrap().success());
+}
+
 /// The first search tool's description as a `lode mcp` relay lists it, run with `config`.
 fn relay_description(home: &Path, config: &Path) -> Value {
     use std::io::{BufRead, BufReader, Write};
@@ -1990,6 +2109,39 @@ fn a_new_external_git_dir_is_watched() {
     wait_until("a rescan after the commit", Duration::from_secs(20), || {
         d.status().last_update > before
     });
+}
+
+/// A tool call with `"repo": null` searches the session's worktree, as one without `repo` does:
+/// none, for a session outside every registered one.
+#[test]
+fn a_null_repo_is_the_sessions() {
+    let root = repo(2);
+    let home = tempdir();
+    let d = Daemon::start(&home, 0);
+    d.post("/v1/register", json!({ "path": root.to_string_lossy() }));
+    d.wait_fresh(Duration::from_secs(30));
+    let outside = tempdir();
+    d.post(
+        "/v1/sessions",
+        json!({ "id": "s", "cwd": outside.to_string_lossy(), "ttl_secs": 60 }),
+    );
+    for repo in [json!({}), json!({ "repo": null })] {
+        let mut arguments = json!({ "query": "helper_1" });
+        arguments
+            .as_object_mut()
+            .unwrap()
+            .extend(repo.as_object().unwrap().clone());
+        let status = ureq::post(format!("{}/v1/tool", d.base))
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .send_json(json!({
+                "name": "semantic_code_search", "arguments": arguments, "session": "s",
+            }))
+            .unwrap()
+            .status();
+        assert_eq!(status, 400, "{repo}");
+    }
 }
 
 /// The local-only lease route leaves the session namespace alone: a session named `local` is

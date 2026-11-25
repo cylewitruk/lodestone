@@ -1,10 +1,11 @@
 //! `lode install` / `lode uninstall`: the skill, the MCP server and the reminder hooks for
-//! Claude Code and Codex.
+//! Claude Code, Codex and Antigravity.
 //!
-//! The skill lives in the shared `.agents/skills/` location (read by Codex, and by Claude Code
-//! at user level); Claude also gets a symlink from `.claude/skills/`, its documented location.
-//! MCP servers and hooks have no shared location, so each harness gets its own. The MCP server is
-//! `lode mcp`, which starts the daemon on demand.
+//! The skill lives in the shared `.agents/skills/` location (read by Codex, by Claude Code at user
+//! level, and by Antigravity in a repository); Claude Code and Antigravity's user config also get
+//! a symlink to it. MCP servers and hooks have no shared location, so each harness gets its own:
+//! Antigravity's come in a plugin, its only place for a repository's MCP servers. The MCP server
+//! is `lode mcp`, which starts the daemon on demand.
 
 use std::fmt;
 use std::fs;
@@ -25,16 +26,20 @@ const HOOK_TIMEOUT_SECS: u64 = 10;
 pub enum Harness {
     Claude,
     Codex,
+    /// Google Antigravity.
+    #[value(alias = "agy")]
+    Antigravity,
 }
 
 impl Harness {
-    pub const ALL: [Harness; 2] = [Harness::Claude, Harness::Codex];
+    pub const ALL: [Harness; 3] = [Harness::Claude, Harness::Codex, Harness::Antigravity];
 
-    /// The harness's CLI, which manages its user-level MCP servers.
+    /// The harness's CLI, whose presence on PATH selects it for `lode install`.
     pub fn program(self) -> &'static str {
         match self {
             Harness::Claude => "claude",
             Harness::Codex => "codex",
+            Harness::Antigravity => "agy",
         }
     }
 
@@ -49,15 +54,7 @@ impl Harness {
                 HookEvent::SubagentStart,
                 HookEvent::PreToolUse,
             ],
-            Harness::Codex => &[HookEvent::SessionStart],
-        }
-    }
-
-    /// Its config directory name (`~/.claude`, `<repo>/.codex`).
-    fn dir(self) -> &'static str {
-        match self {
-            Harness::Claude => ".claude",
-            Harness::Codex => ".codex",
+            Harness::Codex | Harness::Antigravity => &[HookEvent::SessionStart],
         }
     }
 }
@@ -94,32 +91,54 @@ impl Target {
         self.base().join(".agents").join("skills").join(NAME)
     }
 
-    fn claude_skill_link(&self) -> PathBuf {
-        self.base().join(".claude/skills").join(NAME)
-    }
-
-    /// Relative in a repository so the link survives a clone.
-    fn claude_skill_link_target(&self) -> PathBuf {
-        match self.scope {
-            Scope::User => self.skill_dir(),
-            Scope::Project => Path::new("..")
-                .join("..")
-                .join(".agents")
-                .join("skills")
-                .join(NAME),
+    /// The link (and its target) by which `h` finds the shared skill, if it does not read
+    /// `.agents/skills/` there. Relative in a repository so the link survives a clone.
+    fn skill_link(&self, h: Harness) -> Option<(PathBuf, PathBuf)> {
+        match (h, self.scope) {
+            (Harness::Claude, Scope::User) => Some((
+                self.base().join(".claude/skills").join(NAME),
+                self.skill_dir(),
+            )),
+            (Harness::Claude, Scope::Project) => Some((
+                self.base().join(".claude/skills").join(NAME),
+                Path::new("..")
+                    .join("..")
+                    .join(".agents")
+                    .join("skills")
+                    .join(NAME),
+            )),
+            (Harness::Antigravity, Scope::User) => Some((
+                self.antigravity_root().join("skills").join(NAME),
+                self.skill_dir(),
+            )),
+            (Harness::Codex, _) | (Harness::Antigravity, Scope::Project) => None,
         }
     }
 
     fn codex_config(&self) -> PathBuf {
-        self.base().join(Harness::Codex.dir()).join("config.toml")
+        self.base().join(".codex/config.toml")
     }
 
+    /// Where Antigravity discovers customizations: `~/.gemini/config`, `<repo>/.agents`.
+    fn antigravity_root(&self) -> PathBuf {
+        match self.scope {
+            Scope::User => self.home.join(".gemini").join("config"),
+            Scope::Project => self.project.join(".agents"),
+        }
+    }
+
+    /// lodestone's Antigravity plugin, which holds its MCP server and hooks.
+    fn antigravity_plugin(&self) -> PathBuf {
+        self.antigravity_root().join("plugins").join(NAME)
+    }
+
+    /// The JSON file holding `h`'s hooks.
     fn hooks_file(&self, h: Harness) -> PathBuf {
-        let file = match h {
-            Harness::Claude => "settings.json",
-            Harness::Codex => "hooks.json",
-        };
-        self.base().join(h.dir()).join(file)
+        match h {
+            Harness::Claude => self.base().join(".claude/settings.json"),
+            Harness::Codex => self.base().join(".codex/hooks.json"),
+            Harness::Antigravity => self.antigravity_plugin().join("hooks.json"),
+        }
     }
 
     /// `lode`: this binary for user config; from PATH in a repository, which other machines share.
@@ -130,8 +149,13 @@ impl Target {
         }
     }
 
-    fn hook_command(&self, event: HookEvent) -> String {
+    /// The command `h` runs for `event`. Antigravity's names its harness, for the output format.
+    fn hook_command(&self, h: Harness, event: HookEvent) -> String {
         let args = event.args();
+        let client = match h {
+            Harness::Antigravity => ANTIGRAVITY_CLIENT,
+            Harness::Claude | Harness::Codex => "",
+        };
         // A harness takes exit status 2 from this hook as "block the tool call", and that is
         // what a `lode` too old to know the subcommand exits with.
         let guard = if event == HookEvent::PreToolUse {
@@ -140,10 +164,20 @@ impl Target {
             ""
         };
         match self.scope {
-            Scope::User => format!("'{}' {args}{guard}", self.program()),
-            Scope::Project => format!("{} {args}{guard}", self.program()),
+            Scope::User => format!("'{}' {args}{client}{guard}", self.program()),
+            Scope::Project => format!("{} {args}{client}{guard}", self.program()),
         }
     }
+}
+
+/// What Antigravity's hook commands add, for the output format.
+const ANTIGRAVITY_CLIENT: &str = " --client antigravity";
+
+/// What lodestone's Antigravity plugin runs: `lode mcp`, and a hook command per event.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Plugin {
+    program: String,
+    hooks: Vec<(HookEvent, String)>,
 }
 
 /// One change to the user's or repository's files, or one harness CLI call.
@@ -189,6 +223,14 @@ pub enum Step {
         path: PathBuf,
         program: Option<String>,
     },
+    /// Adds (`add`) or removes our Antigravity plugin in `dir`: its manifest, MCP server and
+    /// hook handlers. Other servers and handlers in its files stay; the directory goes once
+    /// empty.
+    AntigravityPlugin {
+        dir: PathBuf,
+        plugin: Plugin,
+        add: bool,
+    },
 }
 
 impl fmt::Display for Step {
@@ -217,6 +259,9 @@ impl fmt::Display for Step {
                 verb(program.is_some()),
                 path.display()
             ),
+            Step::AntigravityPlugin { dir, add, .. } => {
+                write!(f, "{} Antigravity plugin {}", verb(*add), dir.display())
+            }
         }
     }
 }
@@ -250,7 +295,45 @@ fn mcp_steps(h: Harness, t: &Target, add: bool) -> Vec<Step> {
             path: t.codex_config(),
             program: add.then_some(program),
         }],
+        // With the hooks, in the plugin.
+        (Harness::Antigravity, _) => Vec::new(),
     }
+}
+
+/// Steps that add (`add`) or remove lodestone's skill link, MCP server and hooks for `h`.
+fn harness_steps(h: Harness, t: &Target, add: bool) -> Vec<Step> {
+    let mut steps: Vec<Step> = t
+        .skill_link(h)
+        .map(|(link, target)| {
+            if add {
+                Step::Link { link, target }
+            } else {
+                Step::Unlink { link, target }
+            }
+        })
+        .into_iter()
+        .collect();
+    steps.extend(mcp_steps(h, t, add));
+    let hooks = h.hook_events().iter().map(|&e| (e, t.hook_command(h, e)));
+    match h {
+        Harness::Antigravity => steps.push(Step::AntigravityPlugin {
+            dir: t.antigravity_plugin(),
+            plugin: Plugin {
+                program: t.program(),
+                hooks: hooks.collect(),
+            },
+            add,
+        }),
+        Harness::Claude | Harness::Codex => {
+            steps.extend(hooks.map(|(event, command)| Step::Hook {
+                path: t.hooks_file(h),
+                event,
+                command,
+                add,
+            }));
+        }
+    }
+    steps
 }
 
 /// Steps that install lodestone into each harness.
@@ -260,43 +343,23 @@ pub fn install(harnesses: &[Harness], t: &Target) -> Vec<Step> {
         contents: SKILL.into(),
     }];
     for &h in harnesses {
-        if h == Harness::Claude {
-            steps.push(Step::Link {
-                link: t.claude_skill_link(),
-                target: t.claude_skill_link_target(),
-            });
-        }
-        steps.extend(mcp_steps(h, t, true));
-        steps.extend(h.hook_events().iter().map(|&event| Step::Hook {
-            path: t.hooks_file(h),
-            event,
-            command: t.hook_command(event),
-            add: true,
-        }));
+        steps.extend(harness_steps(h, t, true));
     }
     steps
 }
 
-/// Steps that remove lodestone from each harness. The shared skill goes only when every
-/// harness is uninstalled, since the others read it too.
+/// Steps that remove lodestone from each harness. The shared skill goes only when no other
+/// harness still has lodestone at this scope, since it reads the skill too.
 pub fn uninstall(harnesses: &[Harness], t: &Target) -> Vec<Step> {
     let mut steps = Vec::new();
     for &h in harnesses {
-        if h == Harness::Claude {
-            steps.push(Step::Unlink {
-                link: t.claude_skill_link(),
-                target: t.claude_skill_link_target(),
-            });
-        }
-        steps.extend(mcp_steps(h, t, false));
-        steps.extend(h.hook_events().iter().map(|&event| Step::Hook {
-            path: t.hooks_file(h),
-            event,
-            command: t.hook_command(event),
-            add: false,
-        }));
+        steps.extend(harness_steps(h, t, false));
     }
-    if Harness::ALL.iter().all(|h| harnesses.contains(h)) {
+    let kept = Harness::ALL
+        .into_iter()
+        .filter(|h| !harnesses.contains(h))
+        .any(|h| harness_steps(h, t, false).iter().any(finds_ours));
+    if !kept {
         // The directory goes only once empty: anything else in it is the user's.
         steps.push(Step::Remove {
             path: t.skill_dir().join("SKILL.md"),
@@ -306,6 +369,56 @@ pub fn uninstall(harnesses: &[Harness], t: &Target) -> Vec<Step> {
         });
     }
     steps
+}
+
+/// Whether removal step `step` finds lodestone's link, MCP server or hook handler: a harness with
+/// no such step has nothing of lodestone's. Harness CLI calls, and files that do not parse, are
+/// taken to hold nothing.
+fn finds_ours(step: &Step) -> bool {
+    let json = |path: &Path| {
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .unwrap_or_default()
+    };
+    let has_server = |doc: &Value| doc["mcpServers"].get(NAME).is_some();
+    let has_handler = |list: &Value, event: HookEvent, command: &str| {
+        list.as_array()
+            .is_some_and(|l| l.iter().any(|h| is_ours(h, event, command)))
+    };
+    match step {
+        Step::Unlink { link, target } => is_our_link(link, target),
+        Step::Hook {
+            path,
+            event,
+            command,
+            ..
+        } => json(path)["hooks"][event.name()]
+            .as_array()
+            .is_some_and(|groups| {
+                groups
+                    .iter()
+                    .any(|g| has_handler(&g["hooks"], *event, command))
+            }),
+        Step::McpJson { path, .. } => has_server(&json(path)),
+        Step::CodexToml { path, .. } => fs::read_to_string(path)
+            .ok()
+            .and_then(|t| t.parse::<DocumentMut>().ok())
+            .is_some_and(|doc| {
+                doc.get("mcp_servers")
+                    .and_then(Item::as_table_like)
+                    .is_some_and(|servers| servers.contains_key(NAME))
+            }),
+        Step::AntigravityPlugin { dir, plugin, .. } => {
+            let hooks = json(&dir.join(PLUGIN_HOOKS));
+            has_server(&json(&dir.join(PLUGIN_MCP)))
+                || plugin
+                    .hooks
+                    .iter()
+                    .any(|(e, c)| has_handler(&hooks[NAME][e.name()], *e, c))
+        }
+        Step::Write { .. } | Step::Link { .. } | Step::Remove { .. } | Step::Run { .. } => false,
+    }
 }
 
 /// Checks `steps` against the files as they are, before any is applied, so that a conflict
@@ -374,6 +487,7 @@ fn check_step(step: &Step, removed: &[&Path]) -> anyhow::Result<()> {
         },
         Step::Run { .. } => Ok(()),
         Step::Hook { .. } | Step::McpJson { .. } | Step::CodexToml { .. } => edit(step).map(|_| ()),
+        Step::AntigravityPlugin { dir, plugin, add } => plugin_edits(dir, plugin, *add).map(|_| ()),
     }
 }
 
@@ -419,6 +533,19 @@ pub fn apply(step: &Step) -> anyhow::Result<()> {
             let (path, old, new) = edit(step)?;
             write_if_changed(path, &old, &new)
         }
+        Step::AntigravityPlugin { dir, plugin, add } => {
+            let (edits, remove_dir) = plugin_edits(dir, plugin, *add)?;
+            for e in &edits {
+                match &e.new {
+                    Some(new) => write_if_changed(&e.path, &e.old, new)?,
+                    None => remove(&e.path)?,
+                }
+            }
+            if remove_dir {
+                remove(dir)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -438,13 +565,100 @@ fn edit(step: &Step) -> anyhow::Result<(&Path, String, String)> {
             ..
         } => edit_json(&old, |doc| set_hook(doc, *event, command, *add)),
         Step::McpJson { program, .. } => {
-            edit_json(&old, |doc| set_mcp_server(doc, program.as_deref()))
+            let server = program
+                .as_ref()
+                .map(|p| json!({ "type": "stdio", "command": p, "args": ["mcp"] }));
+            edit_json(&old, |doc| set_mcp_server(doc, server))
         }
         Step::CodexToml { program, .. } => set_codex_server(&old, program.as_deref()),
         _ => Ok(old.clone()),
     }
     .with_context(|| format!("editing {}; left unchanged", path.display()))?;
     Ok((path, old, new))
+}
+
+/// The files of lodestone's Antigravity plugin.
+const PLUGIN_MANIFEST: &str = "plugin.json";
+const PLUGIN_MCP: &str = "mcp_config.json";
+const PLUGIN_HOOKS: &str = "hooks.json";
+
+/// One file a step edits: its text, and its text once edited (`None`: removed).
+struct FileEdit {
+    path: PathBuf,
+    old: String,
+    new: Option<String>,
+}
+
+/// The edits that add (`add`) or remove lodestone's Antigravity plugin in `dir`, and whether
+/// `dir` goes after them. On removal, a file left without entries goes, and the manifest only
+/// once nothing else is left in `dir`. A manifest naming another plugin stops either.
+fn plugin_edits(dir: &Path, plugin: &Plugin, add: bool) -> anyhow::Result<(Vec<FileEdit>, bool)> {
+    let edit = |name: &str, f: &dyn Fn(&mut Map<String, Value>)| -> anyhow::Result<FileEdit> {
+        let path = dir.join(name);
+        let old = read_or_empty(&path)?;
+        let new = edit_json(&old, f)
+            .with_context(|| format!("editing {}; left unchanged", path.display()))?;
+        Ok(FileEdit {
+            path,
+            old,
+            new: Some(new),
+        })
+    };
+    // Antigravity infers the transport, and warns about a `type`.
+    let server = add.then(|| json!({ "command": plugin.program, "args": ["mcp"] }));
+    let mut edits = vec![
+        edit(PLUGIN_MCP, &|doc| set_mcp_server(doc, server.clone()))?,
+        edit(PLUGIN_HOOKS, &|doc| set_named_hook(doc, &plugin.hooks, add))?,
+    ];
+    for e in &mut edits {
+        if e.new.as_deref().is_some_and(|n| n.trim() == "{}") {
+            e.new = None;
+        }
+    }
+    let ours = json!({ "name": NAME });
+    let mut manifest = edit(PLUGIN_MANIFEST, &|doc| {
+        if add {
+            doc.insert("name".into(), NAME.into());
+        }
+    })?;
+    if let Some(name) = serde_json::from_str::<Value>(&manifest.old)
+        .ok()
+        .and_then(|m| m.get("name").cloned())
+        .filter(|n| n != NAME)
+    {
+        bail!(
+            "{} names plugin {name}, not {NAME}; move it aside and try again",
+            manifest.path.display()
+        );
+    }
+    let remove_dir = !add
+        && edits.iter().all(|e| e.new.is_none())
+        && (manifest.old.trim().is_empty()
+            || serde_json::from_str::<Value>(&manifest.old).is_ok_and(|m| m == ours))
+        && holds_only(dir, &[PLUGIN_MANIFEST, PLUGIN_MCP, PLUGIN_HOOKS])?;
+    if remove_dir {
+        manifest.new = None;
+    } else if !add {
+        // Unchanged: it marks a directory that still holds the user's files as a plugin.
+        manifest.new = Some(manifest.old.clone());
+    }
+    edits.push(manifest);
+    Ok((edits, remove_dir))
+}
+
+/// Whether `dir` holds nothing but files named in `names` (or does not exist).
+fn holds_only(dir: &Path, names: &[&str]) -> anyhow::Result<bool> {
+    let entries = match fs::read_dir(dir) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
+        r => r.with_context(|| format!("reading {}", dir.display()))?,
+    };
+    for entry in entries {
+        let name = entry?.file_name();
+        if !names.iter().any(|n| name == *n) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// blake3 of each SKILL.md lodestone has shipped, with `\n` line endings: a skill file lodestone
@@ -576,8 +790,9 @@ fn edit_json(text: &str, edit: impl FnOnce(&mut Map<String, Value>)) -> anyhow::
 }
 
 /// Whether `hook` is our `event` hook: `command`, which this install writes, or what an install
-/// from another path wrote, `'<absolute path to lode>' <args>` (guarded for `PreToolUse`). Any
-/// other command is the user's, even one that runs `lode`.
+/// from another path wrote, `'<absolute path to lode>' <args>` (guarded for `PreToolUse`, and
+/// naming Antigravity as the client in its plugin). Any other command is the user's, even one
+/// that runs `lode`.
 fn is_ours(hook: &Value, event: HookEvent, command: &str) -> bool {
     let Some(theirs) = hook["command"].as_str() else {
         return false;
@@ -588,7 +803,8 @@ fn is_ours(hook: &Value, event: HookEvent, command: &str) -> bool {
     let theirs = match event {
         HookEvent::PreToolUse => theirs.strip_suffix(" || true"),
         _ => Some(theirs),
-    };
+    }
+    .map(|c| c.strip_suffix(ANTIGRAVITY_CLIENT).unwrap_or(c));
     theirs
         .and_then(|c| c.strip_suffix(event.args()))
         .and_then(|p| p.strip_suffix("' "))
@@ -625,10 +841,7 @@ fn set_hook(doc: &mut Map<String, Value>, event: HookEvent, command: &str, add: 
         if let Some(matcher) = event.matcher() {
             group.insert("matcher".into(), matcher.into());
         }
-        group.insert(
-            "hooks".into(),
-            json!([{ "type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECS }]),
-        );
+        group.insert("hooks".into(), json!([handler(command)]));
         groups.push(Value::Object(group));
     }
     if !groups.is_empty() {
@@ -639,18 +852,48 @@ fn set_hook(doc: &mut Map<String, Value>, event: HookEvent, command: &str, add: 
     }
 }
 
-fn set_mcp_server(doc: &mut Map<String, Value>, program: Option<&str>) {
+/// A hook handler running `command`, in Claude's, Codex's and Antigravity's format.
+fn handler(command: &str) -> Value {
+    json!({ "type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECS })
+}
+
+/// Adds (`add`) or removes our handler running `command` for each `(event, command)` in the hook
+/// named `lodestone` of an Antigravity `hooks.json`; other handlers, events and named hooks stay.
+/// The events take a flat list of handlers: they have no matcher, as tool events do.
+fn set_named_hook(doc: &mut Map<String, Value>, hooks: &[(HookEvent, String)], add: bool) {
+    let Some(named) = doc.entry(NAME).or_insert_with(|| json!({})).as_object_mut() else {
+        return;
+    };
+    for (event, command) in hooks {
+        let key = event.name();
+        if add && !named.get(key).is_some_and(Value::is_array) {
+            named.insert(key.into(), json!([]));
+        }
+        if let Some(list) = named.get_mut(key).and_then(Value::as_array_mut) {
+            list.retain(|h| !is_ours(h, *event, command));
+            if add {
+                list.push(handler(command));
+            }
+            if list.is_empty() {
+                named.shift_remove(key);
+            }
+        }
+    }
+    if named.is_empty() {
+        doc.shift_remove(NAME);
+    }
+}
+
+/// Sets our server in an `mcpServers` map to `server`, or removes it (`None`).
+fn set_mcp_server(doc: &mut Map<String, Value>, server: Option<Value>) {
     let servers = doc
         .entry("mcpServers")
         .or_insert_with(|| json!({}))
         .as_object_mut();
     let Some(servers) = servers else { return };
-    match program {
-        Some(program) => {
-            servers.insert(
-                NAME.into(),
-                json!({ "type": "stdio", "command": program, "args": ["mcp"] }),
-            );
+    match server {
+        Some(server) => {
+            servers.insert(NAME.into(), server);
         }
         None => {
             servers.remove(NAME);
@@ -822,12 +1065,38 @@ mod tests {
             }] }])
         );
 
+        // Antigravity: a link to the shared skill, and a plugin with the server and hook.
+        let agy = home.join(".gemini/config");
+        assert_eq!(
+            fs::read_link(agy.join("skills/lodestone")).unwrap(),
+            home.join(".agents/skills/lodestone")
+        );
+        let plugin = agy.join("plugins/lodestone");
+        assert_eq!(
+            read_json(&plugin.join("plugin.json")),
+            json!({ "name": "lodestone" })
+        );
+        assert_eq!(
+            read_json(&plugin.join("mcp_config.json")),
+            json!({ "mcpServers": { "lodestone": { "command": "/opt/bin/lode", "args": ["mcp"] } } })
+        );
+        assert_eq!(
+            read_json(&plugin.join("hooks.json")),
+            json!({ "lodestone": { "SessionStart": [{
+                "type": "command",
+                "command": "'/opt/bin/lode' hook session-start --client antigravity",
+                "timeout": HOOK_TIMEOUT_SECS,
+            }] } })
+        );
+
         run_all(&uninstall(&[Harness::Claude], &t));
         assert!(skill.exists(), "Codex still reads the shared skill");
         assert!(fs::symlink_metadata(home.join(".claude/skills/lodestone")).is_err());
         assert_eq!(read_json(&home.join(".claude/settings.json")), json!({}));
-        run_all(&uninstall(&[Harness::Codex, Harness::Claude], &t));
+        run_all(&uninstall(&Harness::ALL, &t));
         assert!(!skill.exists());
+        assert!(fs::symlink_metadata(agy.join("skills/lodestone")).is_err());
+        assert!(!plugin.exists());
         assert_eq!(
             fs::read_to_string(&codex).unwrap(),
             "model = \"x\"\n\n[mcp_servers.other]\ncommand = \"o\"\n"
@@ -1063,13 +1332,127 @@ mod tests {
             before
         );
 
+        // Antigravity reads `.agents/skills/` itself, and runs `lode` from PATH.
+        assert!(!repo.join(".agents/skills/lodestone").is_symlink());
+        let plugin = repo.join(".agents/plugins/lodestone");
+        assert_eq!(
+            read_json(&plugin.join("mcp_config.json"))["mcpServers"]["lodestone"]["command"],
+            "lode"
+        );
+        assert_eq!(
+            read_json(&plugin.join("hooks.json"))["lodestone"]["SessionStart"][0]["command"],
+            "lode hook session-start --client antigravity"
+        );
+
         run_all(&uninstall(&Harness::ALL, &t));
+        assert!(!plugin.exists());
         assert_eq!(
             fs::read_to_string(repo.join(".codex/config.toml")).unwrap(),
             "# mine\nmodel = \"x\"\n\n[mcp_servers.other]\nurl = \"http://o\"\n"
         );
         assert_eq!(read_json(&repo.join(".mcp.json")), json!({}));
         assert!(!repo.join(".agents/skills/lodestone").exists());
+    }
+
+    #[test]
+    fn the_shared_skill_goes_with_the_last_harness_installed() {
+        let root = tempdir();
+        let t = target(Scope::Project, &root);
+        let skill = root.join("repo/.agents/skills/lodestone");
+        let two = [Harness::Claude, Harness::Codex];
+        // Only those uninstalled were installed: the skill goes.
+        for only in [&two[..], &[Harness::Antigravity], &[Harness::Codex]] {
+            run_all(&install(only, &t));
+            run_all(&uninstall(only, &t));
+            assert!(!skill.exists(), "{only:?}");
+        }
+        // Nor do the others' config files, when they hold nothing of lodestone's.
+        let repo = root.join("repo");
+        fs::write(repo.join(".mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+        fs::create_dir_all(repo.join(".claude")).unwrap();
+        fs::write(repo.join(".claude/settings.json"), r#"{"hooks":{}}"#).unwrap();
+        fs::create_dir_all(repo.join(".codex")).unwrap();
+        fs::write(repo.join(".codex/config.toml"), "[mcp_servers]\n").unwrap();
+        run_all(&install(&[Harness::Antigravity], &t));
+        run_all(&uninstall(&[Harness::Antigravity], &t));
+        assert!(!skill.exists());
+        // Antigravity still installed: the skill stays until it goes too.
+        run_all(&install(&Harness::ALL, &t));
+        run_all(&uninstall(&two, &t));
+        assert!(skill.join("SKILL.md").exists());
+        run_all(&uninstall(&[Harness::Antigravity], &t));
+        assert!(!skill.exists());
+    }
+
+    #[test]
+    fn the_antigravity_plugin_keeps_what_the_user_added() {
+        let root = tempdir();
+        let t = target(Scope::Project, &root);
+        let plugin = root.join("repo/.agents/plugins/lodestone");
+        let agy = [Harness::Antigravity];
+        run_all(&install(&agy, &t));
+        // The user's own server, hook and notes in lodestone's plugin.
+        let mut servers = read_json(&plugin.join("mcp_config.json"));
+        servers["mcpServers"]["other"] = json!({ "command": "o" });
+        fs::write(plugin.join("mcp_config.json"), servers.to_string()).unwrap();
+        let mut hooks = read_json(&plugin.join("hooks.json"));
+        hooks["mine"] = json!({ "Stop": [{ "command": "bye" }] });
+        let ours = hooks["lodestone"]["SessionStart"][0].clone();
+        let theirs = json!({ "type": "command", "command": "./setup" });
+        hooks["lodestone"]["SessionStart"] = json!([theirs, ours]);
+        hooks["lodestone"]["Stop"] = json!([{ "type": "command", "command": "./done" }]);
+        fs::write(plugin.join("hooks.json"), hooks.to_string()).unwrap();
+        fs::write(plugin.join("notes.md"), "mine").unwrap();
+        run_all(&install(&agy, &t));
+        assert_eq!(read_json(&plugin.join("hooks.json")), hooks);
+        // An install from another path replaces its handler, in place of adding one.
+        let moved = Target {
+            exe: PathBuf::from("/new/lode"),
+            ..target(Scope::User, &root)
+        };
+        let moved_hooks = moved.antigravity_plugin().join("hooks.json");
+        run_all(&install(&agy, &target(Scope::User, &root)));
+        run_all(&install(&agy, &moved));
+        assert_eq!(
+            read_json(&moved_hooks)["lodestone"]["SessionStart"],
+            json!([handler(
+                "'/new/lode' hook session-start --client antigravity"
+            )])
+        );
+
+        run_all(&uninstall(&agy, &t));
+        assert_eq!(
+            read_json(&plugin.join("mcp_config.json")),
+            json!({ "mcpServers": { "other": { "command": "o" } } })
+        );
+        assert_eq!(
+            read_json(&plugin.join("hooks.json")),
+            json!({
+                "lodestone": { "SessionStart": [theirs], "Stop": hooks["lodestone"]["Stop"] },
+                "mine": hooks["mine"],
+            })
+        );
+        assert!(plugin.join("plugin.json").exists());
+        // A manifest naming another plugin stops install and uninstall before anything changes.
+        let manifest = read_json(&plugin.join("plugin.json"));
+        fs::write(plugin.join("plugin.json"), r#"{"name":"mine"}"#).unwrap();
+        let before = snapshot(&root.join("repo"));
+        assert!(check(&install(&agy, &t)).is_err());
+        assert!(check(&uninstall(&agy, &t)).is_err());
+        assert_eq!(snapshot(&root.join("repo")), before);
+        fs::write(plugin.join("plugin.json"), manifest.to_string()).unwrap();
+        // Once only lodestone's files are left, the plugin goes.
+        fs::remove_file(plugin.join("notes.md")).unwrap();
+        fs::write(plugin.join("mcp_config.json"), "{}").unwrap();
+        fs::write(plugin.join("hooks.json"), "{}").unwrap();
+        run_all(&uninstall(&agy, &t));
+        assert!(!plugin.exists());
+        // A manifest that does not parse stops install before anything changes.
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(plugin.join("plugin.json"), "{").unwrap();
+        let before = snapshot(&root.join("repo"));
+        assert!(check(&install(&agy, &t)).is_err());
+        assert_eq!(snapshot(&root.join("repo")), before);
     }
 
     #[test]

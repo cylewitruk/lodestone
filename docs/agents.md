@@ -4,7 +4,7 @@
 
 ```bash
 lode install                      # every harness whose CLI is on PATH, user scope
-lode install --client codex       # one harness (repeat --client for several)
+lode install --client codex       # one harness: claude, codex, antigravity (agy); repeatable
 lode install --scope project      # files to commit in the current repository
 lode uninstall                    # same flags; --dry-run prints the steps only
 ```
@@ -13,9 +13,14 @@ What it installs:
 
 | Part | User scope | Project scope |
 | ---- | ---- | ---- |
-| Skill | `~/.agents/skills/lodestone/`, linked from `~/.claude/skills/` | `.agents/skills/lodestone/`, linked from `.claude/skills/` |
+| Skill | `~/.agents/skills/lodestone/`, linked from `~/.claude/skills/` and `~/.gemini/config/skills/` | `.agents/skills/lodestone/`, linked from `.claude/skills/` |
 | MCP server (`lode mcp`) | `claude mcp add` / `~/.codex/config.toml` | `.mcp.json` / `.codex/config.toml` |
 | Reminder hooks | `~/.claude/settings.json` / `~/.codex/hooks.json` | `.claude/settings.json` / `.codex/hooks.json` |
+| Antigravity plugin (MCP server and hook) | `~/.gemini/config/plugins/lodestone/` | `.agents/plugins/lodestone/` |
+
+Antigravity takes a repository's MCP servers only from a plugin, so its server and `SessionStart`
+hook come in one at both scopes. It names the server `lodestone_lodestone`: allow its tools with
+`mcp(lodestone_lodestone/*)` (headless `agy -p` denies MCP calls without a rule).
 
 **First use:** Codex asks you to trust the hook once (`/hooks`). At project scope, Codex must
 trust the project and Claude Code asks you to approve the `.mcp.json` server.
@@ -82,6 +87,10 @@ carry `line`, `line_end`, `name_line` and `name_column`.
 - **Worktree sessions:** Claude Code in the desktop app starts the MCP server in the main
   checkout. For a Claude session (`CLAUDE_CODE_SESSION_ID`), lodestone uses the directory the
   session's hooks recorded in `~/.lodestone/hook-sessions/`.
+- **Client roots:** Antigravity starts the server in its plugin directory. A client on MCP
+  `2026-07-28` or later that has roots is asked for them with each call, and the call searches the
+  first, ahead of any hook marker. One server may serve several workspaces. If the client names
+  no roots, calls must pass `repo`.
 - **New worktrees:** the first search in a never-indexed worktree waits up to 30 s for its index.
 - **Approval:** the tools are read-only (`readOnlyHint`). For Codex, `lode install` sets
   `default_tools_approval_mode = "approve"`. When the daemon serving them has said its embeddings
@@ -94,6 +103,8 @@ carry `line`, `line_end`, `name_line` and `name_column`.
   - Claude Code's desktop app skips SessionStart hooks, so `lode hook prompt-submit` adds the
     reminder to the first prompt instead.
   - Subagents don't see their session's reminder, so `lode hook subagent-start` adds it to each.
+  - Antigravity gets the session-start reminder only: it has no subagent hook, and its
+    `PreToolUse` hook cannot add context without deciding whether the tool runs.
 - **Nudge:** for Claude, `lode hook pre-tool-use` runs before each shell command. When it searches
   a directory tree lodestone serves for three or more names (`grep -rn 'a\|b\|c' .`), it adds a
   line pointing at `semantic_code_search`, with `repo` when the search is in another checkout.
@@ -102,7 +113,9 @@ carry `line`, `line_end`, `name_line` and `name_column`.
 - **Your files:** `lode install` and `uninstall` change only the hook commands lodestone wrote (a
   hook of yours that runs `lode` stays), a `SKILL.md` lodestone shipped, and its own link to the
   shared skill. They check every step first, and change nothing if anything else is in the way:
-  your own skill, or a file, directory or other link where the link goes. Settings you added to
+  your own skill, or a file, directory or other link where the link goes, or an Antigravity
+  `plugin.json` naming another plugin. The shared skill stays while another harness still has
+  lodestone at that scope. Settings you added to
   the Codex server table stay, except HTTP-only ones when installing replaces the old HTTP server
   with the stdio one.
 - **Deferred tools:** the search tools ask Claude Code to load them upfront

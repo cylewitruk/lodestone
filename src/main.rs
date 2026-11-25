@@ -135,13 +135,12 @@ enum Cmd {
     Models,
     /// Built-in grammars, grammars found via tree-sitter's config, and the extension map.
     Languages,
-    /// Install the skill, MCP server and reminder hooks into Claude Code and/or Codex.
+    /// Install the skill, MCP server and reminder hooks into Claude Code, Codex and/or Antigravity.
     Install(HarnessArgs),
     /// Remove what `install` added.
     Uninstall(HarnessArgs),
     /// Hooks that agent harnesses run.
-    #[command(subcommand)]
-    Hook(HookCmd),
+    Hook(HookArgs),
     /// How agents use lodestone, from Claude Code and Codex transcripts. Reads only sessions in
     /// registered repositories, and records what it read so later runs read only new lines.
     #[command(group(clap::ArgGroup::new("source").required(true).multiple(true)))]
@@ -180,6 +179,15 @@ struct HarnessArgs {
     /// Print the steps without applying them.
     #[arg(long)]
     dry_run: bool,
+}
+
+#[derive(clap::Args)]
+struct HookArgs {
+    /// The harness running the hook, which reads its output.
+    #[arg(long, value_enum, global = true, default_value = "claude")]
+    client: Harness,
+    #[command(subcommand)]
+    event: HookCmd,
 }
 
 #[derive(Subcommand)]
@@ -354,13 +362,13 @@ fn main() -> anyhow::Result<()> {
             queries,
             json,
         } => {
-            let sources: Vec<(Harness, PathBuf)> =
-                [(Harness::Claude, claude), (Harness::Codex, codex)]
-                    .into_iter()
-                    .filter_map(|(h, dir)| {
-                        Some((h, dir?.unwrap_or_else(|| transcripts::default_dir(h))))
-                    })
-                    .collect();
+            let sources: Vec<(transcripts::Format, PathBuf)> = [
+                (transcripts::Format::Claude, claude),
+                (transcripts::Format::Codex, codex),
+            ]
+            .into_iter()
+            .filter_map(|(h, dir)| Some((h, dir?.unwrap_or_else(|| transcripts::default_dir(h)))))
+            .collect();
             let since = since
                 .map(|s| transcripts::parse_date(&s).context("--since takes a date: YYYY-MM-DD"))
                 .transpose()?;
@@ -370,10 +378,7 @@ fn main() -> anyhow::Result<()> {
                 read.lines, read.files_read, read.unchanged
             );
             let filter = transcripts::Filter {
-                harnesses: sources
-                    .iter()
-                    .map(|(h, _)| h.program().to_string())
-                    .collect(),
+                harnesses: sources.iter().map(|(h, _)| h.name().to_string()).collect(),
                 repo,
                 since,
             };
@@ -385,8 +390,8 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Cmd::Hook(cmd) => {
-            let event = match cmd {
+        Cmd::Hook(HookArgs { client, event }) => {
+            let event = match event {
                 HookCmd::SessionStart => HookEvent::SessionStart,
                 HookCmd::PromptSubmit => HookEvent::UserPromptSubmit,
                 HookCmd::SubagentStart => HookEvent::SubagentStart,
@@ -394,7 +399,7 @@ fn main() -> anyhow::Result<()> {
                 HookCmd::Unknown(_) => return Ok(()),
             };
             let input = HookInput::read()?;
-            let out = match (event, &input.command) {
+            let context = match (event, &input.command) {
                 (HookEvent::PreToolUse, command) => command
                     .as_deref()
                     .and_then(|c| agents::nudge(c, &input.dir, &config, cli.config.as_deref())),
@@ -406,7 +411,7 @@ fn main() -> anyhow::Result<()> {
                     cli.config.as_deref(),
                 ),
             };
-            if let Some(out) = out {
+            if let Some(out) = agents::output(client, event, context.as_deref()) {
                 println!("{out}");
             }
             Ok(())
@@ -605,7 +610,7 @@ fn harness_command(config: &Config, args: HarnessArgs, add: bool) -> anyhow::Res
             .collect();
         anyhow::ensure!(
             !clients.is_empty(),
-            "neither claude nor codex is on PATH; pass --client"
+            "none of claude, codex or agy is on PATH; pass --client"
         );
     }
     let cwd = std::env::current_dir()?;
@@ -656,6 +661,9 @@ Next: register repositories (`lode register <path>`). Agent sessions start the d
     }
     if clients.contains(&Harness::Claude) && scope == Scope::Project {
         println!("Claude Code: approve the `lodestone` server from .mcp.json on first use.");
+    }
+    if clients.contains(&Harness::Antigravity) {
+        println!("Antigravity: start a new conversation to load the lodestone plugin.");
     }
 }
 
@@ -708,7 +716,11 @@ impl HookInput {
         };
         Ok(Self {
             dir,
-            session: json["session_id"].as_str().map(String::from),
+            // Antigravity's id is `conversationId`.
+            session: json["session_id"]
+                .as_str()
+                .or_else(|| json["conversationId"].as_str())
+                .map(String::from),
             command: json["tool_input"]["command"].as_str().map(String::from),
         })
     }
