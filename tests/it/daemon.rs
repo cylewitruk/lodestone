@@ -16,7 +16,7 @@ use lodestone::api::mcp::{
 };
 use lodestone::api::types::{
     NOT_LOCAL, RegisterRequest, SearchResponse, SessionRequest, StatusOverview, StatusReport,
-    ToolRequest,
+    ToolRequest, UnregisterRequest,
 };
 use lodestone::cache::EmbeddingCache;
 use lodestone::client::Client;
@@ -1386,6 +1386,224 @@ fn register_and_index_default_to_the_current_checkout() {
     assert!(ok && text.starts_with(&root_str), "{text}");
     assert_eq!(roots(), [root_str]);
     assert!(lode(&home).arg("stop").status().unwrap().success());
+}
+
+/// `unregister` (`rm`) takes the current worktree, a relative path or a name, in-process or
+/// through a running daemon, and deletes the index.
+#[test]
+fn unregister_defaults_to_the_current_worktree_and_uses_a_running_daemon() {
+    let (a, b) = (
+        git_repo(2).canonicalize().unwrap(),
+        git_repo(2).canonicalize().unwrap(),
+    );
+    let home = on_demand_home(3);
+    let run = |dir: &Path, args: &[&str]| {
+        let out = lode(&home).args(args).current_dir(dir).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr);
+        (out.status.success(), text)
+    };
+    let registered = |root: &Path| {
+        fs::read_to_string(home.join("registry.json"))
+            .unwrap()
+            .contains(&*serde_json::to_string(root).unwrap())
+    };
+    let index_dir = |root: &Path| home.join("worktrees").join(worktree_id(root));
+
+    for root in [&a, &b] {
+        assert!(run(root, &["--local", "register"]).0);
+        assert!(index_dir(root).exists());
+    }
+    let (ok, text) = run(&a.join("core"), &["--local", "rm"]);
+    assert!(ok && text.contains(&*a.to_string_lossy()), "{text}");
+    assert!(!registered(&a) && !index_dir(&a).exists());
+    let (ok, text) = run(&a, &["--local", "rm"]);
+    assert!(!ok && text.contains("not a registered worktree"), "{text}");
+
+    // Through the daemon `register` starts: by relative path, then by name.
+    assert!(run(&a, &["register"]).0);
+    assert!(client(&home).is_some());
+    let (ok, text) = run(&a.join("core"), &["unregister", ".."]);
+    assert!(ok, "{text}");
+    assert!(!registered(&a) && !index_dir(&a).exists());
+    let name = client(&home)
+        .unwrap()
+        .repos()
+        .unwrap()
+        .into_iter()
+        .find(|r| Path::new(&r.root) == b)
+        .unwrap()
+        .name;
+    let (ok, text) = run(&home, &["unregister", &name]);
+    assert!(ok, "{text}");
+    assert!(!registered(&b) && !index_dir(&b).exists());
+    assert!(client(&home).unwrap().repos().unwrap().is_empty());
+    assert!(lode(&home).arg("stop").status().unwrap().success());
+}
+
+/// Retrying an interrupted `lode rm <name>` inside another worktree with a directory of that name
+/// removes the named worktree only.
+#[test]
+fn an_interrupted_removal_is_retried_by_name() {
+    let (a, b) = (
+        git_repo(2).canonicalize().unwrap(),
+        git_repo(2).canonicalize().unwrap(),
+    );
+    let home = on_demand_home(3);
+    let lode_in = |dir: &Path, args: &[&str]| lode(&home).args(args).current_dir(dir).output();
+    for root in [&a, &b] {
+        assert!(
+            lode_in(root, &["--local", "register"])
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    let path = home.join("registry.json");
+    let mut reg: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let entry = reg["repos"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|r| Path::new(r["root"].as_str().unwrap()) == b)
+        .unwrap();
+    entry["removing"] = true.into();
+    let name = entry["name"].as_str().unwrap().to_string();
+    fs::write(&path, serde_json::to_vec(&reg).unwrap()).unwrap();
+    fs::create_dir(a.join(&name)).unwrap();
+
+    let out = lode_in(&a, &["--local", "rm", &name]).unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let index_dir = |root: &Path| home.join("worktrees").join(worktree_id(root));
+    assert!(index_dir(&a).exists() && !index_dir(&b).exists());
+    let raw = fs::read_to_string(&path).unwrap();
+    let has = |root: &Path| raw.contains(&*serde_json::to_string(root).unwrap());
+    assert!(has(&a) && !has(&b), "{raw}");
+}
+
+/// From a deleted directory, `lode rm` still takes an absolute path or a name.
+#[cfg(unix)]
+#[test]
+fn unregister_works_from_a_deleted_directory() {
+    let (a, b) = (
+        git_repo(2).canonicalize().unwrap(),
+        git_repo(2).canonicalize().unwrap(),
+    );
+    let home = on_demand_home(3);
+    for root in [&a, &b] {
+        let out = lode(&home)
+            .args(["--local", "register"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+    let reg: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.join("registry.json")).unwrap()).unwrap();
+    let b_name = reg["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| Path::new(r["root"].as_str().unwrap()) == b)
+        .unwrap()["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let gone = tempdir().join("gone");
+    // `lode --local rm <target>`, run in `gone` once it is deleted.
+    let rm_from_gone = |target: &str| {
+        fs::create_dir_all(&gone).unwrap();
+        let lode = lode(&home);
+        let mut sh = Command::new("sh");
+        for (k, v) in lode.get_envs() {
+            match v {
+                Some(v) => sh.env(k, v),
+                None => sh.env_remove(k),
+            };
+        }
+        sh.args([
+            "-c",
+            "cd \"$1\" && rmdir \"$1\" && exec \"$0\" --local rm \"$2\"",
+        ])
+        .arg(lode.get_program())
+        .arg(&gone)
+        .arg(target)
+        .output()
+        .unwrap()
+    };
+    let index_dir = |root: &Path| home.join("worktrees").join(worktree_id(root));
+    for (target, root) in [(&*a.to_string_lossy(), &a), (&*b_name, &b)] {
+        let out = rm_from_gone(target);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!index_dir(root).exists());
+    }
+}
+
+/// A removal the daemon undoes (its index could not be deleted) leaves the worktree watched.
+#[cfg(unix)]
+#[test]
+fn a_failed_removal_keeps_the_worktree_watched() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = repo(2).canonicalize().unwrap();
+    let home = on_demand_home(60);
+    let mut child = lode(&home)
+        .arg("serve")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until("the daemon", Duration::from_secs(30), || {
+        client(&home).is_some()
+    });
+    let c = client(&home).unwrap();
+    let repo = Some(root.to_string_lossy().into_owned());
+    c.register(&RegisterRequest {
+        path: root.to_string_lossy().into_owned(),
+    })
+    .unwrap();
+    let indexed = || {
+        let s = c.status(repo.as_deref()).unwrap();
+        s.files_indexed > 0 && !s.indexing.running
+    };
+    wait_until("the first index", Duration::from_secs(30), indexed);
+
+    // Moved aside, but not deleted (see `a_failed_deletion_keeps_the_registration`).
+    let dir = home.join("worktrees").join(worktree_id(&root));
+    let chmod = |p: &Path, m| fs::set_permissions(p, fs::Permissions::from_mode(m)).unwrap();
+    chmod(&dir, 0o555);
+    let removed = c.unregister(&UnregisterRequest {
+        repo: Some(root.to_string_lossy().into_owned()),
+        cwd: None,
+    });
+    chmod(&dir.with_extension("deleting"), 0o755);
+    assert!(removed.is_err(), "{removed:?}");
+
+    // Picked up by the watcher: `status`, unlike a search, never watches a worktree itself.
+    let files = c.status(repo.as_deref()).unwrap().files_indexed;
+    write(
+        &root,
+        "core/src/added.rs",
+        "/// Added later.\npub fn added_after_rollback() {}\n",
+    );
+    wait_until("the new file", Duration::from_secs(30), || {
+        c.status(repo.as_deref()).unwrap().files_indexed > files
+    });
+    assert!(
+        c.status(repo.as_deref())
+            .unwrap()
+            .watcher
+            .starts_with("watching")
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
 }
 
 #[test]

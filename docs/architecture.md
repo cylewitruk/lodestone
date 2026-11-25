@@ -47,11 +47,12 @@ Everything lives under `~/.lodestone/` (`LODESTONE_HOME`):
 | Path | Holds |
 | ---- | ---- |
 | `config.toml` | [configuration](configuration.md) |
-| `registry.json` | registered worktrees |
+| `registry.json`, `registry.lock` | registered worktrees; the lock serializes updates across processes |
 | `cache.sqlite` | embeddings keyed by `blake3(model id ‖ chunk text)` |
 | `models/` | downloaded model weights |
 | `queries/<language>/` | user query overlays (`tags.scm`, `tests.scm`) |
 | `worktrees/<id>/` | one index per worktree (below) |
+| `worktrees/<id>.lock` | its writer lock: one process indexes it at a time; held while it is deleted, and kept after |
 | `daemon.sock`, `daemon.log` | the daemon's socket and, when auto-started, its log |
 | `hook-sessions/` | per-session markers written by the reminder hooks |
 | `transcripts.sqlite` | what `lode transcript-stats` extracted |
@@ -66,6 +67,7 @@ Per worktree:
 | `doc-vectors.usearch` | doc-comment vectors, only with `doc_vectors = true` |
 | `lexical/` | tantivy BM25 index over name, signature, doc and body |
 | `graph.json` | project units and their dependencies |
+| `instance` | identifies this creation of the index, so a process notices another deleted or recreated it |
 
 Because the manifest is written after items, vectors and lexical entries, a crash leaves each
 file either fully indexed or re-indexed on the next scan.

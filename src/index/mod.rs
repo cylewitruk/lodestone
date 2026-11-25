@@ -43,13 +43,104 @@ const DOC_VECTORS_FILE: &str = "doc-vectors.usearch";
 /// Why an index with a failed pass's work left (see [`Manifest::retry_full`]) may be out of date.
 const RETRY_REASON: &str =
     "an indexing pass failed before it finished; the next index retries its files";
-/// The worktree's interprocess writer lock file.
-const WRITER_LOCK: &str = "writer.lock";
 /// The paths of the batch being committed, until both stores have.
 const BATCH_JOURNAL: &str = "batch.json";
 
 /// A changed file read for indexing: (path, size, mtime, content hash, contents).
 type ReadFile = (String, u64, i64, String, Vec<u8>);
+
+/// The interprocess writer lock file of the index at `dir`: beside it, so that it outlives the
+/// directory's deletion (see [`delete`]). It is never deleted, so every process locks the same
+/// file.
+fn writer_lock_path(dir: &Path) -> PathBuf {
+    dir.with_extension("lock")
+}
+
+/// Takes the interprocess writer lock of the index at `dir`, for the worktree at `root`: one for
+/// every tokenizer, whose lexical indexes are separate while the items, manifest, vectors and
+/// journal are shared.
+fn writer_lock(dir: &Path, root: &Path) -> anyhow::Result<fs::File> {
+    let path = writer_lock_path(dir);
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(fs::TryLockError::WouldBlock) => {
+            anyhow::bail!("another lodestone process is indexing {}", root.display())
+        }
+        Err(fs::TryLockError::Error(e)) => Err(e.into()),
+    }
+}
+
+/// Deletes the index at `dir`, for the worktree at `root`, holding its writer lock throughout:
+/// nothing is deleted while another process indexes it. The index is first
+/// moved aside, so a failure leaves it either intact or gone (with leftovers the next attempt
+/// removes), never half-deleted. A symlink is removed itself, never what it points to.
+pub fn delete(dir: &Path, root: &Path) -> anyhow::Result<()> {
+    let context = || format!("deleting {}", dir.display());
+    let aside = dir.with_extension("deleting");
+    let present = |p: &Path| match fs::symlink_metadata(p) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e).with_context(context),
+    };
+    if !present(dir)? && !present(&aside)? {
+        return Ok(());
+    }
+    let _lock = writer_lock(dir, root).with_context(context)?;
+    let remove_aside = || match fs::remove_dir_all(&aside) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).with_context(context),
+        _ => Ok(()),
+    };
+    remove_aside()?;
+    match fs::rename(dir, &aside) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(context),
+        _ => {}
+    }
+    remove_aside()
+}
+
+/// The file naming one creation of an index directory (see [`instance_of`]).
+const INSTANCE: &str = "instance";
+
+/// The identity of the index at `dir`, created with it, so that a handle can tell its index from
+/// one deleted and created again at the same path.
+fn instance_of(dir: &Path) -> anyhow::Result<String> {
+    let path = dir.join(INSTANCE);
+    let context = || format!("reading {}", path.display());
+    match fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        r => return r.with_context(context),
+    }
+    static CREATED: AtomicU64 = AtomicU64::new(0);
+    let id = blake3::hash(
+        format!(
+            "{} {:?} {}",
+            std::process::id(),
+            SystemTime::now(),
+            CREATED.fetch_add(1, Ordering::Relaxed)
+        )
+        .as_bytes(),
+    )
+    .to_hex()[..16]
+        .to_string();
+    // Written whole, then linked into place, which fails if another process got there first.
+    let tmp = dir.join(format!("{INSTANCE}.{id}"));
+    fs::write(&tmp, &id).with_context(context)?;
+    let linked = fs::hard_link(&tmp, &path);
+    let _ = fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(id),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            fs::read_to_string(&path).with_context(context)
+        }
+        Err(e) => Err(e).with_context(context),
+    }
+}
 
 /// Worktree id: `blake3(canonical_root)`.
 /// Where a worktree's index lives: `<data dir>/worktrees/<worktree id>`.
@@ -91,6 +182,30 @@ pub struct Snapshot {
     pub version: u64,
 }
 
+impl Snapshot {
+    /// A snapshot of an empty index.
+    fn empty(
+        lexical: &Lexical,
+        model_id: &str,
+        dim: usize,
+        precision: Precision,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            items: Arc::new(HashMap::new()),
+            vectors: Arc::new(VectorIndex::new(dim, precision)?),
+            doc_vectors: Arc::new(VectorIndex::new(dim, precision)?),
+            searcher: lexical.searcher(),
+            graph: Arc::new(ProjectGraph::default()),
+            model_id: model_id.to_string(),
+            files_indexed: 0,
+            updated_at: 0,
+            stale: Vec::new(),
+            lexical_current: true,
+            version: 0,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Progress {
     pub running: bool,
@@ -120,7 +235,7 @@ pub struct IndexReport {
 }
 
 struct WriterState {
-    /// The worktree's interprocess writer lock (see [`WRITER_LOCK`]), held while this lives.
+    /// The worktree's interprocess writer lock (see [`writer_lock`]), held while this lives.
     _lock: fs::File,
     items: ItemStore,
     writer: IndexWriter,
@@ -132,12 +247,15 @@ pub struct WorktreeIndex {
     pub root: PathBuf,
     pub id: String,
     pub dir: PathBuf,
+    /// The identity of the index directory this handle opened (see [`instance_of`]).
+    instance: String,
     model_id: String,
     dim: usize,
     precision: Precision,
     doc_vectors: bool,
     tokenizer: TokenizerKind,
-    lexical: Lexical,
+    /// Swapped for an in-memory one once retired (see [`Self::retire`]).
+    lexical: ArcSwap<Lexical>,
     snapshot: ArcSwap<Snapshot>,
     writer: tokio::sync::Mutex<Option<WriterState>>,
     /// Whether a writer has checked consistency (see `repair`) since this index was opened.
@@ -149,6 +267,8 @@ pub struct WorktreeIndex {
     pending: Mutex<Option<String>>,
     /// The manifest generation this process last read or wrote (see [`Manifest::generation`]).
     generation: AtomicU64,
+    /// Set by [`Self::retire`]: the running pass stops at its next batch and no other starts.
+    retired: AtomicBool,
 }
 
 fn now_secs() -> u64 {
@@ -317,29 +437,19 @@ impl WorktreeIndex {
             TokenizerKind::Default => dir.join("lexical-default"),
         };
         let lexical = Lexical::open(&lexical_dir, config.lexical_tokenizer)?;
-        let empty = Snapshot {
-            items: Arc::new(HashMap::new()),
-            vectors: Arc::new(VectorIndex::new(dim, config.vector_precision)?),
-            doc_vectors: Arc::new(VectorIndex::new(dim, config.vector_precision)?),
-            searcher: lexical.searcher(),
-            graph: Arc::new(ProjectGraph::default()),
-            model_id: model_id.to_string(),
-            files_indexed: 0,
-            updated_at: 0,
-            stale: Vec::new(),
-            lexical_current: true,
-            version: 0,
-        };
+        let instance = instance_of(&dir)?;
+        let empty = Snapshot::empty(&lexical, model_id, dim, config.vector_precision)?;
         let w = Self {
             root: canonical_root.to_path_buf(),
             id: worktree_id(canonical_root),
             dir,
+            instance,
             model_id: model_id.to_string(),
             dim,
             precision: config.vector_precision,
             doc_vectors: config.doc_vectors,
             tokenizer: config.lexical_tokenizer,
-            lexical,
+            lexical: ArcSwap::from_pointee(lexical),
             snapshot: ArcSwap::from_pointee(empty),
             writer: tokio::sync::Mutex::new(None),
             repaired: AtomicBool::new(false),
@@ -347,6 +457,7 @@ impl WorktreeIndex {
             last_report: Mutex::new(None),
             pending: Mutex::new(None),
             generation: AtomicU64::new(0),
+            retired: AtomicBool::new(false),
         };
         w.load_snapshot(0)?;
         Ok(w)
@@ -420,8 +531,8 @@ impl WorktreeIndex {
         if stray_count(&vectors, &ids) + stray_count(&doc_vectors, &ids) > 0 {
             stale.push("vectors of deleted items remain (repaired on next index)".to_string());
         }
-        self.lexical.reload()?;
-        let searcher = self.lexical.searcher();
+        self.lexical.load().reload()?;
+        let searcher = self.lexical.load().searcher();
         // Another tokenizer's lexical index was kept in step with the items meanwhile (or no
         // manifest says which was): this one may map ids to items long gone.
         let lexical_current = manifest
@@ -475,8 +586,8 @@ impl WorktreeIndex {
         self.snapshot.load_full()
     }
 
-    pub fn lexical(&self) -> &Lexical {
-        &self.lexical
+    pub fn lexical(&self) -> Arc<Lexical> {
+        self.lexical.load_full()
     }
 
     pub fn progress(&self) -> Progress {
@@ -535,24 +646,53 @@ impl WorktreeIndex {
             .collect()
     }
 
-    /// Takes the worktree's interprocess writer lock: one for every tokenizer, whose lexical
-    /// indexes are separate while the items, manifest, vectors and journal are shared.
-    fn writer_lock(&self) -> anyhow::Result<fs::File> {
-        let path = self.dir.join(WRITER_LOCK);
-        let lock = fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
-            .with_context(|| format!("opening {}", path.display()))?;
-        match lock.try_lock() {
-            Ok(()) => Ok(lock),
-            Err(fs::TryLockError::WouldBlock) => anyhow::bail!(
-                "another lodestone process is indexing {}",
-                self.root.display()
-            ),
-            Err(fs::TryLockError::Error(e)) => Err(e.into()),
+    /// Stops indexing for good before the index is deleted: the running pass stops at its next
+    /// batch, the writer is dropped once it has, and later passes fail without writing. Then
+    /// closes the index's files (which Windows cannot delete while open), leaving this handle
+    /// empty. Must not be called from async context.
+    pub fn retire(&self) {
+        self.abandon();
+        *self.writer.blocking_lock() = None;
+        let closed = Lexical::in_ram(self.tokenizer).and_then(|lexical| {
+            let empty = Snapshot::empty(&lexical, &self.model_id, self.dim, self.precision)?;
+            Ok((lexical, empty))
+        });
+        match closed {
+            Ok((lexical, empty)) => {
+                self.snapshot.store(Arc::new(empty));
+                self.lexical.store(Arc::new(lexical));
+            }
+            Err(e) => tracing::warn!("closing the index of {}: {e:#}", self.root.display()),
         }
+    }
+
+    /// Marks this handle retired without waiting for its writer, for an index another process
+    /// deleted (which it could only do while no pass here held the writer lock).
+    pub fn abandon(&self) {
+        self.retired.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the index on disk is still the one this handle opened: not deleted, or deleted
+    /// and created again, by another process.
+    pub fn is_current(&self) -> bool {
+        fs::read_to_string(self.dir.join(INSTANCE)).is_ok_and(|i| i == self.instance)
+    }
+
+    pub fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::SeqCst)
+    }
+
+    fn ensure_not_retired(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.is_retired(),
+            "{} was unregistered",
+            self.root.display()
+        );
+        Ok(())
+    }
+
+    fn writer_lock(&self) -> anyhow::Result<fs::File> {
+        writer_lock(&self.dir, &self.root)
     }
 
     /// Replaces the lexical index's entries with `items`' and publishes it, in step.
@@ -563,16 +703,16 @@ impl WorktreeIndex {
     ) -> anyhow::Result<()> {
         st.writer.delete_all_documents()?;
         for r in items.values() {
-            self.lexical.add(&st.writer, r)?;
+            self.lexical.load().add(&st.writer, r)?;
         }
         st.writer.commit()?;
-        self.lexical.reload()?;
+        self.lexical.load().reload()?;
         let snap = self.snapshot();
         self.snapshot.store(Arc::new(Snapshot {
             items: snap.items.clone(),
             vectors: snap.vectors.clone(),
             doc_vectors: snap.doc_vectors.clone(),
-            searcher: self.lexical.searcher(),
+            searcher: self.lexical.load().searcher(),
             graph: snap.graph.clone(),
             model_id: snap.model_id.clone(),
             files_indexed: snap.files_indexed,
@@ -645,10 +785,20 @@ impl WorktreeIndex {
         opts: IndexOptions,
     ) -> anyhow::Result<IndexReport> {
         let mut guard = self.writer.blocking_lock();
+        self.ensure_not_retired()?;
         if guard.is_none() {
             // Taken before anything a writer recovers or rewrites.
             let lock = self.writer_lock()?;
-            let writer = self.lexical.writer().context("acquiring lexical writer")?;
+            // Another process may have deleted the index while this one held no writer lock.
+            if !self.is_current() {
+                self.abandon();
+            }
+            self.ensure_not_retired()?;
+            let writer = self
+                .lexical
+                .load()
+                .writer()
+                .context("acquiring lexical writer")?;
             let mut manifest = self.manifest().unwrap_or_else(|| Manifest {
                 root: self.root.clone(),
                 model_id: self.model_id.clone(),
@@ -665,8 +815,12 @@ impl WorktreeIndex {
             // ever allocated (`Manifest::next_id`), which a failed or interrupted batch, or
             // another tokenizer's era, may have left differing.
             let published = self.snapshot().items.keys().max().copied().unwrap_or(0);
-            let next_id = (items.max_id()?.max(published).max(self.lexical.max_id()?) + 1)
-                .max(manifest.next_id);
+            let next_id = (items
+                .max_id()?
+                .max(published)
+                .max(self.lexical.load().max_id()?)
+                + 1)
+            .max(manifest.next_id);
             self.recover_batch(&mut manifest, next_id)?;
             *guard = Some(WriterState {
                 _lock: lock,
@@ -749,7 +903,7 @@ impl WorktreeIndex {
             .collect();
         self.restore_from_cache(ctx, &mut doc_vectors, &doc_missing, &mut drop_paths)?;
         // A tokenizer change rebuilds the lexical index right after (see `run`).
-        let searcher = self.lexical.searcher();
+        let searcher = self.lexical.load().searcher();
         if searcher.num_docs() as usize != snap.items.len()
             && st.manifest.lexical_tokenizer == Some(self.tokenizer)
         {
@@ -767,7 +921,7 @@ impl WorktreeIndex {
             snap.items.clone(),
             Arc::new(vectors),
             Arc::new(doc_vectors),
-            self.lexical.searcher(),
+            self.lexical.load().searcher(),
             snap.graph.clone(),
             st.manifest.files.len(),
             snap.updated_at,
@@ -977,6 +1131,7 @@ impl WorktreeIndex {
         }
 
         for batch in changed.chunks(FILES_PER_BATCH) {
+            self.ensure_not_retired()?;
             // Read + hash; files whose content is unchanged only get their stat refreshed.
             let (read, failed): (Vec<ReadFile>, Vec<String>) =
                 batch.par_iter().partition_map(|(rel, size, mtime)| {
@@ -1360,10 +1515,10 @@ impl WorktreeIndex {
         // lexical write is rolled back, so neither store gets ahead of the other.
         let WriterState { items, writer, .. } = st;
         items.replace_files_with(paths, &rows, || {
-            self.lexical.delete_paths(writer, paths);
+            self.lexical.load().delete_paths(writer, paths);
             let written = rows
                 .iter()
-                .try_for_each(|r| self.lexical.add(writer, r))
+                .try_for_each(|r| self.lexical.load().add(writer, r))
                 .and_then(|()| Ok(writer.commit().map(|_| ())?));
             if written.is_err()
                 && let Err(e) = writer.rollback()
@@ -1372,7 +1527,7 @@ impl WorktreeIndex {
             }
             written
         })?;
-        self.lexical.reload()?;
+        self.lexical.load().reload()?;
         let mut vec_index = snap.vectors.duplicate()?;
         vec_index.remove_many(&old_ids);
         let entries: Vec<(u64, &[f32])> = rows
@@ -1401,7 +1556,7 @@ impl WorktreeIndex {
             Arc::new(items),
             Arc::new(vec_index),
             Arc::new(doc_index),
-            self.lexical.searcher(),
+            self.lexical.load().searcher(),
             graph.clone(),
             st.manifest.files.len(),
             snap.updated_at,

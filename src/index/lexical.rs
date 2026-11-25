@@ -275,6 +275,16 @@ impl Lexical {
                 Index::create_in_dir(dir, schema)?
             }
         };
+        Self::with_index(index, fields, kind)
+    }
+
+    /// An empty index held in memory, which keeps no file open.
+    pub fn in_ram(kind: TokenizerKind) -> anyhow::Result<Self> {
+        let (schema, fields) = schema();
+        Self::with_index(Index::create_in_ram(schema), fields, kind)
+    }
+
+    fn with_index(index: Index, fields: Fields, kind: TokenizerKind) -> anyhow::Result<Self> {
         register(&index, kind);
         let reader = index
             .reader_builder()

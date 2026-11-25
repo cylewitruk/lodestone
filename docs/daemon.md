@@ -23,6 +23,12 @@ One daemon per user keeps the model loaded and serves every registered repositor
 
 - **Registering:** `lode register` adds the path to `~/.lodestone/registry.json` and starts its
   first index in the background; `lode status` shows when it is done.
+- **Unregistering:** `lode unregister` (`lode rm`) removes a worktree, by name or path (a deleted
+  one by its root), and deletes its index. It stops the daemon's indexing pass first; while another
+  process indexes it (on Windows, has it open at all), or if the index cannot be deleted, it fails
+  and stays registered. A removal interrupted part-way is finished by the next `lode rm`, by
+  registering it again, or by the daemon. A linked worktree of a registered repository registers
+  itself again on next use.
 - **One index per worktree:** results never mix worktrees. They share an embedding cache, so a
   second worktree only re-embeds what differs.
 - **Linked worktrees** (`git worktree add`) of a registered repository register themselves on
@@ -59,6 +65,7 @@ lodestone rescans every 60 s and says so in `lode status`.
 | `lode stop` | stop the daemon gracefully |
 | `lode mcp` | MCP server over stdio; starts the daemon on demand |
 | `lode register [path]` | add, watch and index a worktree (default: the current checkout) |
+| `lode unregister [name\|path]` | unregister a worktree and delete its index (alias `rm`; default: the current one) |
 | `lode index [path] [--force]` | re-index a registered worktree (incremental unless `--force`) |
 | `lode search <query>` | search a registered worktree |
 | `lode status [--repo name\|path] [--json]` | index freshness of a worktree; elsewhere, a summary of all |
@@ -68,8 +75,8 @@ lodestone rescans every 60 s and says so in `lode status`.
 | `lode languages` | grammars and the extension map |
 | `lode bench <eval-dir>` | retrieval quality, index time and latency ([evaluation](evaluation.md)) |
 
-`search`, `register` and `index` start the daemon if needed. `status` never starts one; without a
-daemon it reads the indexes directly. `--local` runs everything in-process.
+`search`, `register` and `index` start the daemon if needed. `status` and `unregister` never start
+one; without a daemon they act on the indexes directly. `--local` runs everything in-process.
 
 ## REST
 
@@ -82,6 +89,7 @@ POST /v1/search   {query, repo, from_unit, language, paths, top_k, include_tests
 GET  /v1/status?repo=&format=text|json
 GET  /v1/status/all?format=text|json
 POST /v1/register {path}
+POST /v1/unregister {repo, cwd}
 POST /v1/index    {repo, force}
 GET  /v1/repos
 ```
