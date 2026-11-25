@@ -653,7 +653,7 @@ fn doc_only_names(w: &lodestone::index::WorktreeIndex, query: &str) -> Vec<Strin
     let snap = w.snapshot();
     let out = lodestone::search::search(
         &snap,
-        w.lexical(),
+        &w.lexical(),
         &SearchParams {
             query,
             query_vector: Some(&q),
@@ -2112,12 +2112,13 @@ fn unregister_leaves_an_index_another_process_is_writing() {
     assert_eq!(remover.repos().len(), 1);
     pass.join().unwrap().unwrap();
     assert!(w.dir.exists());
-    // Once that process is done with it (here, has dropped its writer).
-    w.release_writer();
+    // Once that process has exited.
+    let dir = w.dir.clone();
+    drop((writer, w));
     remover
         .unregister(Some(&root.to_string_lossy()), None)
         .unwrap();
-    assert!(!w.dir.exists());
+    assert!(!dir.exists());
 }
 
 /// An index that cannot be deleted is reported and stays registered, so removal can be retried;
@@ -2193,6 +2194,10 @@ fn a_new_registration_keeps_its_watch_through_the_old_ones_teardown() {
 /// A process that had the index open while another deleted it (`lode --local rm` beside a
 /// daemon) reopens it once registered again, instead of writing to the deleted directory.
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows cannot delete an index another process has open"
+)]
 fn an_index_deleted_by_another_process_is_reopened() {
     let data = tempdir();
     let ((daemon, _), (local, _)) = (engine(&data), engine(&data));
@@ -2303,10 +2308,12 @@ fn a_failed_prune_is_retried() {
     fs::remove_dir_all(&wt).unwrap();
     assert!(e.tidy_worktrees().unwrap().is_empty());
     assert_eq!(e.repos().len(), 2);
-    held.release_writer();
+    // Once that process has exited.
+    let dir = held.dir.clone();
+    drop((other, held));
     assert_eq!(e.tidy_worktrees().unwrap(), [wt]);
     assert_eq!(e.repos().len(), 1);
-    assert!(!held.dir.exists());
+    assert!(!dir.exists());
 }
 
 /// Result names for `query` in `root`.
@@ -2321,6 +2328,10 @@ fn found(e: &Engine, root: &Path, query: &str) -> BTreeSet<String> {
 /// An index deleted and created again by another process (`--local rm`, then `--local register`)
 /// is told apart from the one a process had open, which it then reopens.
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows cannot delete an index another process has open"
+)]
 fn an_index_created_again_by_another_process_is_reopened() {
     let data = tempdir();
     let ((daemon, _), (local, _)) = (engine(&data), engine(&data));
@@ -2355,6 +2366,10 @@ fn an_index_created_again_by_another_process_is_reopened() {
 /// A watch whose worktree another process unregisters ends at its next pass, without writing
 /// the deleted index back.
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows cannot delete an index another process has open"
+)]
 fn a_watch_ends_when_another_process_unregisters_its_worktree() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _rt = rt.enter();
@@ -2441,13 +2456,16 @@ fn mark_removing(data: &Path, root: &Path) {
 fn an_interrupted_removal_is_finished_later() {
     let data = tempdir();
     let (e, _) = engine(&data);
+    // Indexed by another process, which then stopped part-way through removing it.
     let interrupted = || {
         let root = fs::canonicalize(fixture()).unwrap();
-        let w = e.register(&root).unwrap();
-        e.index_blocking(&w, IndexOptions::default()).unwrap();
-        w.release_writer();
-        let aside = w.dir.with_extension("deleting");
-        fs::rename(&w.dir, &aside).unwrap();
+        let (other, _) = engine(&data);
+        let w = other.register(&root).unwrap();
+        other.index_blocking(&w, IndexOptions::default()).unwrap();
+        let dir = w.dir.clone();
+        drop((other, w));
+        let aside = dir.with_extension("deleting");
+        fs::rename(&dir, &aside).unwrap();
         mark_removing(&data, &root);
         (root, aside)
     };

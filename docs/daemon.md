@@ -25,10 +25,10 @@ One daemon per user keeps the model loaded and serves every registered repositor
   first index in the background; `lode status` shows when it is done.
 - **Unregistering:** `lode unregister` (`lode rm`) removes a worktree, by name or path (a deleted
   one by its root), and deletes its index. It stops the daemon's indexing pass first; while another
-  process indexes it, or if the index cannot be deleted, it fails and stays registered. A removal
-  interrupted part-way is finished by the next `lode rm`, by registering it again, or by the
-  daemon. A linked worktree of a
-  registered repository registers itself again on next use.
+  process indexes it (on Windows, has it open at all), or if the index cannot be deleted, it fails
+  and stays registered. A removal interrupted part-way is finished by the next `lode rm`, by
+  registering it again, or by the daemon. A linked worktree of a registered repository registers
+  itself again on next use.
 - **One index per worktree:** results never mix worktrees. They share an embedding cache, so a
   second worktree only re-embeds what differs.
 - **Linked worktrees** (`git worktree add`) of a registered repository register themselves on

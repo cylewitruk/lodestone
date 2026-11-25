@@ -182,6 +182,30 @@ pub struct Snapshot {
     pub version: u64,
 }
 
+impl Snapshot {
+    /// A snapshot of an empty index.
+    fn empty(
+        lexical: &Lexical,
+        model_id: &str,
+        dim: usize,
+        precision: Precision,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            items: Arc::new(HashMap::new()),
+            vectors: Arc::new(VectorIndex::new(dim, precision)?),
+            doc_vectors: Arc::new(VectorIndex::new(dim, precision)?),
+            searcher: lexical.searcher(),
+            graph: Arc::new(ProjectGraph::default()),
+            model_id: model_id.to_string(),
+            files_indexed: 0,
+            updated_at: 0,
+            stale: Vec::new(),
+            lexical_current: true,
+            version: 0,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Progress {
     pub running: bool,
@@ -230,7 +254,8 @@ pub struct WorktreeIndex {
     precision: Precision,
     doc_vectors: bool,
     tokenizer: TokenizerKind,
-    lexical: Lexical,
+    /// Swapped for an in-memory one once retired (see [`Self::retire`]).
+    lexical: ArcSwap<Lexical>,
     snapshot: ArcSwap<Snapshot>,
     writer: tokio::sync::Mutex<Option<WriterState>>,
     /// Whether a writer has checked consistency (see `repair`) since this index was opened.
@@ -413,19 +438,7 @@ impl WorktreeIndex {
         };
         let lexical = Lexical::open(&lexical_dir, config.lexical_tokenizer)?;
         let instance = instance_of(&dir)?;
-        let empty = Snapshot {
-            items: Arc::new(HashMap::new()),
-            vectors: Arc::new(VectorIndex::new(dim, config.vector_precision)?),
-            doc_vectors: Arc::new(VectorIndex::new(dim, config.vector_precision)?),
-            searcher: lexical.searcher(),
-            graph: Arc::new(ProjectGraph::default()),
-            model_id: model_id.to_string(),
-            files_indexed: 0,
-            updated_at: 0,
-            stale: Vec::new(),
-            lexical_current: true,
-            version: 0,
-        };
+        let empty = Snapshot::empty(&lexical, model_id, dim, config.vector_precision)?;
         let w = Self {
             root: canonical_root.to_path_buf(),
             id: worktree_id(canonical_root),
@@ -436,7 +449,7 @@ impl WorktreeIndex {
             precision: config.vector_precision,
             doc_vectors: config.doc_vectors,
             tokenizer: config.lexical_tokenizer,
-            lexical,
+            lexical: ArcSwap::from_pointee(lexical),
             snapshot: ArcSwap::from_pointee(empty),
             writer: tokio::sync::Mutex::new(None),
             repaired: AtomicBool::new(false),
@@ -518,8 +531,8 @@ impl WorktreeIndex {
         if stray_count(&vectors, &ids) + stray_count(&doc_vectors, &ids) > 0 {
             stale.push("vectors of deleted items remain (repaired on next index)".to_string());
         }
-        self.lexical.reload()?;
-        let searcher = self.lexical.searcher();
+        self.lexical.load().reload()?;
+        let searcher = self.lexical.load().searcher();
         // Another tokenizer's lexical index was kept in step with the items meanwhile (or no
         // manifest says which was): this one may map ids to items long gone.
         let lexical_current = manifest
@@ -573,8 +586,8 @@ impl WorktreeIndex {
         self.snapshot.load_full()
     }
 
-    pub fn lexical(&self) -> &Lexical {
-        &self.lexical
+    pub fn lexical(&self) -> Arc<Lexical> {
+        self.lexical.load_full()
     }
 
     pub fn progress(&self) -> Progress {
@@ -634,11 +647,23 @@ impl WorktreeIndex {
     }
 
     /// Stops indexing for good before the index is deleted: the running pass stops at its next
-    /// batch, the writer is dropped once it has, and later passes fail without writing. Must not
-    /// be called from async context.
+    /// batch, the writer is dropped once it has, and later passes fail without writing. Then
+    /// closes the index's files (which Windows cannot delete while open), leaving this handle
+    /// empty. Must not be called from async context.
     pub fn retire(&self) {
         self.abandon();
         *self.writer.blocking_lock() = None;
+        let closed = Lexical::in_ram(self.tokenizer).and_then(|lexical| {
+            let empty = Snapshot::empty(&lexical, &self.model_id, self.dim, self.precision)?;
+            Ok((lexical, empty))
+        });
+        match closed {
+            Ok((lexical, empty)) => {
+                self.snapshot.store(Arc::new(empty));
+                self.lexical.store(Arc::new(lexical));
+            }
+            Err(e) => tracing::warn!("closing the index of {}: {e:#}", self.root.display()),
+        }
     }
 
     /// Marks this handle retired without waiting for its writer, for an index another process
@@ -678,16 +703,16 @@ impl WorktreeIndex {
     ) -> anyhow::Result<()> {
         st.writer.delete_all_documents()?;
         for r in items.values() {
-            self.lexical.add(&st.writer, r)?;
+            self.lexical.load().add(&st.writer, r)?;
         }
         st.writer.commit()?;
-        self.lexical.reload()?;
+        self.lexical.load().reload()?;
         let snap = self.snapshot();
         self.snapshot.store(Arc::new(Snapshot {
             items: snap.items.clone(),
             vectors: snap.vectors.clone(),
             doc_vectors: snap.doc_vectors.clone(),
-            searcher: self.lexical.searcher(),
+            searcher: self.lexical.load().searcher(),
             graph: snap.graph.clone(),
             model_id: snap.model_id.clone(),
             files_indexed: snap.files_indexed,
@@ -769,7 +794,11 @@ impl WorktreeIndex {
                 self.abandon();
             }
             self.ensure_not_retired()?;
-            let writer = self.lexical.writer().context("acquiring lexical writer")?;
+            let writer = self
+                .lexical
+                .load()
+                .writer()
+                .context("acquiring lexical writer")?;
             let mut manifest = self.manifest().unwrap_or_else(|| Manifest {
                 root: self.root.clone(),
                 model_id: self.model_id.clone(),
@@ -786,8 +815,12 @@ impl WorktreeIndex {
             // ever allocated (`Manifest::next_id`), which a failed or interrupted batch, or
             // another tokenizer's era, may have left differing.
             let published = self.snapshot().items.keys().max().copied().unwrap_or(0);
-            let next_id = (items.max_id()?.max(published).max(self.lexical.max_id()?) + 1)
-                .max(manifest.next_id);
+            let next_id = (items
+                .max_id()?
+                .max(published)
+                .max(self.lexical.load().max_id()?)
+                + 1)
+            .max(manifest.next_id);
             self.recover_batch(&mut manifest, next_id)?;
             *guard = Some(WriterState {
                 _lock: lock,
@@ -870,7 +903,7 @@ impl WorktreeIndex {
             .collect();
         self.restore_from_cache(ctx, &mut doc_vectors, &doc_missing, &mut drop_paths)?;
         // A tokenizer change rebuilds the lexical index right after (see `run`).
-        let searcher = self.lexical.searcher();
+        let searcher = self.lexical.load().searcher();
         if searcher.num_docs() as usize != snap.items.len()
             && st.manifest.lexical_tokenizer == Some(self.tokenizer)
         {
@@ -888,7 +921,7 @@ impl WorktreeIndex {
             snap.items.clone(),
             Arc::new(vectors),
             Arc::new(doc_vectors),
-            self.lexical.searcher(),
+            self.lexical.load().searcher(),
             snap.graph.clone(),
             st.manifest.files.len(),
             snap.updated_at,
@@ -1482,10 +1515,10 @@ impl WorktreeIndex {
         // lexical write is rolled back, so neither store gets ahead of the other.
         let WriterState { items, writer, .. } = st;
         items.replace_files_with(paths, &rows, || {
-            self.lexical.delete_paths(writer, paths);
+            self.lexical.load().delete_paths(writer, paths);
             let written = rows
                 .iter()
-                .try_for_each(|r| self.lexical.add(writer, r))
+                .try_for_each(|r| self.lexical.load().add(writer, r))
                 .and_then(|()| Ok(writer.commit().map(|_| ())?));
             if written.is_err()
                 && let Err(e) = writer.rollback()
@@ -1494,7 +1527,7 @@ impl WorktreeIndex {
             }
             written
         })?;
-        self.lexical.reload()?;
+        self.lexical.load().reload()?;
         let mut vec_index = snap.vectors.duplicate()?;
         vec_index.remove_many(&old_ids);
         let entries: Vec<(u64, &[f32])> = rows
@@ -1523,7 +1556,7 @@ impl WorktreeIndex {
             Arc::new(items),
             Arc::new(vec_index),
             Arc::new(doc_index),
-            self.lexical.searcher(),
+            self.lexical.load().searcher(),
             graph.clone(),
             st.manifest.files.len(),
             snap.updated_at,

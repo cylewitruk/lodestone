@@ -894,7 +894,7 @@ impl Engine {
         }
         let mut outcome = search::search(
             &snap,
-            w.lexical(),
+            &w.lexical(),
             &SearchParams {
                 query: &req.query,
                 query_vector: query_vec.as_deref(),
