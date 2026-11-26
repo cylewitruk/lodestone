@@ -74,9 +74,15 @@ lodestone rescans every 60 s and says so in `lode status`.
 | `lode models` | configured models and available backends |
 | `lode languages` | grammars and the extension map |
 | `lode bench <eval-dir>` | retrieval quality, index time and latency ([evaluation](evaluation.md)) |
+| `lode upgrade [--force]` | install the latest release and stop the daemon (alias `update`; `--force` reinstalls it); installers' installs only |
 
 `search`, `register` and `index` start the daemon if needed. `status` and `unregister` never start
 one; without a daemon they act on the indexes directly. `--local` runs everything in-process.
+
+Once a day, a command run at a terminal looks up the latest GitHub release in the background and
+later ones print a line on stderr while it is newer. `mcp`, `serve`, hooks and `--json` output
+never do. `LODESTONE_NO_UPDATE_CHECK=1` turns it off. `LODESTONE_GITHUB_TOKEN` authenticates the
+lookups (and `lode upgrade`'s) where GitHub's per-IP limit for anonymous calls is shared.
 
 ## REST
 

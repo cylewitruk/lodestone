@@ -665,7 +665,12 @@ fn on_demand_home(idle_secs: u64) -> PathBuf {
 }
 
 fn lode(home: &Path) -> Command {
-    let mut c = Command::new(BIN);
+    lode_at(Path::new(BIN), home)
+}
+
+/// [`lode`], running the binary at `exe`.
+fn lode_at(exe: &Path, home: &Path) -> Command {
+    let mut c = Command::new(exe);
     c.env("LODESTONE_HOME", home)
         // `own_git_config`'s, where the test wrote one; otherwise the machine's.
         .env("GIT_CONFIG_GLOBAL", home.join("gitconfig"))
@@ -946,6 +951,117 @@ fn stop_and_sigterm_shut_the_daemon_down_gracefully() {
         started.elapsed()
     );
     assert!(!socket.exists());
+}
+
+/// `lode stop` waits for a daemon still starting (holding the socket's lock, not yet answering)
+/// rather than taking it for none.
+#[cfg(unix)]
+#[test]
+fn stop_waits_for_a_daemon_still_starting() {
+    let home = on_demand_home(0);
+    let lock = fs::File::create(home_config(&home).lock_path()).unwrap();
+    lock.lock().unwrap();
+    let mut stop = lode(&home)
+        .arg("stop")
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        stop.try_wait().unwrap().is_none(),
+        "stop returned while a daemon was starting"
+    );
+    drop(lock);
+    let out = stop.wait_with_output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("no lodestone daemon running"));
+}
+
+/// `lode upgrade --force` in an install the lodestone installer made (a sandboxed receipt and
+/// prefix), with a daemon running from the same binary: the latest release's installer replaces
+/// the binary, and the daemon is stopped.
+#[test]
+#[ignore = "downloads the latest release from GitHub; CI runs it on every platform"]
+fn upgrade_installs_the_latest_release_over_a_running_daemon() {
+    let home = on_demand_home(0);
+    let sandbox = tempdir();
+    let config_home = sandbox.join("config");
+    let receipts = config_home.join("lodestone-cli");
+    let prefix = sandbox.join("prefix");
+    let exe = prefix.join("bin").join(Path::new(BIN).file_name().unwrap());
+    fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    fs::create_dir_all(&receipts).unwrap();
+    fs::copy(BIN, &exe).unwrap();
+    let (owner, name) = env!("CARGO_PKG_REPOSITORY")
+        .strip_prefix("https://github.com/")
+        .and_then(|r| r.split_once('/'))
+        .unwrap();
+    let receipt = json!({
+        "install_prefix": prefix,
+        "install_layout": "cargo-home",
+        "binaries": ["lode"],
+        "cdylibs": [],
+        "cstaticlibs": [],
+        "source": {
+            "release_type": "github",
+            "owner": owner,
+            "name": name,
+            "app_name": env!("CARGO_PKG_NAME"),
+        },
+        "version": env!("CARGO_PKG_VERSION"),
+        "provider": { "source": "cargo-dist", "version": "0.34.0" },
+        "binary_aliases": {},
+        "modify_path": false,
+    });
+    fs::write(
+        receipts.join("lodestone-cli-receipt.json"),
+        receipt.to_string(),
+    )
+    .unwrap();
+
+    // Killed on drop, should the download or an assertion fail.
+    let mut daemon = Daemon {
+        child: lode_at(&exe, &home)
+            .args(["serve", "--on-demand"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+        base: String::new(),
+    };
+    wait_until("the daemon", Duration::from_secs(30), || {
+        client(&home).is_some()
+    });
+
+    // Where the installer reads and writes its receipt, on every platform.
+    let out = lode_at(&exe, &home)
+        .args(["upgrade", "--force"])
+        .env("HOME", sandbox.join("home"))
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("LOCALAPPDATA", sandbox.join("local"))
+        .env("AXOUPDATER_CONFIG_PATH", &receipts)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{out:?}");
+    let version = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("installed lode "))
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no installed version in {stdout}"));
+    assert!(stdout.contains("stopped the daemon"), "{stdout}");
+    assert!(daemon.child.wait().unwrap().success());
+
+    let installed = Command::new(&exe).arg("--version").output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&installed.stdout).trim(),
+        format!("lode {version}")
+    );
+    assert_ne!(
+        fs::read(&exe).unwrap(),
+        fs::read(BIN).unwrap(),
+        "not replaced"
+    );
 }
 
 /// Calls one MCP tool through a `lode mcp` relay started in `dir`; returns (is_error, text).

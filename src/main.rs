@@ -1,5 +1,5 @@
+use std::io::IsTerminal;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -16,6 +16,7 @@ use lodestone::embed;
 use lodestone::index::IndexOptions;
 use lodestone::registry::{self, Engine};
 use lodestone::transcripts;
+use lodestone::update::{self, Upgrade};
 
 #[derive(Parser)]
 #[command(
@@ -163,6 +164,36 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Upgrade lode to the latest GitHub release, then stop the daemon so the next command
+    /// starts the new one.
+    #[command(visible_alias = "update")]
+    Upgrade {
+        /// Reinstall the latest release even when this lode is as new (e.g. to repair it).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Look up the latest release for the new-version notice (run in the background).
+    #[command(hide = true)]
+    UpdateCheck,
+}
+
+impl Cmd {
+    /// Whether to tell a person at a terminal that a newer release is out: not where an agent
+    /// harness or a program reads the output.
+    fn shows_update_notice(&self) -> bool {
+        !matches!(
+            self,
+            Self::Serve { .. }
+                | Self::Mcp
+                | Self::Hook(_)
+                | Self::Upgrade { .. }
+                | Self::UpdateCheck
+                | Self::Search { json: true, .. }
+                | Self::Status { json: true, .. }
+                | Self::Bench { json: true, .. }
+                | Self::TranscriptStats { json: true, .. }
+        )
+    }
 }
 
 #[derive(clap::Args)]
@@ -205,9 +236,6 @@ enum HookCmd {
     Unknown(#[expect(dead_code, reason = "clap collects the arguments here")] Vec<String>),
 }
 
-/// How long `lode stop` waits for the daemon to exit.
-const STOP_WAIT: Duration = Duration::from_secs(30);
-
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -217,7 +245,19 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
-    let mut config = Config::load(cli.config.as_deref())?;
+    let config = Config::load(cli.config.as_deref())?;
+    // Read before the command runs (which may take the config), shown after its output.
+    let notice = (cli.cmd.shows_update_notice() && std::io::stderr().is_terminal())
+        .then(|| update::notice(&config, cli.config.as_deref()))
+        .flatten();
+    let result = run(cli, config);
+    if let Some(notice) = notice {
+        eprintln!("\n{notice}");
+    }
+    result
+}
+
+fn run(cli: Cli, mut config: Config) -> anyhow::Result<()> {
     // `search`, `register` and `index` start an on-demand daemon when none runs, like `lode mcp`;
     // `status` and `unregister` only use one that is already running.
     let daemon = |start: bool| -> anyhow::Result<Option<Client>> {
@@ -244,15 +284,35 @@ fn main() -> anyhow::Result<()> {
             served
         }
         Cmd::Stop => {
-            let Some(c) = Client::connect(&config.endpoint()) else {
+            if client::stop_daemon(&config)? {
+                println!("stopped");
+            } else {
                 println!("no lodestone daemon running");
-                return Ok(());
-            };
-            c.stop()?;
-            client::wait_until_stopped(&config, STOP_WAIT)?;
-            println!("stopped");
+            }
             Ok(())
         }
+        Cmd::Upgrade { force } => {
+            match update::upgrade(&config, force)? {
+                Upgrade::Upgraded { to, stopped_daemon } => {
+                    println!("installed lode {to} (was {})", update::current());
+                    if stopped_daemon {
+                        println!(
+                            "stopped the daemon; the next command starts the new one. Running \
+                             agent sessions use the new version once restarted."
+                        );
+                    }
+                }
+                Upgrade::UpToDate => println!("lode {} is the latest release", update::current()),
+                Upgrade::Unmanaged { latest } => println!(
+                    "the latest release is lode {latest} (this is {}), but this lode was not \
+                     installed by the lodestone installer: upgrade it the way it was installed, \
+                     e.g. `cargo install --locked lodestone-cli`, then run `lode stop`",
+                    update::current()
+                ),
+            }
+            Ok(())
+        }
+        Cmd::UpdateCheck => update::check(&config).map(drop),
         Cmd::Mcp => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(agents::run_relay(config, cli.config))
@@ -703,7 +763,7 @@ struct HookInput {
 
 impl HookInput {
     fn read() -> anyhow::Result<Self> {
-        use std::io::{IsTerminal, Read};
+        use std::io::Read;
         let mut input = String::new();
         if !std::io::stdin().is_terminal() {
             std::io::stdin().read_to_string(&mut input)?;
