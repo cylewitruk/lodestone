@@ -4,6 +4,11 @@ User-facing changes per release. Measurements and design decisions are in
 [docs/decision-log.md](docs/decision-log.md).
 
 ## [Unreleased]
+## [0.1.4](https://github.com/cylewitruk/lodestone/compare/v0.1.3...v0.1.4) - 2026-11-26
+
+### ✨ Added
+
+- add lode upgrade and a new-version notice ([#52](https://github.com/cylewitruk/lodestone/pull/52))
 ## [0.1.3](https://github.com/cylewitruk/lodestone/compare/v0.1.2...v0.1.3) - 2026-11-25
 
 ### ✨ Added
