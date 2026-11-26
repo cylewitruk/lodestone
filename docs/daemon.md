@@ -74,7 +74,7 @@ lodestone rescans every 60 s and says so in `lode status`.
 | `lode models` | configured models and available backends |
 | `lode languages` | grammars and the extension map |
 | `lode bench <eval-dir>` | retrieval quality, index time and latency ([evaluation](evaluation.md)) |
-| `lode upgrade` | install the latest release and stop the daemon (alias `update`); installers' installs only |
+| `lode upgrade [--force]` | install the latest release and stop the daemon (alias `update`; `--force` reinstalls it); installers' installs only |
 
 `search`, `register` and `index` start the daemon if needed. `status` and `unregister` never start
 one; without a daemon they act on the indexes directly. `--local` runs everything in-process.

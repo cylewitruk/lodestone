@@ -163,14 +163,15 @@ pub enum Upgrade {
     Upgraded { to: Version, stopped_daemon: bool },
     /// Already the latest release.
     UpToDate,
-    /// `latest` is out, but this binary was not installed by the lodestone installer (e.g.
-    /// `cargo install`), so it must be upgraded the way it was installed.
+    /// `latest` is out (or `force` asked for it), but this binary was not installed by the
+    /// lodestone installer (e.g. `cargo install`), so it must be upgraded the way it was installed.
     Unmanaged { latest: Version },
 }
 
 /// Upgrades to the latest release with its cargo-dist installer, into the directory the install
-/// receipt names, then stops a running daemon so the next command starts the new one.
-pub fn upgrade(config: &Config) -> anyhow::Result<Upgrade> {
+/// receipt names, then stops a running daemon so the next command starts the new one. With
+/// `force`, installs the latest release even when this binary is as new.
+pub fn upgrade(config: &Config, force: bool) -> anyhow::Result<Upgrade> {
     let mut updater = AxoUpdater::new_for(APP);
     let managed = updater.load_receipt().is_ok()
         && updater
@@ -178,7 +179,7 @@ pub fn upgrade(config: &Config) -> anyhow::Result<Upgrade> {
             .unwrap_or(false);
     if !managed {
         let latest = check(config)?;
-        return Ok(if latest > current() {
+        return Ok(if force || latest > current() {
             Upgrade::Unmanaged { latest }
         } else {
             Upgrade::UpToDate
@@ -187,6 +188,7 @@ pub fn upgrade(config: &Config) -> anyhow::Result<Upgrade> {
     // The receipt's version is stale when another install (e.g. `cargo install`) replaced the
     // binary in the same place.
     updater.set_current_version(current())?;
+    updater.always_update(force);
     if !updater
         .is_update_needed_sync()
         .context("looking up the latest lodestone release")?

@@ -167,7 +167,11 @@ enum Cmd {
     /// Upgrade lode to the latest GitHub release, then stop the daemon so the next command
     /// starts the new one.
     #[command(visible_alias = "update")]
-    Upgrade,
+    Upgrade {
+        /// Reinstall the latest release even when this lode is as new (e.g. to repair it).
+        #[arg(long)]
+        force: bool,
+    },
     /// Look up the latest release for the new-version notice (run in the background).
     #[command(hide = true)]
     UpdateCheck,
@@ -182,7 +186,7 @@ impl Cmd {
             Self::Serve { .. }
                 | Self::Mcp
                 | Self::Hook(_)
-                | Self::Upgrade
+                | Self::Upgrade { .. }
                 | Self::UpdateCheck
                 | Self::Search { json: true, .. }
                 | Self::Status { json: true, .. }
@@ -287,10 +291,10 @@ fn run(cli: Cli, mut config: Config) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Cmd::Upgrade => {
-            match update::upgrade(&config)? {
+        Cmd::Upgrade { force } => {
+            match update::upgrade(&config, force)? {
                 Upgrade::Upgraded { to, stopped_daemon } => {
-                    println!("upgraded lode {} -> {to}", update::current());
+                    println!("installed lode {to} (was {})", update::current());
                     if stopped_daemon {
                         println!(
                             "stopped the daemon; the next command starts the new one. Running \
@@ -300,9 +304,9 @@ fn run(cli: Cli, mut config: Config) -> anyhow::Result<()> {
                 }
                 Upgrade::UpToDate => println!("lode {} is the latest release", update::current()),
                 Upgrade::Unmanaged { latest } => println!(
-                    "lode {latest} is available (this is {}), but this lode was not installed by \
-                     the lodestone installer: upgrade it the way it was installed, e.g. \
-                     `cargo install --locked lodestone-cli`, then run `lode stop`",
+                    "the latest release is lode {latest} (this is {}), but this lode was not \
+                     installed by the lodestone installer: upgrade it the way it was installed, \
+                     e.g. `cargo install --locked lodestone-cli`, then run `lode stop`",
                     update::current()
                 ),
             }

@@ -50,6 +50,8 @@ jobs:
         with:
           tool: cargo-nextest
       - run: cargo nextest run --locked --no-fail-fast $CARGO_CONFIG
+      # `lode upgrade` against the latest published release, in a sandboxed install.
+      - run: cargo nextest run --locked --run-ignored only -E 'test(upgrade_)' $CARGO_CONFIG
 
   package:
     runs-on: ubuntu-latest
