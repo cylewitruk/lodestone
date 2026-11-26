@@ -23,6 +23,12 @@ const CHECK_INTERVAL_SECS: u64 = 24 * 3600;
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Set to anything to turn off the lookup and the notice.
 pub const OPT_OUT_ENV: &str = "LODESTONE_NO_UPDATE_CHECK";
+/// A GitHub token for release lookups, which GitHub otherwise limits per IP address (CI runners).
+pub const TOKEN_ENV: &str = "LODESTONE_GITHUB_TOKEN";
+
+fn github_token() -> Option<String> {
+    std::env::var(TOKEN_ENV).ok().filter(|t| !t.is_empty())
+}
 
 /// The last lookup of the latest release, in `<data dir>/update-check.json`.
 #[derive(Default, Serialize, Deserialize)]
@@ -123,21 +129,25 @@ pub fn check(config: &Config) -> anyhow::Result<Version> {
     let repo = env!("CARGO_PKG_REPOSITORY")
         .strip_prefix("https://github.com/")
         .context("the package repository is not on GitHub")?;
-    let release: Release = ureq::get(format!(
+    let mut req = ureq::get(format!(
         "https://api.github.com/repos/{repo}/releases/latest"
     ))
     .header("Accept", "application/vnd.github+json")
     .header(
         "User-Agent",
         concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")),
-    )
-    .config()
-    .timeout_global(Some(CHECK_TIMEOUT))
-    .build()
-    .call()
-    .context("looking up the latest lodestone release")?
-    .body_mut()
-    .read_json()?;
+    );
+    if let Some(token) = github_token() {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    let release: Release = req
+        .config()
+        .timeout_global(Some(CHECK_TIMEOUT))
+        .build()
+        .call()
+        .context("looking up the latest lodestone release")?
+        .body_mut()
+        .read_json()?;
     let latest = parse_tag(&release.tag_name)?;
     record(config, &latest);
     Ok(latest)
@@ -173,6 +183,9 @@ pub enum Upgrade {
 /// `force`, installs the latest release even when this binary is as new.
 pub fn upgrade(config: &Config, force: bool) -> anyhow::Result<Upgrade> {
     let mut updater = AxoUpdater::new_for(APP);
+    if let Some(token) = github_token() {
+        updater.set_github_token(&token);
+    }
     let managed = updater.load_receipt().is_ok()
         && updater
             .check_receipt_is_for_this_executable()

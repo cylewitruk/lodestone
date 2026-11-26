@@ -81,7 +81,8 @@ one; without a daemon they act on the indexes directly. `--local` runs everythin
 
 Once a day, a command run at a terminal looks up the latest GitHub release in the background and
 later ones print a line on stderr while it is newer. `mcp`, `serve`, hooks and `--json` output
-never do. `LODESTONE_NO_UPDATE_CHECK=1` turns it off.
+never do. `LODESTONE_NO_UPDATE_CHECK=1` turns it off. `LODESTONE_GITHUB_TOKEN` authenticates the
+lookups (and `lode upgrade`'s) where GitHub's per-IP limit for anonymous calls is shared.
 
 ## REST
 
