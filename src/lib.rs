@@ -19,4 +19,5 @@ pub mod shell;
 pub mod testutil;
 pub mod text;
 pub mod transcripts;
+pub mod update;
 pub mod watch;

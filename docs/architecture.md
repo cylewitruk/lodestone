@@ -56,6 +56,7 @@ Everything lives under `~/.lodestone/` (`LODESTONE_HOME`):
 | `daemon.sock`, `daemon.log` | the daemon's socket and, when auto-started, its log |
 | `hook-sessions/` | per-session markers written by the reminder hooks |
 | `transcripts.sqlite` | what `lode transcript-stats` extracted |
+| `update-check.json`, `update-check.lock` | the latest release, as of the last daily lookup; the lock lets one command start the next |
 
 Per worktree:
 

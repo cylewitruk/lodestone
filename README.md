@@ -44,8 +44,10 @@ cargo install --locked lodestone-cli
 
 Archives and checksums are on the [releases page](https://github.com/cylewitruk/lodestone/releases).
 
-**Upgrading:** install the new version the same way, then run `lode stop` so the next command
-starts the new daemon.
+**Upgrading:** `lode upgrade` installs the latest release and stops the daemon so the next
+command starts the new one. Installed with Cargo, run `cargo install` again, then `lode stop`.
+Commands at a terminal say when a new release is out; set `LODESTONE_NO_UPDATE_CHECK=1` to turn
+that off.
 
 ## Quick start
 

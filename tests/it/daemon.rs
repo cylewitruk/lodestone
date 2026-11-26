@@ -948,6 +948,30 @@ fn stop_and_sigterm_shut_the_daemon_down_gracefully() {
     assert!(!socket.exists());
 }
 
+/// `lode stop` waits for a daemon still starting (holding the socket's lock, not yet answering)
+/// rather than taking it for none.
+#[cfg(unix)]
+#[test]
+fn stop_waits_for_a_daemon_still_starting() {
+    let home = on_demand_home(0);
+    let lock = fs::File::create(home_config(&home).lock_path()).unwrap();
+    lock.lock().unwrap();
+    let mut stop = lode(&home)
+        .arg("stop")
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        stop.try_wait().unwrap().is_none(),
+        "stop returned while a daemon was starting"
+    );
+    drop(lock);
+    let out = stop.wait_with_output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("no lodestone daemon running"));
+}
+
 /// Calls one MCP tool through a `lode mcp` relay started in `dir`; returns (is_error, text).
 fn relay_call(home: &Path, dir: &Path, tool: &str, arguments: Value) -> (bool, String) {
     relay_call_in(home, dir, None, tool, arguments)

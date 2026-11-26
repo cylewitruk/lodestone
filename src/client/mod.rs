@@ -4,7 +4,7 @@
 mod unix;
 
 use std::fs::OpenOptions;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -22,6 +22,9 @@ use crate::config::{Config, Endpoint};
 /// large model.
 pub const START_WAIT: Duration = Duration::from_secs(120);
 
+/// How long to wait for a stopping daemon to exit.
+pub const STOP_WAIT: Duration = Duration::from_secs(30);
+
 /// Starts `lode serve --on-demand` in the background, detached from the caller's process group
 /// and logging to `<data dir>/daemon.log`. Losing a race with another starter is harmless: the
 /// second daemon cannot bind the port and exits.
@@ -33,7 +36,7 @@ pub fn start_daemon(config: &Config, config_path: Option<&Path>) -> anyhow::Resu
         .append(true)
         .open(&log_path)
         .with_context(|| format!("opening {}", log_path.display()))?;
-    let mut cmd = Command::new(std::env::current_exe()?);
+    let mut cmd = Command::new(lode_exe()?);
     if let Some(p) = config_path {
         cmd.arg("--config").arg(p);
     }
@@ -41,8 +44,33 @@ pub fn start_daemon(config: &Config, config_path: Option<&Path>) -> anyhow::Resu
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
+    spawn_detached(&mut cmd).context("starting the lodestone daemon")
+}
+
+/// The `lode` binary to spawn another process of: this one, or on Linux, the binary an upgrade
+/// installed in its place, which the kernel reports as `<path> (deleted)` from then on.
+pub fn lode_exe() -> std::io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    Ok(if cfg!(target_os = "linux") {
+        replaced(exe)
+    } else {
+        exe
+    })
+}
+
+/// `exe` without the ` (deleted)` suffix Linux gives a running binary unlinked from its path.
+fn replaced(exe: PathBuf) -> PathBuf {
+    match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(path) if !exe.exists() => PathBuf::from(path),
+        _ => exe,
+    }
+}
+
+/// Spawns `cmd` detached from the caller's process group (and, on Windows, its console), so it
+/// outlives the caller and holds none of its standard handles.
+pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<Child> {
     #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    std::os::unix::process::CommandExt::process_group(cmd, 0);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -50,7 +78,7 @@ pub fn start_daemon(config: &Config, config_path: Option<&Path>) -> anyhow::Resu
         cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
         keep_std_handles();
     }
-    cmd.spawn().context("starting the lodestone daemon")
+    cmd.spawn()
 }
 
 /// Stops this process's standard handles from being inherited. Windows gives a child every
@@ -104,6 +132,45 @@ pub fn wait_until_stopped(config: &Config, timeout: Duration) -> anyhow::Result<
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Whether a daemon owns the endpoint, answering or still loading its model (it binds first): on
+/// Unix, holds the socket's lock; elsewhere, accepts TCP connections.
+#[cfg(unix)]
+fn daemon_present(config: &Config) -> bool {
+    daemon_starting(config)
+}
+
+#[cfg(not(unix))]
+fn daemon_present(config: &Config) -> bool {
+    let Endpoint::Tcp(port) = config.endpoint();
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_millis(300),
+    )
+    .is_ok()
+}
+
+/// Stops the daemon, if any, waiting up to [`START_WAIT`] for one still starting to answer and
+/// [`STOP_WAIT`] for it to exit. Whether one ran.
+pub fn stop_daemon(config: &Config) -> anyhow::Result<bool> {
+    let endpoint = config.endpoint();
+    let deadline = Instant::now() + START_WAIT;
+    let c = loop {
+        if let Some(c) = Client::connect(&endpoint) {
+            break c;
+        }
+        if !daemon_present(config) {
+            return Ok(false);
+        }
+        if Instant::now() >= deadline {
+            bail!("the lodestone daemon did not finish starting within {START_WAIT:?}");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    c.stop()?;
+    wait_until_stopped(config, STOP_WAIT)?;
+    Ok(true)
 }
 
 /// Connects to the daemon, starting one on demand and waiting up to `wait` for it. Fails early
@@ -330,5 +397,19 @@ impl Client {
                 .map(|e| e.error)
                 .unwrap_or(text))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replaced_binary_is_at_its_original_path() {
+        let gone = std::env::temp_dir().join("lodestone-no-such-dir/lode");
+        let deleted = PathBuf::from(format!("{} (deleted)", gone.display()));
+        assert_eq!(replaced(deleted), gone);
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(replaced(exe.clone()), exe);
     }
 }
