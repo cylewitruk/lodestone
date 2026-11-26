@@ -1,4 +1,5 @@
-//! `lode transcript-stats`: Claude Code and Codex transcripts read incrementally into statistics.
+//! `lode transcript-stats`: Claude Code, Codex and Antigravity transcripts read incrementally into
+//! statistics.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -23,6 +24,7 @@ struct Setup {
     config: Config,
     claude: PathBuf,
     codex: PathBuf,
+    antigravity: PathBuf,
     repo: PathBuf,
     other: PathBuf,
 }
@@ -41,6 +43,7 @@ impl Setup {
             },
             claude: base.join("claude"),
             codex: base.join("codex"),
+            antigravity: base.join("antigravity"),
             repo,
             other,
         };
@@ -70,12 +73,37 @@ impl Setup {
         self.claude.join(project).join(rel)
     }
 
+    fn agy_transcript(&self, conversation: &str) -> PathBuf {
+        self.antigravity
+            .join("brain")
+            .join(conversation)
+            .join(".system_generated/logs/transcript_full.jsonl")
+    }
+
+    /// Records `dir` as a conversation's workspace, as Antigravity's app does.
+    fn agy_workspace(&self, conversation: &str, dir: &Path) {
+        fs::create_dir_all(&self.antigravity).unwrap();
+        let db =
+            rusqlite::Connection::open(self.antigravity.join("conversation_summaries.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS conversation_summaries
+                 (conversation_id TEXT, workspace_uris TEXT NOT NULL)",
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO conversation_summaries VALUES (?1, ?2)",
+            [conversation.to_string(), json!([file_url(dir)]).to_string()],
+        )
+        .unwrap();
+    }
+
     fn scan(&self) -> transcripts::ScanSummary {
         transcripts::scan(
             &self.config,
             &[
                 (Format::Claude, self.claude.clone()),
                 (Format::Codex, self.codex.clone()),
+                (Format::Antigravity, self.antigravity.clone()),
             ],
         )
         .unwrap()
@@ -83,7 +111,7 @@ impl Setup {
 
     fn report(&self) -> Report {
         let filter = Filter {
-            harnesses: vec!["claude".into(), "codex".into()],
+            harnesses: vec!["claude".into(), "codex".into(), "antigravity".into()],
             ..Filter::default()
         };
         transcripts::report(&self.config, &filter).unwrap()
@@ -757,4 +785,108 @@ fn a_read_sent_alongside_a_search_is_not_a_read_of_its_results() {
     s.scan();
     let c = group(&s.report(), "claude").clone();
     assert_eq!((c.semantic, c.reads, c.searches_read), (1, 1, 0));
+}
+
+/// An Antigravity step: `content` for a result, `calls` (name, args) for a model step.
+fn agy_step(index: u32, kind: &str, content: &str, calls: &[(&str, Value)]) -> Value {
+    let calls: Vec<Value> = calls
+        .iter()
+        .map(|(name, args)| json!({ "name": name, "args": args }))
+        .collect();
+    json!({ "step_index": index, "type": kind, "status": "DONE", "created_at": ts(index),
+            "content": content, "tool_calls": calls })
+}
+
+#[test]
+fn reads_antigravity_conversations_and_their_workspaces() {
+    let s = Setup::new();
+    s.agy_workspace("c1", &s.repo);
+    let file = s.repo.join("core/src/a.rs").to_string_lossy().into_owned();
+    let search = json!({ "ServerName": "lodestone_lodestone", "ToolName": "semantic_code_search",
+                         "Arguments": { "query": "a" } });
+    append(
+        &s.agy_transcript("c1"),
+        &[
+            agy_step(0, "USER_INPUT", "find a", &[]),
+            agy_step(1, "PLANNER_RESPONSE", "", &[("call_mcp_tool", search)]),
+        ],
+    );
+    // No workspace recorded: only its calls on the repository's files count.
+    append(
+        &s.agy_transcript("c2"),
+        &[
+            agy_step(0, "USER_INPUT", "read a", &[]),
+            agy_step(
+                1,
+                "PLANNER_RESPONSE",
+                "",
+                &[("read_file", json!({ "Path": file }))],
+            ),
+        ],
+    );
+    // `transcript.jsonl` truncates results and is not read.
+    append(
+        &s.agy_transcript("c1").with_file_name("transcript.jsonl"),
+        &[agy_step(0, "USER_INPUT", "find a", &[])],
+    );
+    assert_eq!(s.scan().files_read, 2);
+    // The search's result arrives after the scan that read the search.
+    append(
+        &s.agy_transcript("c1"),
+        &[
+            agy_step(
+                2,
+                "GENERIC",
+                &format!(
+                    "Completed At: {}\ncore/src/a.rs:3:8  lines 3-5  pub fn a()",
+                    ts(3)
+                ),
+                &[],
+            ),
+            agy_step(
+                4,
+                "PLANNER_RESPONSE",
+                "",
+                &[
+                    ("view_file", json!({ "AbsolutePath": file })),
+                    (
+                        "run_command",
+                        json!({ "CommandLine": "grep -rn foo core", "Cwd": s.repo }),
+                    ),
+                    // No directory of its own: runs in the workspace.
+                    ("run_command", json!({ "CommandLine": "rg bar src" })),
+                ],
+            ),
+        ],
+    );
+    assert_eq!(s.scan().files_read, 1);
+    let r = s.report();
+    assert_eq!(r.groups.len(), 1, "{:#?}", r.groups);
+    let g = group(&r, "antigravity");
+    assert_eq!(g.repo, s.repo.to_string_lossy());
+    assert_eq!((g.sessions, g.sessions_searched), (2, 1));
+    assert_eq!((g.semantic, g.searches_read, g.searches_empty), (1, 1, 0));
+    assert_eq!((g.greps, g.reads), (2, 2));
+    assert_eq!(g.latency_ms_median, Some(2000));
+}
+
+#[test]
+fn rereads_an_antigravity_conversation_once_its_workspace_is_recorded() {
+    let s = Setup::new();
+    let grep = json!({ "CommandLine": "rg foo src" });
+    append(
+        &s.agy_transcript("c1"),
+        &[
+            agy_step(0, "USER_INPUT", "find foo", &[]),
+            agy_step(1, "PLANNER_RESPONSE", "", &[("run_command", grep)]),
+        ],
+    );
+    s.scan();
+    assert!(s.report().groups.is_empty());
+    s.agy_workspace("c1", &s.repo);
+    assert_eq!(s.scan().files_read, 1);
+    let r = s.report();
+    let g = group(&r, "antigravity");
+    assert_eq!((g.sessions, g.greps), (1, 1));
+    assert_eq!(s.scan().unchanged, 1);
 }

@@ -70,7 +70,7 @@ lodestone rescans every 60 s and says so in `lode status`.
 | `lode search <query>` | search a registered worktree |
 | `lode status [--repo name\|path] [--json]` | index freshness of a worktree; elsewhere, a summary of all |
 | `lode install` / `lode uninstall` | set up Claude Code, Codex and Antigravity ([agents](agents.md)) |
-| `lode transcript-stats --claude --codex` | how agents use lodestone ([agents](agents.md#usage-statistics)) |
+| `lode transcript-stats --claude --codex --antigravity` | how agents use lodestone ([agents](agents.md#usage-statistics)) |
 | `lode models` | configured models and available backends |
 | `lode languages` | grammars and the extension map |
 | `lode bench <eval-dir>` | retrieval quality, index time and latency ([evaluation](evaluation.md)) |

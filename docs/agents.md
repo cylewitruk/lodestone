@@ -127,12 +127,14 @@ carry `line`, `line_end`, `name_line` and `name_column`.
 How agents actually use lodestone, from their own transcripts:
 
 ```bash
-lode transcript-stats --claude --codex      # ~/.claude/projects and ~/.codex/sessions
+lode transcript-stats --claude --codex --antigravity   # every harness's default directories
 lode transcript-stats --codex ~/elsewhere --repo stacks-core --since 2026-11-01 --queries
 ```
 
-Name at least one source; a flag without a directory uses the harness's default. `--since` counts
-calls from a date, `--queries` lists every search, `--json` is for machines.
+Name at least one source; a flag without a directory uses the harness's default:
+`~/.claude/projects`, `~/.codex/sessions`, and Antigravity's app data directories
+`~/.gemini/antigravity` and `~/.gemini/antigravity-cli`. `--since` counts calls from a date,
+`--queries` lists every search, `--json` is for machines.
 
 **Reported** per repository and harness:
 
@@ -149,8 +151,11 @@ calls from a date, `--queries` lists every search, `--json` is for machines.
   towards their repository, also when named as `repo`; calls elsewhere are dropped.
 - **Shell commands:** a Claude shell command counts as the greps (`rg`, `grep`, `git grep`) and
   file reads (`cat`, `sed -n`, `head`, `tail`) it makes, each where it ran (after `cd`) or on the
-  path it names. A grep that filters output (`cargo test | grep FAILED`) is not one. Codex
-  commands count by Codex's own classification.
+  path it names. A grep that filters output (`cargo test | grep FAILED`) is not one. Antigravity's
+  shell commands count the same way; Codex's count by Codex's own classification.
+- **Antigravity sessions:** a conversation's directory is the first workspace its app's
+  `conversation_summaries.db` records. Without one, only calls on a registered repository's files
+  count.
 
 **Storage:** `~/.lodestone/transcripts.sqlite` keeps call kinds and times, queries, result paths
 and the paths of file reads; no other content. It reads only new lines of each transcript and
