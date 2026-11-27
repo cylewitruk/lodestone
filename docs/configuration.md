@@ -29,6 +29,9 @@ max_tokens = 192
 [search]
 lexical_weight = 0.0        # BM25 fusion (reciprocal rank); off by default
 identifier_lexical_weight = 0.0
+
+[hooks]
+duplicate_similarity = 0.75 # edit hint: name existing definitions this similar (cosine, jina-code-v2)
 ```
 
 ## Backends

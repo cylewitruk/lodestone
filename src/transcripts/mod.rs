@@ -48,6 +48,8 @@ pub enum Kind {
     Read,
     /// lodestone's hook pointed a shell search at `semantic_code_search`.
     Nudge,
+    /// lodestone's hook named existing definitions like those a file edit adds.
+    EditHint,
 }
 
 impl Kind {
@@ -60,6 +62,7 @@ impl Kind {
             Kind::Glob => "glob",
             Kind::Read => "read",
             Kind::Nudge => "nudge",
+            Kind::EditHint => "edit-hint",
         }
     }
 
@@ -72,6 +75,7 @@ impl Kind {
             Kind::Glob,
             Kind::Read,
             Kind::Nudge,
+            Kind::EditHint,
         ]
         .into_iter()
         .find(|k| k.as_str() == s)

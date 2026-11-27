@@ -282,9 +282,9 @@ Measured with an earlier model (CodeRankEmbed, no reranker), still the reference
 
 **Current:** `lode install` adds a skill, the MCP server and reminder hooks (SessionStart,
 UserPromptSubmit and SubagentStart for Claude Code; SessionStart for Codex), plus a PreToolUse
-nudge on Claude's shell commands. The reminder leads with general advice to find and reuse
-existing code, then points at lodestone, and fires only when a daemon serves the session's
-repository (or folder).
+nudge on Claude's shell commands and a hint naming existing code like what its file edits add.
+The reminder leads with general advice to find and reuse existing code, then points at
+lodestone, and fires only when a daemon serves the session's repository (or folder).
 
 **Opus 5.5, 28 tasks on stacks-core and LibreChat, 48 positive runs per arm**
 ([details](../eval/situations/README.md#situational-run-opus-55-stacks-core-and-librechat-sit-json)):
@@ -336,6 +336,26 @@ Why it is shaped this way (Sonnet, stacks-core, 624 runs unless noted):
   otherwise. It never blocks: an older `lode` answers an unknown hook with exit status 2, which
   Claude Code reads as "block the call", so the installed command ends in `|| true` and `lode
   hook` exits 0 for hooks it doesn't know, with no daemon, or when the daemon is slow (0.1 s).
+- **An edit hint:** only 4 of 22 Claude sessions that edited files ran `similar_code_search`
+  after an edit. The `PreToolUse` hook also runs before `Edit`, `MultiEdit` and `Write`, chunks
+  the new text and searches for each definition it adds; when an existing one in the same language
+  is close enough, it names up to three in one line. Codex isn't covered: its edits come as
+  `apply_patch` patches. The cut-off (`[hooks] duplicate_similarity`) was measured on this
+  repository with jina-code-v2, using raw definition source as the query, as
+  `similar_code_search` does:
+
+  | Query | Top non-self similarity |
+  | ---- | ---- |
+  | Exact copy of an existing function | 0.94 |
+  | 17 renamed, restyled rewrites of existing helpers | 0.72–0.87 (median 0.83) |
+  | 28 new definitions with no existing counterpart (same-domain hooks, configs, parsers, boilerplate) | 0.39–0.71 (median 0.59) |
+
+  0.75 catches 14 of the 17 rewrites with no false positive; 0.72 catches 16 but leaves a 0.01
+  margin over boilerplate (`impl Default`, one-line path getters, `match` tables). Prefixing the
+  indexed chunk header (`path kind name`) narrowed the gap (rewrites from 0.74, unrelated to
+  0.69), so the query is the code alone. Latency of the release build against a warm daemon:
+  70 ms for an edit adding no definition (loading only the file's grammar; all grammars take
+  1.3 s), 90 ms for one definition, 200 ms for 12 and 330 ms for 24; 70 ms with no daemon.
 - **Install touches only its own hooks:** `lode install` and `uninstall` replace only the hook
   command they wrote (or one written from another path to `lode`), so a user's hook that runs
   `lode` stays.

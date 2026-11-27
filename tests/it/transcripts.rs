@@ -5,6 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use lodestone::agents::EDIT_HINT_OPENING;
 use lodestone::config::Config;
 use lodestone::testutil::tempdir;
 use lodestone::transcripts::{self, Filter, Format, Report};
@@ -748,6 +749,49 @@ fn counts_nudges_where_the_nudged_search_counts() {
     assert_eq!(c.repo, s.repo.to_string_lossy());
     assert_eq!((c.nudges, c.nudges_searched), (2, 1));
     assert_eq!((c.greps, c.semantic), (2, 1));
+}
+
+#[test]
+fn counts_edit_hints_in_the_sessions_repository() {
+    let s = Setup::new();
+    let hint = |call: &str, timestamp: String| {
+        json!({ "type": "attachment", "sessionId": "s1", "cwd": s.repo, "timestamp": timestamp,
+            "attachment": { "type": "hook_additional_context", "hookEvent": "PreToolUse",
+                "hookName": "PreToolUse:Edit", "toolUseID": call,
+                "content": [format!("{EDIT_HINT_OPENING}src/a.rs:3 helper (like `copy`).")] } })
+    };
+    let edit = |n: u32, id: &str| {
+        let input =
+            json!({ "file_path": s.repo.join("src/b.rs"), "old_string": "a", "new_string": "b" });
+        claude_line("s1", &s.repo, n, "assistant", tool_use(id, "Edit", input))
+    };
+    append(
+        &s.claude_file(&s.repo, "s1.jsonl"),
+        &[
+            edit(1, "e1"),
+            hint("e1", ts(1)),
+            claude_line(
+                "s1",
+                &s.repo,
+                3,
+                "assistant",
+                tool_use(
+                    "q1",
+                    "mcp__lodestone__similar_code_search",
+                    json!({ "code": ["fn copy() {}"] }),
+                ),
+            ),
+            // Hinted later, with no search after it.
+            edit(5, "e2"),
+            hint("e2", "2026-11-11T10:20:00.000Z".into()),
+        ],
+    );
+    s.scan();
+    let r = s.report();
+    let c = group(&r, "claude");
+    assert_eq!((c.edit_hints, c.edit_hints_searched), (2, 1));
+    assert_eq!((c.nudges, c.similar), (0, 1));
+    assert!(r.to_text(false).contains("edit hints"));
 }
 
 #[test]

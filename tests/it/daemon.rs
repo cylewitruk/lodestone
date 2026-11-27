@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use lodestone::agents::EDIT_HINT_OPENING;
 use lodestone::api::mcp::{
     LOCAL_NOTE, SEMANTIC_DESCRIPTION, SIMILAR_DESCRIPTION, STATUS_DESCRIPTION,
 };
@@ -1117,6 +1118,23 @@ fn relay_call_in(
     )
 }
 
+/// Runs `lode hook <args>` with `input` on stdin; returns what it printed.
+fn run_hook(home: &Path, args: &str, input: Value) -> String {
+    use std::io::Write;
+
+    let mut hook = lode(home)
+        .arg("hook")
+        .args(args.split(' '))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(hook.stdin.take().unwrap(), "{input}").unwrap();
+    let out = hook.wait_with_output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
 fn git_repo(n: usize) -> PathBuf {
     let root = repo(n);
     git(&root, &["init", "-q", "-b", "main"]);
@@ -1153,23 +1171,7 @@ fn sessions_search_their_own_worktree_never_another_checkouts() {
     assert!(ok);
 
     // The session hook counts the worktree as served (and starts the daemon).
-    let hook = |args: &str, input: Value| {
-        let mut hook = lode(&home)
-            .arg("hook")
-            .args(args.split(' '))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        {
-            use std::io::Write;
-            let mut stdin = hook.stdin.take().unwrap();
-            writeln!(stdin, "{input}").unwrap();
-        }
-        let out = hook.wait_with_output().unwrap();
-        assert!(out.status.success(), "{out:?}");
-        String::from_utf8(out.stdout).unwrap()
-    };
+    let hook = |args: &str, input: Value| run_hook(&home, args, input);
     let core = feat.join("core");
     let started = hook("session-start", json!({ "cwd": core, "session_id": "s1" }));
     assert!(started.contains("additionalContext"), "{started}");
@@ -2345,4 +2347,103 @@ fn an_external_git_dir_created_after_its_pointer_is_watched() {
     wait_until("a rescan after HEAD moved", Duration::from_secs(20), || {
         d.status().last_update > before
     });
+}
+
+#[test]
+fn the_edit_hint_names_existing_definitions_like_an_edits() {
+    let root = git_repo(2);
+    let existing = "pub fn read_config_or_empty(path: &Path) -> String {\n    match fs::read_to_string(path) {\n        Ok(text) => text,\n        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),\n        Err(err) => panic!(\"reading config: {err}\"),\n    }\n}\n";
+    write(
+        &root,
+        "core/src/config.rs",
+        &format!("/// The config file's text.\n{existing}"),
+    );
+    let home = on_demand_home(30);
+    let mut config = fs::read_to_string(home.join("config.toml")).unwrap();
+    // The hash embedder's scale, not jina-code-v2's.
+    config.push_str("[hooks]\nduplicate_similarity = 0.6\n");
+    write(&home, "config.toml", &config);
+    let ok = lode(&home)
+        .args(["--local", "register"])
+        .arg(&root)
+        .stdout(Stdio::null())
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    let hook = |tool: &str, input: Value| {
+        run_hook(
+            &home,
+            "pre-tool-use",
+            json!({ "cwd": root, "session_id": "s1", "tool_name": tool, "tool_input": input }),
+        )
+    };
+    let copy = existing.replace("read_config_or_empty", "load_config_text");
+    let write_copy = || {
+        hook(
+            "Write",
+            json!({ "file_path": root.join("core/src/settings.rs"), "content": copy }),
+        )
+    };
+    // Without a daemon it says nothing.
+    assert_eq!(write_copy(), "");
+
+    run_hook(
+        &home,
+        "session-start",
+        json!({ "cwd": root, "session_id": "s1" }),
+    );
+    wait_until("the index", Duration::from_secs(30), || {
+        client(&home)
+            .and_then(|c| c.status(Some(&root.to_string_lossy())).ok())
+            .is_some_and(|s| s.items > 0 && !s.stale)
+    });
+    let out: Value = serde_json::from_str(&write_copy()).unwrap();
+    let hint = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(hint.starts_with(EDIT_HINT_OPENING), "{hint}");
+    assert!(
+        hint.contains("core/src/config.rs:2 read_config_or_empty (like `load_config_text`)"),
+        "{hint}"
+    );
+    assert_eq!(out["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+    // The same copy added by an edit to another file, among unchanged code.
+    let m0 = root.join("core/src/m0.rs");
+    let kept = fs::read_to_string(&m0).unwrap();
+    let edit = hook(
+        "MultiEdit",
+        json!({ "file_path": m0, "edits": [
+            { "old_string": kept, "new_string": format!("{kept}\n{copy}") },
+        ] }),
+    );
+    assert!(edit.contains("read_config_or_empty"), "{edit}");
+    // Changing the existing definition itself is not a copy of it.
+    let changed = existing.replace("reading config", "reading the config");
+    let config_rs = root.join("core/src/config.rs");
+    assert_eq!(
+        hook(
+            "Edit",
+            json!({ "file_path": config_rs, "old_string": existing, "new_string": changed }),
+        ),
+        ""
+    );
+    // Nor is unrelated code, code without definitions, or another tool.
+    let unrelated = "pub fn checksum(data: &[u8]) -> u32 {\n    data.iter().fold(7u32, |h, b| h.rotate_left(5) ^ u32::from(*b))\n}\n";
+    assert_eq!(
+        hook(
+            "Write",
+            json!({ "file_path": root.join("core/src/sum.rs"), "content": unrelated }),
+        ),
+        ""
+    );
+    assert_eq!(
+        hook(
+            "Edit",
+            json!({ "file_path": config_rs, "old_string": "Ok(text) => text", "new_string": "Ok(t) => t" }),
+        ),
+        ""
+    );
+    assert_eq!(hook("Read", json!({ "file_path": config_rs })), "");
+    assert!(lode(&home).arg("stop").status().unwrap().success());
 }
