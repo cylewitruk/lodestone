@@ -266,8 +266,13 @@ fn resolve_missing(path: &Path) -> Option<PathBuf> {
 
 /// The registered worktree containing `dir` (the innermost, for nested worktrees).
 pub fn root_of(roots: &[PathBuf], dir: &Path) -> Option<PathBuf> {
-    // A directory that no longer exists (e.g. a removed worktree) is matched as given.
-    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    // A directory that does not exist (e.g. a removed worktree) is matched by its nearest existing
+    // ancestor's canonical path.
+    let dir = dir
+        .canonicalize()
+        .ok()
+        .or_else(|| resolve_missing(dir))
+        .unwrap_or_else(|| dir.to_path_buf());
     roots
         .iter()
         .filter(|r| dir.starts_with(r))

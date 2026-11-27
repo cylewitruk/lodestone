@@ -890,3 +890,25 @@ fn rereads_an_antigravity_conversation_once_its_workspace_is_recorded() {
     assert_eq!((g.sessions, g.greps), (1, 1));
     assert_eq!(s.scan().unchanged, 1);
 }
+
+#[cfg(unix)]
+#[test]
+fn places_a_search_in_a_missing_directory_of_a_workspace_named_by_another_path() {
+    // As Windows names a canonical path `\\?\C:\…` and a workspace URL's `C:\…`.
+    let s = Setup::new();
+    let link = s.other.join("link");
+    std::os::unix::fs::symlink(&s.repo, &link).unwrap();
+    s.agy_workspace("c1", &link);
+    let grep = json!({ "CommandLine": "rg foo missing" });
+    append(
+        &s.agy_transcript("c1"),
+        &[
+            agy_step(0, "USER_INPUT", "find foo", &[]),
+            agy_step(1, "PLANNER_RESPONSE", "", &[("run_command", grep)]),
+        ],
+    );
+    s.scan();
+    let r = s.report();
+    let g = group(&r, "antigravity");
+    assert_eq!((g.sessions, g.greps), (1, 1));
+}
