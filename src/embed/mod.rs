@@ -160,6 +160,42 @@ pub fn load(config: &Config, alias: &str, backend: Backend) -> anyhow::Result<Ar
     }
 }
 
+/// The files of `alias` that [`load`] would download first on `backend`: none for a remote
+/// embedder. Reads only the model cache.
+pub fn missing_files(
+    config: &Config,
+    alias: &str,
+    backend: Backend,
+) -> anyhow::Result<Vec<String>> {
+    let model = config.model_config(alias)?;
+    let cache_dir = config.data_dir().join("models");
+    match backend {
+        Backend::CandleMetal | Backend::CandleCpu => {
+            #[cfg(feature = "candle")]
+            {
+                Ok(candle::missing_files(model, &cache_dir))
+            }
+            #[cfg(not(feature = "candle"))]
+            {
+                let _ = (model, cache_dir);
+                bail!("lodestone was built without the `candle` feature")
+            }
+        }
+        Backend::Fastembed => {
+            #[cfg(feature = "fastembed")]
+            {
+                fastembed::missing_files(model, &cache_dir)
+            }
+            #[cfg(not(feature = "fastembed"))]
+            {
+                let _ = (model, cache_dir);
+                bail!("lodestone was built without the `fastembed` feature")
+            }
+        }
+        Backend::Remote => Ok(Vec::new()),
+    }
+}
+
 /// Backends compiled into this binary.
 pub fn available_backends() -> Vec<Backend> {
     let mut v = Vec::new();

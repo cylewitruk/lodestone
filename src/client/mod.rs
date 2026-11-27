@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 use crate::api::types::{
     ErrorBody, IndexRequest, IndexResponse, NOT_LOCAL, RegisterRequest, RepoInfo, SearchRequest,
     SearchResponse, SessionRequest, SessionResponse, StatusOverview, StatusReport, ToolRequest,
-    UnregisterRequest,
+    UnregisterRequest, VersionInfo,
 };
 use crate::config::{Config, Endpoint};
 
@@ -137,12 +137,12 @@ pub fn wait_until_stopped(config: &Config, timeout: Duration) -> anyhow::Result<
 /// Whether a daemon owns the endpoint, answering or still loading its model (it binds first): on
 /// Unix, holds the socket's lock; elsewhere, accepts TCP connections.
 #[cfg(unix)]
-fn daemon_present(config: &Config) -> bool {
+pub fn daemon_present(config: &Config) -> bool {
     daemon_starting(config)
 }
 
 #[cfg(not(unix))]
-fn daemon_present(config: &Config) -> bool {
+pub fn daemon_present(config: &Config) -> bool {
     let Endpoint::Tcp(port) = config.endpoint();
     std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
@@ -341,6 +341,15 @@ impl Client {
 
     pub fn repos(&self) -> anyhow::Result<Vec<RepoInfo>> {
         Self::decode(self.agent.get(format!("{}/v1/repos", self.base)).call()?)
+    }
+
+    /// The daemon's `lode` version; `None` from a daemon too old to say.
+    pub fn version(&self) -> anyhow::Result<Option<String>> {
+        let resp = self.agent.get(format!("{}/v1/version", self.base)).call()?;
+        if unserved(&resp) {
+            return Ok(None);
+        }
+        Ok(Some(Self::decode::<VersionInfo>(resp)?.version))
     }
 
     pub fn session(&self, req: &SessionRequest) -> anyhow::Result<SessionResponse> {

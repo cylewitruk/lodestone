@@ -57,6 +57,7 @@ lode register                      # register this repository; indexing starts i
 lode install                       # set up Claude Code and/or Codex
 lode status                        # indexing progress; results are complete once it is done
 lode search "retry an HTTP call with exponential backoff"   # searches the repository you are in
+lode doctor                        # check the setup; prints the fix for anything wrong
 ```
 
 There is nothing to keep running: the daemon starts when needed and exits when idle. The model

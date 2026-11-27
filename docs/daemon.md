@@ -54,8 +54,8 @@ from it until a scan can read it again, and `lode status` names it until then. R
 index (`lode index --force`, or after a model change) re-indexes every file a batch at a time,
 so the index stays searchable and an unreadable file keeps its items.
 
-On Linux, large trees may need a higher `fs.inotify.max_user_watches`. If the watcher fails,
-lodestone rescans every 60 s and says so in `lode status`.
+On Linux, large trees may need a higher `fs.inotify.max_user_watches` (`lode doctor` checks it).
+If the watcher fails, lodestone rescans every 60 s and says so in `lode status`.
 
 ## CLI
 
@@ -69,6 +69,7 @@ lodestone rescans every 60 s and says so in `lode status`.
 | `lode index [path] [--force]` | re-index a registered worktree (incremental unless `--force`) |
 | `lode search <query>` | search a registered worktree |
 | `lode status [--repo name\|path] [--json]` | index freshness of a worktree; elsewhere, a summary of all |
+| `lode doctor [--json]` | check the setup ([below](#doctor)); exits non-zero if a check fails |
 | `lode install` / `lode uninstall` | set up Claude Code, Codex and Antigravity ([agents](agents.md)) |
 | `lode transcript-stats --claude --codex --antigravity` | how agents use lodestone ([agents](agents.md#usage-statistics)) |
 | `lode models` | configured models and available backends |
@@ -81,8 +82,23 @@ one; without a daemon they act on the indexes directly. `--local` runs everythin
 
 Once a day, a command run at a terminal looks up the latest GitHub release in the background and
 later ones print a line on stderr while it is newer. `mcp`, `serve`, hooks and `--json` output
-never do. `LODESTONE_NO_UPDATE_CHECK=1` turns it off. `LODESTONE_GITHUB_TOKEN` authenticates the
-lookups (and `lode upgrade`'s) where GitHub's per-IP limit for anonymous calls is shared.
+never do; `doctor` reports it as a check. `LODESTONE_NO_UPDATE_CHECK=1` turns it off.
+`LODESTONE_GITHUB_TOKEN` authenticates the lookups (and `lode upgrade`'s) where GitHub's per-IP
+limit for anonymous calls is shared.
+
+### Doctor
+
+`lode doctor` prints one line per check, `ok`, `warn`, `fail` or `skip`, with the fix for anything
+not ok. It starts no daemon and embeds nothing.
+
+| Check | Looks at |
+| ---- | ---- |
+| `daemon` | answers, runs this `lode`'s version, and listens on the configured `port` |
+| `model` | a `remote` embedder answers; a local model is loaded by the daemon, else downloaded |
+| `repository` | the current checkout: registered, indexed, fresh, and its watcher without errors |
+| `claude`, `codex`, `antigravity` | for each harness on PATH: what `lode install` writes (skill, MCP server, hooks, Antigravity's plugin manifest), running this `lode` (user scope, or the repository's when only it has lodestone) |
+| `watch limit` | Linux: `fs.inotify.max_user_watches` against one watch per directory of registered repositories, ignored ones included |
+| `version` | a newer release, as the new-version notice knows it |
 
 ## REST
 
@@ -98,6 +114,7 @@ POST /v1/register {path}
 POST /v1/unregister {repo, cwd}
 POST /v1/index    {repo, force}
 GET  /v1/repos
+GET  /v1/version
 ```
 
 Internal, used by `lode mcp`, the hooks and `lode stop`:

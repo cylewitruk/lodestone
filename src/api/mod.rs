@@ -27,7 +27,7 @@ use mcp::LodestoneMcp;
 use sessions::Leases;
 use types::{
     DEFAULT_TOP_K, ErrorBody, IndexRequest, IndexResponse, NOT_LOCAL, RegisterRequest, RepoInfo,
-    SearchRequest, SessionRequest, SessionResponse, ToolRequest, UnregisterRequest,
+    SearchRequest, SessionRequest, SessionResponse, ToolRequest, UnregisterRequest, VersionInfo,
 };
 
 /// How long a request that names a repository keeps it watched by an on-demand daemon (at most
@@ -275,6 +275,12 @@ async fn repos(State(s): State<AppState>) -> Json<Vec<RepoInfo>> {
     Json(s.engine.repos())
 }
 
+async fn version() -> Json<VersionInfo> {
+    Json(VersionInfo {
+        version: env!("CARGO_PKG_VERSION").into(),
+    })
+}
+
 /// Takes or renews a session's lease on the registered worktree containing its `cwd`.
 async fn session_renew(
     State(s): State<AppState>,
@@ -401,6 +407,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/unregister", post(unregister))
         .route("/v1/index", post(index))
         .route("/v1/repos", get(repos))
+        .route("/v1/version", get(version))
         .route("/v1/sessions", post(session_renew))
         .route("/v1/local/sessions", post(session_local))
         .route("/v1/sessions/{id}", axum::routing::delete(session_release))

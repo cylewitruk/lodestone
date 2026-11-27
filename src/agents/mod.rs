@@ -11,7 +11,10 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 pub use edits::EDIT_HINT_OPENING;
-pub use install::{Harness, Scope, Step, Target, apply, check, find_program, install, uninstall};
+pub use install::{
+    Harness, Scope, State, Step, Target, apply, check, find_program, has_lodestone, install,
+    installed, uninstall,
+};
 pub use relay::run as run_relay;
 
 use crate::api::types::SessionRequest;

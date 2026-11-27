@@ -7,6 +7,7 @@ lode install                      # every harness whose CLI is on PATH, user sco
 lode install --client codex       # one harness: claude, codex, antigravity (agy); repeatable
 lode install --scope project      # files to commit in the current repository
 lode uninstall                    # same flags; --dry-run prints the steps only
+lode doctor                       # whether each harness's install is current
 ```
 
 What it installs:
@@ -52,7 +53,7 @@ Both searches also take:
 | Input | Effect |
 | ---- | ---- |
 | `repo` | the repository to search; defaults to the session's |
-| `from_unit` | only code a given package, crate or module may depend on, per the build graph |
+| `from_unit` | only code a given package, crate, module or project may depend on, per the [build graph](#build-graphs) |
 | `language` | one language |
 | `paths` | repo-relative globs, e.g. `["crates/foo", "!**/generated/**"]` |
 | `include_tests` | include tests, ranked below other code |
@@ -64,6 +65,24 @@ Both searches also take:
 - **Several definitions:** `similar_code_search` returns a section per definition (24 results for
   one, fewer each for several, at least 5). Definitions matching the passed one (its own once
   indexed, or an existing copy) are listed apart, after the ranked results.
+
+### Build graphs
+
+`from_unit` takes a unit name from one of these; a repo with several ecosystems gets all of them,
+and a file belongs to the unit with the deepest directory containing it. Units sharing a name or
+a directory act as one.
+
+| Ecosystem | Units | Unit name | Edges |
+| ---- | ---- | ---- | ---- |
+| Cargo | workspace members, root package | package name | dependencies on members |
+| npm, yarn, pnpm | `workspaces`, `pnpm-workspace.yaml` packages, root package | package name | `dependencies`, `devDependencies`, `peerDependencies` (incl. `workspace:`) |
+| Go | `go.work` modules, else `go.mod` up to two levels deep | module path | `require`, local `replace` (also `go.work`'s) |
+| Python | uv workspace members, else `pyproject.toml` up to two levels deep | project name | requirements, uv sources, uv and Poetry path dependencies |
+| Maven | root `pom.xml` and its `<modules>` | `artifactId` | `<dependency>`, also inherited from a local `<parent>` |
+| Gradle | `settings.gradle(.kts)` `include`s and their parents, root project | project path, e.g. `:libs:core` | `project(":x")`, `projects.x`, also inside `project(":x") {}`, `subprojects {}`, `allprojects {}` |
+| .NET | `.sln` / `.slnx` projects, else project files up to two levels deep | project file name | `<ProjectReference>` |
+
+Path dependencies (Go, Python, .NET) are followed to packages outside those locations.
 
 ### Result format
 

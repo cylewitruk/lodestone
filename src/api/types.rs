@@ -506,6 +506,12 @@ impl From<RepoInfo> for (String, PathBuf) {
     }
 }
 
+/// `GET /v1/version`: the daemon's `lode` version.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct VersionInfo {
+    pub version: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ErrorBody {
     pub error: String,
