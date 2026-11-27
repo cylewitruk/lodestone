@@ -3,8 +3,10 @@
 //!
 //! In a repo with several ecosystems every matching provider contributes: a file belongs to the
 //! unit with the deepest directory containing it, whatever its provider, and edges stay within
-//! a provider. Units of the same name from different providers (a Python package with a Rust
-//! extension, say) act as one unit: their files and dependencies combine.
+//! a provider. Units that share a name (a Python package with a Rust extension, say) or a
+//! directory (a crate and an npm package side by side) act as one unit: their files and
+//! dependencies combine. Directories cannot tell such units' files apart, and file types would
+//! not either for the files they share (docs, configuration, generated bindings).
 
 pub mod cargo;
 pub mod dotnet;
@@ -90,7 +92,7 @@ impl ProjectGraph {
         !self.providers.iter().all(|p| p == "fallback")
     }
 
-    /// Unit owning `rel_path` (longest matching directory prefix).
+    /// Unit owning `rel_path` (longest matching directory prefix; on a tie, the first unit).
     pub fn unit_of(&self, rel_path: &str) -> Option<&str> {
         self.units
             .iter()
@@ -98,21 +100,38 @@ impl ProjectGraph {
             .filter(|(_, p)| {
                 p.is_empty() || rel_path == p.as_str() || rel_path.starts_with(&format!("{p}/"))
             })
-            .max_by_key(|(_, p)| p.len())
+            .reduce(|best, x| if x.1.len() > best.1.len() { x } else { best })
             .map(|(u, _)| u.name.as_str())
     }
 
-    /// `unit` plus every unit it transitively depends on, or `None` if `unit` is unknown.
+    /// `unit` plus every unit it transitively depends on, or `None` if `unit` is unknown. Units
+    /// sharing a directory are reached together, since [`Self::unit_of`] gives its files to one
+    /// of them.
     pub fn allowed_from(&self, unit: &str) -> Option<BTreeSet<String>> {
         if !self.units.iter().any(|u| u.name == unit) {
             return None;
         }
+        let mut at_path: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for u in &self.units {
+            for p in &u.paths {
+                at_path.entry(p).or_default().insert(&u.name);
+            }
+        }
+        let co_located = |name: &str| -> BTreeSet<&str> {
+            self.units
+                .iter()
+                .filter(|u| u.name == name)
+                .flat_map(|u| &u.paths)
+                .flat_map(|p| at_path[p.as_str()].iter().copied())
+                .collect()
+        };
         let mut seen = BTreeSet::from([unit.to_string()]);
         let mut queue = VecDeque::from([unit.to_string()]);
         while let Some(u) = queue.pop_front() {
-            for d in self.deps.get(&u).into_iter().flatten() {
-                if seen.insert(d.clone()) {
-                    queue.push_back(d.clone());
+            let deps = self.deps.get(&u).into_iter().flatten().map(String::as_str);
+            for d in deps.chain(co_located(&u)) {
+                if seen.insert(d.to_string()) {
+                    queue.push_back(d.to_string());
                 }
             }
         }
@@ -194,6 +213,31 @@ mod tests {
         assert_eq!(
             g.allowed_from("fastlib").unwrap(),
             BTreeSet::from(["fastlib".into(), "helper".into()])
+        );
+    }
+
+    #[test]
+    fn co_located_units_act_as_one() {
+        let root = crate::testutil::tempdir();
+        crate::testutil::write_tree(
+            &root,
+            &[
+                ("Cargo.toml", "[package]\nname = \"native\"\n"),
+                (
+                    "package.json",
+                    r#"{"name": "frontend", "workspaces": ["ui"]}"#,
+                ),
+                ("ui/package.json", r#"{"name": "ui"}"#),
+            ],
+        );
+        let g = ProjectGraph::build(&root);
+        assert_eq!(g.unit_of("src/lib.rs"), Some("native"), "the first provider's");
+        let both = BTreeSet::from(["native".to_string(), "frontend".to_string()]);
+        assert_eq!(g.allowed_from("native").unwrap(), both);
+        assert_eq!(g.allowed_from("frontend").unwrap(), both);
+        assert_eq!(
+            g.allowed_from("ui").unwrap(),
+            BTreeSet::from(["ui".to_string()])
         );
     }
 
