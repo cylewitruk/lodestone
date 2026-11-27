@@ -10,6 +10,7 @@
 use std::fmt;
 use std::fs;
 use std::io;
+use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -358,7 +359,7 @@ pub fn uninstall(harnesses: &[Harness], t: &Target) -> Vec<Step> {
     let kept = Harness::ALL
         .into_iter()
         .filter(|h| !harnesses.contains(h))
-        .any(|h| harness_steps(h, t, false).iter().any(finds_ours));
+        .any(|h| has_lodestone(h, t));
     if !kept {
         // The directory goes only once empty: anything else in it is the user's.
         steps.push(Step::Remove {
@@ -371,21 +372,17 @@ pub fn uninstall(harnesses: &[Harness], t: &Target) -> Vec<Step> {
     steps
 }
 
+/// Whether `h` has lodestone's skill link, MCP server or a hook at `t`, in any form. The shared
+/// skill does not count: other harnesses read it too.
+pub fn has_lodestone(h: Harness, t: &Target) -> bool {
+    harness_steps(h, t, false).iter().any(finds_ours)
+}
+
 /// Whether removal step `step` finds lodestone's link, MCP server or hook handler: a harness with
 /// no such step has nothing of lodestone's. Harness CLI calls, and files that do not parse, are
 /// taken to hold nothing.
 fn finds_ours(step: &Step) -> bool {
-    let json = |path: &Path| {
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-            .unwrap_or_default()
-    };
     let has_server = |doc: &Value| doc["mcpServers"].get(NAME).is_some();
-    let has_handler = |list: &Value, event: HookEvent, command: &str| {
-        list.as_array()
-            .is_some_and(|l| l.iter().any(|h| is_ours(h, event, command)))
-    };
     match step {
         Step::Unlink { link, target } => is_our_link(link, target),
         Step::Hook {
@@ -393,31 +390,167 @@ fn finds_ours(step: &Step) -> bool {
             event,
             command,
             ..
-        } => json(path)["hooks"][event.name()]
+        } => parsed_json(path)["hooks"][event.name()]
             .as_array()
             .is_some_and(|groups| {
                 groups
                     .iter()
-                    .any(|g| has_handler(&g["hooks"], *event, command))
+                    .any(|g| has_our_handler(&g["hooks"], *event, command))
             }),
-        Step::McpJson { path, .. } => has_server(&json(path)),
-        Step::CodexToml { path, .. } => fs::read_to_string(path)
-            .ok()
-            .and_then(|t| t.parse::<DocumentMut>().ok())
-            .is_some_and(|doc| {
-                doc.get("mcp_servers")
-                    .and_then(Item::as_table_like)
-                    .is_some_and(|servers| servers.contains_key(NAME))
-            }),
+        Step::McpJson { path, .. } => has_server(&parsed_json(path)),
+        Step::CodexToml { path, .. } => parsed_toml(path)["mcp_servers"].get(NAME).is_some(),
         Step::AntigravityPlugin { dir, plugin, .. } => {
-            let hooks = json(&dir.join(PLUGIN_HOOKS));
-            has_server(&json(&dir.join(PLUGIN_MCP)))
+            let hooks = parsed_json(&dir.join(PLUGIN_HOOKS));
+            has_server(&parsed_json(&dir.join(PLUGIN_MCP)))
                 || plugin
                     .hooks
                     .iter()
-                    .any(|(e, c)| has_handler(&hooks[NAME][e.name()], *e, c))
+                    .any(|(e, c)| has_our_handler(&hooks[NAME][e.name()], *e, c))
         }
         Step::Write { .. } | Step::Link { .. } | Step::Remove { .. } | Step::Run { .. } => false,
+    }
+}
+
+/// The JSON in `path`; `null` when it is missing or does not parse.
+fn parsed_json(path: &Path) -> Value {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// The TOML in `path` as JSON; `null` when it is missing or does not parse.
+fn parsed_toml(path: &Path) -> Value {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|t| toml::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Whether hook handler list `list` holds our `event` handler, in any form (see [`is_ours`]).
+fn has_our_handler(list: &Value, event: HookEvent, command: &str) -> bool {
+    list.as_array()
+        .is_some_and(|l| l.iter().any(|h| is_ours(h, event, command)))
+}
+
+/// How a piece of lodestone's install compares with what [`install`] writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    /// As `install` writes it.
+    Current,
+    /// There in another form: an older skill, or another `lode` binary or settings.
+    Outdated,
+    Missing,
+}
+
+/// The pieces [`install`] adds for `h` at `t` (the skill, its link, the MCP server and each
+/// hook), each with its state. Reads only files: Claude Code's user-scope MCP server from
+/// `~/.claude.json`, where `claude mcp add` puts it.
+pub fn installed(h: Harness, t: &Target) -> Vec<(String, State)> {
+    let mut pieces: Vec<(String, State)> = install(&[h], t).iter().flat_map(states).collect();
+    if (h, t.scope) == (Harness::Claude, Scope::User) {
+        let doc = parsed_json(&t.home.join(".claude.json"));
+        pieces.push((
+            MCP_SERVER.into(),
+            server_state(&doc["mcpServers"][NAME], &t.program()),
+        ));
+    }
+    pieces
+}
+
+const MCP_SERVER: &str = "MCP server";
+
+/// The state of each piece install step `step` adds; none for harness CLI calls.
+fn states(step: &Step) -> Vec<(String, State)> {
+    let hook = |e: HookEvent| format!("{} hook", e.name());
+    let found = |current: bool, ours: bool| match (current, ours) {
+        (true, _) => State::Current,
+        (false, true) => State::Outdated,
+        (false, false) => State::Missing,
+    };
+    match step {
+        Step::Write { path, contents } => {
+            let text = fs::read_to_string(path);
+            let current = text.as_ref().is_ok_and(|t| t == contents);
+            vec![("skill".into(), found(current, text.is_ok()))]
+        }
+        Step::Link { link, target } => vec![(
+            "skill link".into(),
+            found(
+                is_our_link(link, target),
+                fs::symlink_metadata(link).is_ok(),
+            ),
+        )],
+        Step::Hook {
+            path,
+            event,
+            command,
+            ..
+        } => {
+            let current = parsed_json(path)["hooks"][event.name()]
+                .as_array()
+                .is_some_and(|groups| {
+                    groups.iter().any(|g| {
+                        g["matcher"].as_str() == event.matcher()
+                            && has_handler(&g["hooks"], command)
+                    })
+                });
+            vec![(hook(*event), found(current, finds_ours(step)))]
+        }
+        Step::McpJson {
+            path,
+            program: Some(program),
+        } => vec![(
+            MCP_SERVER.into(),
+            server_state(&parsed_json(path)["mcpServers"][NAME], program),
+        )],
+        Step::CodexToml {
+            path,
+            program: Some(program),
+        } => {
+            let server = &parsed_toml(path)["mcp_servers"][NAME];
+            let state = match server_state(server, program) {
+                State::Current if server["default_tools_approval_mode"] != "approve" => {
+                    State::Outdated
+                }
+                s => s,
+            };
+            vec![(MCP_SERVER.into(), state)]
+        }
+        Step::AntigravityPlugin { dir, plugin, .. } => {
+            let hooks = parsed_json(&dir.join(PLUGIN_HOOKS));
+            let server = parsed_json(&dir.join(PLUGIN_MCP));
+            iter::once((
+                MCP_SERVER.into(),
+                server_state(&server["mcpServers"][NAME], &plugin.program),
+            ))
+            .chain(plugin.hooks.iter().map(|(e, c)| {
+                let list = &hooks[NAME][e.name()];
+                (
+                    hook(*e),
+                    found(has_handler(list, c), has_our_handler(list, *e, c)),
+                )
+            }))
+            .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Whether hook handler list `list` holds the handler running `command` that install writes.
+fn has_handler(list: &Value, command: &str) -> bool {
+    list.as_array()
+        .is_some_and(|l| l.contains(&handler(command)))
+}
+
+/// The state of MCP server entry `server`, which install writes to run `<program> mcp`.
+fn server_state(server: &Value, program: &str) -> State {
+    if server.is_null() {
+        State::Missing
+    } else if server["command"] == program && server["args"] == json!(["mcp"]) {
+        State::Current
+    } else {
+        State::Outdated
     }
 }
 
@@ -1101,6 +1234,74 @@ mod tests {
             fs::read_to_string(&codex).unwrap(),
             "model = \"x\"\n\n[mcp_servers.other]\ncommand = \"o\"\n"
         );
+    }
+
+    #[test]
+    fn installed_reports_each_piece_current_outdated_or_missing() {
+        let root = tempdir();
+        let t = target(Scope::User, &root);
+        let home = root.join("home");
+        let states = |h| -> Vec<State> { installed(h, &t).into_iter().map(|(_, s)| s).collect() };
+        for h in Harness::ALL {
+            assert!(states(h).iter().all(|s| *s == State::Missing), "{h:?}");
+        }
+
+        run_all(&install(&Harness::ALL, &t));
+        // `claude mcp add` is not run here; it writes `~/.claude.json`.
+        fs::write(
+            home.join(".claude.json"),
+            r#"{"mcpServers":{"lodestone":{"type":"stdio","command":"/opt/bin/lode","args":["mcp"],"env":{}}}}"#,
+        )
+        .unwrap();
+        for h in Harness::ALL {
+            assert!(states(h).iter().all(|s| *s == State::Current), "{h:?}");
+        }
+        let pieces: Vec<String> = installed(Harness::Claude, &t)
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        assert_eq!(
+            pieces,
+            [
+                "skill",
+                "skill link",
+                "SessionStart hook",
+                "UserPromptSubmit hook",
+                "SubagentStart hook",
+                "PreToolUse hook",
+                "MCP server",
+            ]
+        );
+
+        // Installed by another `lode`: lodestone's, but not this binary's.
+        let moved = Target {
+            exe: PathBuf::from("/usr/local/bin/lode"),
+            ..target(Scope::User, &root)
+        };
+        for h in Harness::ALL {
+            let pieces = installed(h, &moved);
+            let outdated: Vec<&str> = pieces
+                .iter()
+                .filter(|(_, s)| *s == State::Outdated)
+                .map(|(p, _)| p.as_str())
+                .collect();
+            assert!(outdated.contains(&"MCP server"), "{h:?}: {pieces:?}");
+            assert!(outdated.contains(&"SessionStart hook"), "{h:?}: {pieces:?}");
+            assert!(
+                !pieces.iter().any(|(_, s)| *s == State::Missing),
+                "{h:?}: {pieces:?}"
+            );
+        }
+
+        // Without the approval mode, Codex asks before each call.
+        let codex = home.join(".codex/config.toml");
+        let text = fs::read_to_string(&codex).unwrap();
+        fs::write(
+            &codex,
+            text.replace("default_tools_approval_mode = \"approve\"\n", ""),
+        )
+        .unwrap();
+        assert!(installed(Harness::Codex, &t).contains(&(MCP_SERVER.into(), State::Outdated)));
     }
 
     #[test]

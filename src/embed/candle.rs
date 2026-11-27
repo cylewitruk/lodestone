@@ -8,7 +8,7 @@ use candle_core::{D, DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::{bert, nomic_bert};
 use hf_hub::api::sync::ApiBuilder;
-use hf_hub::{Repo, RepoType};
+use hf_hub::{Cache, Repo, RepoType};
 use tokenizers::{Tokenizer, TruncationParams};
 
 use super::decoder::Decoder;
@@ -27,6 +27,34 @@ enum Model {
     Decoder(Decoder),
     Gemma(EmbeddingGemma2),
     Ultra(UltraBert),
+}
+
+/// The files [`CandleEmbedder::load`] reads for `config`: tokenizer, config and weights, each
+/// with its repository.
+fn files(config: &ModelConfig) -> [(Repo, &'static str); 3] {
+    let repo = match &config.revision {
+        Some(r) => Repo::with_revision(config.hf_repo.clone(), RepoType::Model, r.clone()),
+        None => Repo::new(config.hf_repo.clone(), RepoType::Model),
+    };
+    let tokenizer = match &config.tokenizer_repo {
+        Some(t) => Repo::model(t.clone()),
+        None => repo.clone(),
+    };
+    [
+        (tokenizer, "tokenizer.json"),
+        (repo.clone(), "config.json"),
+        (repo, "model.safetensors"),
+    ]
+}
+
+/// The files of `config` that [`CandleEmbedder::load`] would download first into `cache_dir`.
+pub fn missing_files(config: &ModelConfig, cache_dir: &Path) -> Vec<String> {
+    let cache = Cache::new(cache_dir.to_path_buf());
+    files(config)
+        .into_iter()
+        .filter(|(repo, name)| cache.repo(repo.clone()).get(name).is_none())
+        .map(|(_, name)| name.to_string())
+        .collect()
 }
 
 pub struct CandleEmbedder {
@@ -61,19 +89,12 @@ impl CandleEmbedder {
             .with_cache_dir(cache_dir.to_path_buf())
             .with_progress(false)
             .build()?;
-        let repo = api.repo(match &config.revision {
-            Some(r) => Repo::with_revision(config.hf_repo.clone(), RepoType::Model, r.clone()),
-            None => Repo::new(config.hf_repo.clone(), RepoType::Model),
+        let [tokenizer_path, config_path, weights] = files(config).map(|(repo, name)| {
+            api.repo(repo)
+                .get(name)
+                .with_context(|| format!("downloading {name}"))
         });
-        let tokenizer_path = match &config.tokenizer_repo {
-            Some(t) => api.model(t.clone()).get("tokenizer.json"),
-            None => repo.get("tokenizer.json"),
-        }
-        .context("downloading tokenizer.json")?;
-        let config_path = repo.get("config.json").context("downloading config.json")?;
-        let weights = repo
-            .get("model.safetensors")
-            .context("downloading model.safetensors")?;
+        let (tokenizer_path, config_path, weights) = (tokenizer_path?, config_path?, weights?);
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(anyhow::Error::msg)?;
         tokenizer
             .with_truncation(Some(TruncationParams {

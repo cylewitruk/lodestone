@@ -1,6 +1,8 @@
 //! fastembed (ONNX Runtime) backend: CPU everywhere, the Phase 0 baseline.
 
-use std::path::Path;
+use std::fs;
+use std::iter;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, bail};
@@ -28,14 +30,42 @@ fn variant(name: &str) -> anyhow::Result<EmbeddingModel> {
     })
 }
 
+/// fastembed's model for `config`.
+fn model(config: &ModelConfig) -> anyhow::Result<EmbeddingModel> {
+    let name = config
+        .fastembed
+        .as_deref()
+        .with_context(|| format!("{} has no fastembed equivalent", config.hf_repo))?;
+    variant(name)
+}
+
+/// Where fastembed keeps its downloads under lodestone's model cache.
+fn files_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("fastembed")
+}
+
+/// The files of `config` that [`FastembedEmbedder::load`] would download first into `cache_dir`.
+pub fn missing_files(config: &ModelConfig, cache_dir: &Path) -> anyhow::Result<Vec<String>> {
+    let model = model(config)?;
+    let info = TextEmbedding::get_model_info(&model)?;
+    // hf-hub's layout: `models--<org>--<name>/snapshots/<revision>/<file>`.
+    let snapshots = files_dir(cache_dir)
+        .join(format!("models--{}", info.model_code.replace('/', "--")))
+        .join("snapshots");
+    let snapshots: Vec<PathBuf> = fs::read_dir(&snapshots)
+        .map(|d| d.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    Ok(iter::once(&info.model_file)
+        .chain(&info.additional_files)
+        .filter(|f| !snapshots.iter().any(|s| s.join(f).exists()))
+        .cloned()
+        .collect())
+}
+
 impl FastembedEmbedder {
     pub fn load(config: &ModelConfig, cache_dir: &Path, batch_size: usize) -> anyhow::Result<Self> {
-        let name = config
-            .fastembed
-            .as_deref()
-            .with_context(|| format!("{} has no fastembed equivalent", config.hf_repo))?;
-        let opts = TextInitOptions::new(variant(name)?)
-            .with_cache_dir(cache_dir.join("fastembed"))
+        let opts = TextInitOptions::new(model(config)?)
+            .with_cache_dir(files_dir(cache_dir))
             .with_max_length(config.max_tokens)
             .with_show_download_progress(false);
         // `LODESTONE_FASTEMBED_EP=coreml` routes ONNX Runtime through CoreML on macOS.

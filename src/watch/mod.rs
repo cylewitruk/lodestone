@@ -22,6 +22,16 @@ const POLL: Duration = Duration::from_secs(60);
 /// How long a failed indexing pass waits for the next change before it is retried.
 const RETRY: Duration = Duration::from_secs(60);
 
+/// How the watcher state `status` reports starts after the watcher failed: errors it recovers
+/// from with a rescan, or no watcher at all.
+const DEGRADED: &str = "degraded: ";
+const POLLING: &str = "polling every 60s ";
+
+/// Whether watcher state `state`, as `status` reports it, says the watcher failed.
+pub fn failed(state: &str) -> bool {
+    state.starts_with(DEGRADED) || state.starts_with(POLLING)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
     Paths(BTreeSet<String>),
@@ -259,7 +269,7 @@ impl Watchers {
                 Self::set_state(
                     &err_engine,
                     &err_root,
-                    format!("degraded: {msg}; full rescan queued"),
+                    format!("{DEGRADED}{msg}; full rescan queued"),
                 );
                 let _ = events_tx.send(Change::Rescan);
             }
@@ -289,11 +299,7 @@ impl Watchers {
                     "watcher failed for {}: {e}; polling every 60s",
                     w.root.display()
                 );
-                Self::set_state(
-                    engine,
-                    &w.root,
-                    format!("polling every 60s (watcher failed: {e})"),
-                );
+                Self::set_state(engine, &w.root, format!("{POLLING}(watcher failed: {e})"));
                 let poll_tx = tx.clone();
                 poll = Some(tokio::spawn(async move {
                     loop {

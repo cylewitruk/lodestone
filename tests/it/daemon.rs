@@ -41,7 +41,7 @@ fn write(root: &Path, rel: &str, text: &str) {
     fs::write(p, text).unwrap();
 }
 
-fn git(root: &Path, args: &[&str]) {
+pub fn git(root: &Path, args: &[&str]) {
     let ok = Command::new("git")
         .args([
             "-c",
@@ -62,7 +62,7 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 /// A Cargo workspace with `n` generated modules.
-fn repo(n: usize) -> PathBuf {
+pub fn repo(n: usize) -> PathBuf {
     let root = tempdir().join("repo");
     write(&root, "Cargo.toml", "[workspace]\nmembers = [\"core\"]\n");
     write(&root, "core/Cargo.toml", "[package]\nname = \"core\"\n");
@@ -652,7 +652,7 @@ fn watcher_indexes_only_files_a_full_scan_would() {
 
 /// A home whose config sets a short idle timeout for on-demand daemons, which listen only on the
 /// home's Unix socket.
-fn on_demand_home(idle_secs: u64) -> PathBuf {
+pub fn on_demand_home(idle_secs: u64) -> PathBuf {
     let home = tempdir();
     let mut config = format!("idle_timeout_secs = {idle_secs}\n");
     // Windows has no socket; each test's daemon needs a port of its own.
@@ -664,7 +664,7 @@ fn on_demand_home(idle_secs: u64) -> PathBuf {
     home
 }
 
-fn lode(home: &Path) -> Command {
+pub fn lode(home: &Path) -> Command {
     lode_at(Path::new(BIN), home)
 }
 
@@ -693,7 +693,7 @@ fn client(home: &Path) -> Option<Client> {
     Client::connect(&home_config(home).endpoint())
 }
 
-fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
+pub fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + timeout;
     while !done() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");

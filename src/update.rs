@@ -74,13 +74,30 @@ pub fn current() -> Version {
     Version::parse(env!("CARGO_PKG_VERSION")).expect("the package version is semver")
 }
 
+/// Whether [`OPT_OUT_ENV`] turns off the lookup and the notice.
+pub fn opted_out() -> bool {
+    std::env::var_os(OPT_OUT_ENV).is_some()
+}
+
 /// The one-line notice to show when a newer release than this binary is known, unless
-/// [`OPT_OUT_ENV`] is set. Never waits on the network: when the last lookup is a day old, starts
-/// another in the background ([`check`] in a detached `lode update-check`) for later commands.
+/// [`opted_out`]. See [`latest_known`].
 pub fn notice(config: &Config, config_path: Option<&Path>) -> Option<String> {
-    if std::env::var_os(OPT_OUT_ENV).is_some() {
+    if opted_out() {
         return None;
     }
+    let latest = latest_known(config, config_path)?;
+    (latest > current()).then(|| {
+        format!(
+            "lode {latest} is available (this is {}); run `lode upgrade`",
+            current()
+        )
+    })
+}
+
+/// The latest release the last lookup found, if any. Never waits on the network: when the last
+/// lookup is a day old, starts another in the background ([`check`] in a detached
+/// `lode update-check`) for later commands.
+pub fn latest_known(config: &Config, config_path: Option<&Path>) -> Option<Version> {
     let path = Cache::path(config);
     let mut cache = Cache::load(&path);
     let now = text::now();
@@ -99,13 +116,7 @@ pub fn notice(config: &Config, config_path: Option<&Path>) -> Option<String> {
             }
         }
     }
-    let latest = Version::parse(cache.latest.as_deref()?).ok()?;
-    (latest > current()).then(|| {
-        format!(
-            "lode {latest} is available (this is {}); run `lode upgrade`",
-            current()
-        )
-    })
+    Version::parse(cache.latest.as_deref()?).ok()
 }
 
 fn spawn_check(config_path: Option<&Path>) -> std::io::Result<()> {

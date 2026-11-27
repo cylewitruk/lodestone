@@ -12,6 +12,7 @@ use lodestone::api::types::{
 use lodestone::bench::{self, BenchOptions};
 use lodestone::client::{self, Client};
 use lodestone::config::{Backend, Config};
+use lodestone::doctor::{self, Doctor};
 use lodestone::embed;
 use lodestone::index::IndexOptions;
 use lodestone::registry::{self, Engine};
@@ -132,6 +133,12 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Check the setup: the daemon, the model, this repository's index, each agent harness's
+    /// install, the watch limit and the version. Exits non-zero when a check fails.
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
     /// Configured embedding models and available backends.
     Models,
     /// Built-in grammars, grammars found via tree-sitter's config, and the extension map.
@@ -193,6 +200,8 @@ impl Cmd {
                 | Self::Hook(_)
                 | Self::Upgrade { .. }
                 | Self::UpdateCheck
+                // It reports a newer release itself.
+                | Self::Doctor { .. }
                 | Self::Search { json: true, .. }
                 | Self::Status { json: true, .. }
                 | Self::Bench { json: true, .. }
@@ -552,6 +561,29 @@ fn run(cli: Cli, mut config: Config) -> anyhow::Result<()> {
             } else {
                 println!("{}", report.to_text());
             }
+            Ok(())
+        }
+        Cmd::Doctor { json } => {
+            let setup = doctor::Setup {
+                daemon: Client::connect(&config.endpoint()),
+                config,
+                config_path: cli.config,
+                cwd: std::env::current_dir()?,
+                home: dirs::home_dir().context("no home directory")?,
+                exe: client::lode_exe()?,
+            };
+            let report = Doctor::run(&doctor::checks(&setup));
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("{}", report.to_text());
+            }
+            let failed = report.failed();
+            anyhow::ensure!(
+                failed == 0,
+                "{failed} of {} checks failed",
+                report.checks.len()
+            );
             Ok(())
         }
         Cmd::Models => {
