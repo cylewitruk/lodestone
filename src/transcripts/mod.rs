@@ -1,4 +1,5 @@
-//! `lode transcript-stats`: how agents use lodestone, from Claude Code and Codex transcripts.
+//! `lode transcript-stats`: how agents use lodestone, from Claude Code, Codex and Antigravity
+//! transcripts.
 //!
 //! Each call counts towards the registered repository it worked in: the one its file path or
 //! command directory is in, else the one its `repo` argument names, else the session's. Calls in no
@@ -7,6 +8,7 @@
 //! last complete line, size, mtime and a hash of its first bytes), so a later run skips unchanged
 //! files, reads only new lines of grown ones, and re-reads rewritten ones.
 
+mod antigravity;
 mod claude;
 mod codex;
 mod report;
@@ -14,6 +16,7 @@ mod repos;
 mod store;
 mod time;
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -22,6 +25,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::index::mtime_nanos;
+use crate::shell;
 pub use report::{Filter, Group, Report, Search};
 use repos::Repos;
 use store::{FileState, Store};
@@ -116,10 +120,10 @@ pub enum Target {
 /// What a parser extracts from one transcript line.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    /// The session `id` (a subagent's parent session) runs in `cwd`.
+    /// The session `id` (a subagent's parent session) runs in `cwd`, when known.
     Session {
         id: String,
-        cwd: PathBuf,
+        cwd: Option<PathBuf>,
         ts: i64,
     },
     Call(Call),
@@ -142,20 +146,23 @@ pub enum Event {
 pub enum Format {
     Claude,
     Codex,
+    Antigravity,
 }
 
 impl Format {
-    /// The harness's name in statistics (`claude`, `codex`).
+    /// The harness's name in statistics (`claude`, `codex`, `antigravity`).
     pub fn name(self) -> &'static str {
         match self {
             Format::Claude => "claude",
             Format::Codex => "codex",
+            Format::Antigravity => "antigravity",
         }
     }
 }
 
-/// Where a harness keeps its transcripts by default.
-pub fn default_dir(h: Format) -> PathBuf {
+/// Where a harness keeps its transcripts by default: for Antigravity, the app data directories of
+/// its app and its CLI.
+pub fn default_dirs(h: Format) -> Vec<PathBuf> {
     let home = dirs::home_dir().unwrap_or_default();
     let config = |var: &str, dir: &str| {
         std::env::var_os(var)
@@ -163,8 +170,11 @@ pub fn default_dir(h: Format) -> PathBuf {
             .unwrap_or_else(|| home.join(dir))
     };
     match h {
-        Format::Claude => config("CLAUDE_CONFIG_DIR", ".claude").join("projects"),
-        Format::Codex => config("CODEX_HOME", ".codex").join("sessions"),
+        Format::Claude => vec![config("CLAUDE_CONFIG_DIR", ".claude").join("projects")],
+        Format::Codex => vec![config("CODEX_HOME", ".codex").join("sessions")],
+        Format::Antigravity => ["antigravity", "antigravity-cli"]
+            .map(|app| home.join(".gemini").join(app))
+            .into(),
     }
 }
 
@@ -183,8 +193,12 @@ pub fn scan(config: &Config, sources: &[(Format, PathBuf)]) -> anyhow::Result<Sc
     store.reset_unless_registered(&repos.fingerprint())?;
     let mut summary = ScanSummary::default();
     for (harness, dir) in sources {
-        for path in jsonl_files(dir) {
-            read_file(&store, *harness, &path, &repos, &mut summary)?;
+        let (files, workspaces) = match harness {
+            Format::Antigravity => (antigravity::transcripts(dir), antigravity::workspaces(dir)),
+            _ => (jsonl_files(dir), HashMap::new()),
+        };
+        for path in files {
+            read_file(&store, *harness, &path, &workspaces, &repos, &mut summary)?;
         }
     }
     Ok(summary)
@@ -200,23 +214,32 @@ fn read_file(
     store: &Store,
     harness: Format,
     path: &Path,
+    workspaces: &HashMap<String, PathBuf>,
     repos: &Repos,
     summary: &mut ScanSummary,
 ) -> anyhow::Result<()> {
     let meta = fs::metadata(path)?;
     let key = path.to_string_lossy().into_owned();
     let saved = store.file(&key)?;
-    if saved
-        .as_ref()
-        .is_some_and(|s| s.size == meta.len() && s.mtime == mtime_nanos(&meta))
+    let antigravity = antigravity::Context::new(path, workspaces);
+    // An Antigravity conversation's workspace is recorded outside its transcript: when it differs
+    // from the one the transcript was read with, the transcript is read again.
+    let moved = harness == Format::Antigravity
+        && saved
+            .as_ref()
+            .is_some_and(|s| s.cwd.as_deref().map(Path::new) != antigravity.workspace());
+    if !moved
+        && saved
+            .as_ref()
+            .is_some_and(|s| s.size == meta.len() && s.mtime == mtime_nanos(&meta))
     {
         summary.unchanged += 1;
         return Ok(());
     }
     let mut file = File::open(path)?;
     let mut state = match saved {
-        Some(s) if s.offset <= meta.len() && head(&mut file, s.head_len)? == s.head => s,
-        // Rewritten.
+        Some(s) if !moved && s.offset <= meta.len() && head(&mut file, s.head_len)? == s.head => s,
+        // Rewritten, or its workspace changed.
         _ => FileState::default(),
     };
     store.begin()?;
@@ -257,12 +280,13 @@ fn read_file(
         let events = match harness {
             Format::Claude => claude::parse(&text),
             Format::Codex => codex::parse(&text, &mut codex),
+            Format::Antigravity => antigravity::parse(&text, &antigravity),
         };
         for event in events {
             match event {
                 Event::Session { id, cwd, ts } => {
                     let id = format!("{}:{id}", harness.name());
-                    let repo = repos.of_path(&cwd);
+                    let repo = cwd.as_deref().and_then(|c| repos.of_path(c));
                     let known = session
                         .as_ref()
                         .is_some_and(|(s, r)| *s == id && *r == repo);
@@ -270,7 +294,7 @@ fn read_file(
                         let repo = repo.as_ref().map(|r| r.to_string_lossy().into_owned());
                         store.add_session(&id, harness.name(), repo.as_deref(), ts)?;
                     }
-                    state.cwd = Some(cwd.to_string_lossy().into_owned());
+                    state.cwd = cwd.map(|c| c.to_string_lossy().into_owned());
                     state.session = Some(id.clone());
                     session = Some((id, repo));
                 }
@@ -279,9 +303,11 @@ fn read_file(
                         continue;
                     };
                     // A call on a known path counts where the path is; any other, where a
-                    // `repo` argument says, else in the session's repository.
+                    // `repo` argument says, else in the session's repository. A relative path
+                    // has no known directory.
                     let repo = match &c.target {
                         Some(Target::Path(p)) if p.is_absolute() => repos.of_path(p),
+                        Some(Target::Path(_)) => session_repo.clone(),
                         Some(Target::Searches(call)) => {
                             store.searches_repo(&key, call)?.map(PathBuf::from)
                         }
@@ -345,6 +371,40 @@ fn jsonl_files(dir: &Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+/// The calls shell command `command`, run in `cwd`, counts as: its searches (`<id>:g<n>`) and
+/// file reads (`<id>:r<n>`).
+fn shell_calls(id: &str, session: &str, ts: i64, command: &str, cwd: Option<&Path>) -> Vec<Call> {
+    let command = shell::analyse(command, cwd);
+    let call = |id: String, kind, path: Option<String>, target| Call {
+        id,
+        session: session.to_string(),
+        kind,
+        ts,
+        query: None,
+        path,
+        target,
+        done: None,
+    };
+    let searches = command.searches.into_iter().enumerate().map(|(i, s)| {
+        call(
+            format!("{id}:g{i}"),
+            Kind::Grep,
+            None,
+            s.target.map(Target::Path),
+        )
+    });
+    let reads = command.reads.into_iter().enumerate().map(|(i, p)| {
+        let path = p.to_string_lossy().into_owned();
+        call(
+            format!("{id}:r{i}"),
+            Kind::Read,
+            Some(path),
+            Some(Target::Path(p)),
+        )
+    });
+    searches.chain(reads).collect()
 }
 
 /// A tool result's text: a string, or the text blocks of a content list.

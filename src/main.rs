@@ -142,8 +142,9 @@ enum Cmd {
     Uninstall(HarnessArgs),
     /// Hooks that agent harnesses run.
     Hook(HookArgs),
-    /// How agents use lodestone, from Claude Code and Codex transcripts. Reads only sessions in
-    /// registered repositories, and records what it read so later runs read only new lines.
+    /// How agents use lodestone, from Claude Code, Codex and Antigravity transcripts. Reads only
+    /// sessions in registered repositories, and records what it read so later runs read only new
+    /// lines.
     #[command(group(clap::ArgGroup::new("source").required(true).multiple(true)))]
     TranscriptStats {
         /// Read Claude Code transcripts [default dir: ~/.claude/projects]
@@ -152,6 +153,10 @@ enum Cmd {
         /// Read Codex transcripts [default dir: ~/.codex/sessions]
         #[arg(long, value_name = "DIR", group = "source")]
         codex: Option<Option<PathBuf>>,
+        /// Read Antigravity transcripts from an app data directory [default dirs:
+        /// ~/.gemini/antigravity, ~/.gemini/antigravity-cli]
+        #[arg(long, value_name = "DIR", group = "source")]
+        antigravity: Option<Option<PathBuf>>,
         /// Only this repository (root path or directory name).
         #[arg(long)]
         repo: Option<String>,
@@ -417,6 +422,7 @@ fn run(cli: Cli, mut config: Config) -> anyhow::Result<()> {
         Cmd::TranscriptStats {
             claude,
             codex,
+            antigravity,
             repo,
             since,
             queries,
@@ -425,9 +431,17 @@ fn run(cli: Cli, mut config: Config) -> anyhow::Result<()> {
             let sources: Vec<(transcripts::Format, PathBuf)> = [
                 (transcripts::Format::Claude, claude),
                 (transcripts::Format::Codex, codex),
+                (transcripts::Format::Antigravity, antigravity),
             ]
             .into_iter()
-            .filter_map(|(h, dir)| Some((h, dir?.unwrap_or_else(|| transcripts::default_dir(h)))))
+            .flat_map(|(h, dir)| {
+                let dirs = match dir {
+                    Some(Some(dir)) => vec![dir],
+                    Some(None) => transcripts::default_dirs(h),
+                    None => Vec::new(),
+                };
+                dirs.into_iter().map(move |d| (h, d))
+            })
             .collect();
             let since = since
                 .map(|s| transcripts::parse_date(&s).context("--since takes a date: YYYY-MM-DD"))

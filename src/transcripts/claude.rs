@@ -10,8 +10,8 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use super::{Call, Event, Kind, Target, query_of, text_of, time};
-use crate::{agents, shell};
+use super::{Call, Event, Kind, Target, query_of, shell_calls, text_of, time};
+use crate::agents;
 
 pub fn parse(line: &str) -> Vec<Event> {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
@@ -28,7 +28,7 @@ pub fn parse(line: &str) -> Vec<Event> {
     if let Some(cwd) = cwd {
         out.push(Event::Session {
             id: session.to_string(),
-            cwd: cwd.into(),
+            cwd: Some(cwd.into()),
             ts,
         });
     }
@@ -94,24 +94,13 @@ fn calls(session: &str, ts: i64, cwd: Option<&Path>, b: &Value) -> Vec<Call> {
             input["file_path"].as_str().map(String::from),
             path_of("file_path"),
         ),
-        "Bash" => {
-            let command = shell::analyse(input["command"].as_str().unwrap_or_default(), cwd);
-            let searches = command.searches.into_iter().enumerate().map(|(i, s)| {
-                let target = s.target.map(Target::Path);
-                call(format!("{id}:g{i}"), Kind::Grep, None, None, target)
-            });
-            let reads = command.reads.into_iter().enumerate().map(|(i, p)| {
-                let path = p.to_string_lossy().into_owned();
-                call(
-                    format!("{id}:r{i}"),
-                    Kind::Read,
-                    None,
-                    Some(path),
-                    Some(Target::Path(p)),
-                )
-            });
-            searches.chain(reads).collect()
-        }
+        "Bash" => shell_calls(
+            id,
+            session,
+            ts,
+            input["command"].as_str().unwrap_or_default(),
+            cwd,
+        ),
         name => lodestone_tool(name)
             .map(|kind| {
                 let target = input["repo"].as_str().map(|r| Target::Repo(r.into()));

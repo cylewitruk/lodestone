@@ -37,7 +37,7 @@ pub fn parse(line: &str, ctx: &mut Context) -> Vec<Event> {
             .unwrap_or(0);
         return vec![Event::Session {
             id: id.to_string(),
-            cwd: cwd.into(),
+            cwd: Some(cwd.into()),
             ts,
         }];
     }
