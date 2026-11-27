@@ -2447,3 +2447,70 @@ fn the_edit_hint_names_existing_definitions_like_an_edits() {
     assert_eq!(hook("Read", json!({ "file_path": config_rs })), "");
     assert!(lode(&home).arg("stop").status().unwrap().success());
 }
+
+/// The edit hint gives up on a daemon that stops answering once its search budget is spent, and
+/// still names what earlier searches found.
+#[cfg(unix)]
+#[test]
+fn the_edit_hint_keeps_what_it_found_when_the_daemon_stalls() {
+    use std::sync::atomic::AtomicUsize;
+
+    use axum::routing::{get, post};
+    use lodestone::api::types::SearchResult;
+
+    let root = tempdir().canonicalize().unwrap();
+    let home = tempdir();
+    let socket = home.join("d.sock");
+    write(&home, "config.toml", &format!("socket = {socket:?}\n"));
+    let found = SearchResponse {
+        repo: root.to_string_lossy().into_owned(),
+        results: vec![SearchResult {
+            path: "src/old.rs".into(),
+            line: 3,
+            name: "existing".into(),
+            qualified_name: "existing".into(),
+            similarity: Some(0.99),
+            ..SearchResult::default()
+        }],
+        ..SearchResponse::default()
+    };
+    let searches = Arc::new(AtomicUsize::new(0));
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let app = axum::Router::new()
+                .route("/v1/repos", get(|| async { "[]" }))
+                .route(
+                    "/v1/search",
+                    post(move || {
+                        let first = searches.fetch_add(1, Ordering::SeqCst) == 0;
+                        let found = found.clone();
+                        async move {
+                            if !first {
+                                tokio::time::sleep(Duration::from_secs(60)).await;
+                            }
+                            axum::Json(found)
+                        }
+                    }),
+                );
+            let listener = tokio::net::UnixListener::from_std(listener).unwrap();
+            axum::serve(listener, app).await.unwrap();
+        });
+    });
+    let content = "pub fn first(a: u32) -> u32 {\n    a + 1\n}\n\npub fn second(b: u32) -> u32 {\n    b * 2\n}\n";
+    let started = Instant::now();
+    let out = run_hook(
+        &home,
+        "pre-tool-use",
+        json!({ "cwd": root, "tool_name": "Write",
+            "tool_input": { "file_path": root.join("src/new.rs"), "content": content } }),
+    );
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(5), "{took:?}");
+    assert!(
+        out.contains("src/old.rs:3 existing (like `first`)"),
+        "{out}"
+    );
+}

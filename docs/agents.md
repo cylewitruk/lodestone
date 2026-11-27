@@ -112,13 +112,16 @@ carry `line`, `line_end`, `name_line` and `name_column`.
   line pointing at `semantic_code_search`, with `repo` when the search is in another checkout.
   It says nothing for any other command, such as a `git grep` over another revision, and never
   blocks one: the installed command ends in `|| true`.
-- **Edit hint:** the same hook runs before Claude's `Edit`, `MultiEdit` and `Write`. It chunks the
-  new text with the file's grammar and searches the file's repository for each definition the
-  edit adds or changes; tests and definitions holding others (an `impl` block, whose methods are
-  each checked) are skipped. When an existing definition in the same language scores at least
+- **Edit hint:** the same hook runs before Claude's `Edit`, `MultiEdit` and `Write`. It applies
+  the edit to the file, chunks the result with the file's grammar, and searches the file's
+  repository for each definition on lines the edit writes (context repeated around a change
+  doesn't count). Tests and definitions holding others (an `impl` block, whose methods are each
+  checked) are skipped. When an existing definition in the same language scores at least
   `[hooks] duplicate_similarity` (cosine, default 0.75), it adds one line naming up to three, as
-  `path:line name`, each with the new definition it resembles. Definitions the edit replaces don't
-  count. It needs a running daemon and says nothing on any error.
+  `path:line name`, each with the new definition it resembles. The definitions the edit changes
+  don't count: those in the same scope under the same name, or on lines it replaces. Searches stop
+  after 2 s, and the line names what they found by then. It needs a running daemon and says
+  nothing on any error.
 - **Your files:** `lode install` and `uninstall` change only the hook commands lodestone wrote (a
   hook of yours that runs `lode` stays), a `SKILL.md` lodestone shipped, and its own link to the
   shared skill. They check every step first, and change nothing if anything else is in the way:

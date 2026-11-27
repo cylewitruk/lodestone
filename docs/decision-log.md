@@ -356,6 +356,7 @@ Why it is shaped this way (Sonnet, stacks-core, 624 runs unless noted):
   0.69), so the query is the code alone. Latency of the release build against a warm daemon:
   70 ms for an edit adding no definition (loading only the file's grammar; all grammars take
   1.3 s), 90 ms for one definition, 200 ms for 12 and 330 ms for 24; 70 ms with no daemon.
+  Searches stop after 2 s, keeping what they found, so a stalled daemon can't hold up an edit.
 - **Install touches only its own hooks:** `lode install` and `uninstall` replace only the hook
   command they wrote (or one written from another path to `lode`), so a user's hook that runs
   `lode` stays.
