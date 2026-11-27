@@ -94,10 +94,10 @@ not ok. It starts no daemon and embeds nothing.
 | Check | Looks at |
 | ---- | ---- |
 | `daemon` | answers, runs this `lode`'s version, and listens on the configured `port` |
-| `model` | loaded by the daemon, else downloaded; a `remote` embedder must answer |
+| `model` | a `remote` embedder answers; a local model is loaded by the daemon, else downloaded |
 | `repository` | the current checkout: registered, indexed, fresh, and its watcher without errors |
-| `claude`, `codex`, `antigravity` | for each harness on PATH: the skill, MCP server and hooks `lode install` writes, running this `lode` (user scope, or the repository's when only it has lodestone) |
-| `watch limit` | Linux: `fs.inotify.max_user_watches` against the directories of registered repositories |
+| `claude`, `codex`, `antigravity` | for each harness on PATH: what `lode install` writes (skill, MCP server, hooks, Antigravity's plugin manifest), running this `lode` (user scope, or the repository's when only it has lodestone) |
+| `watch limit` | Linux: `fs.inotify.max_user_watches` against one watch per directory of registered repositories, ignored ones included |
 | `version` | a newer release, as the new-version notice knows it |
 
 ## REST

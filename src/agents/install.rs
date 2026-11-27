@@ -10,7 +10,6 @@
 use std::fmt;
 use std::fs;
 use std::io;
-use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -520,10 +519,18 @@ fn states(step: &Step) -> Vec<(String, State)> {
         Step::AntigravityPlugin { dir, plugin, .. } => {
             let hooks = parsed_json(&dir.join(PLUGIN_HOOKS));
             let server = parsed_json(&dir.join(PLUGIN_MCP));
-            iter::once((
-                MCP_SERVER.into(),
-                server_state(&server["mcpServers"][NAME], &plugin.program),
-            ))
+            let manifest = dir.join(PLUGIN_MANIFEST);
+            [
+                (
+                    "plugin manifest".into(),
+                    found(parsed_json(&manifest)["name"] == NAME, manifest.exists()),
+                ),
+                (
+                    MCP_SERVER.into(),
+                    server_state(&server["mcpServers"][NAME], &plugin.program),
+                ),
+            ]
+            .into_iter()
             .chain(plugin.hooks.iter().map(|(e, c)| {
                 let list = &hooks[NAME][e.name()];
                 (
@@ -1302,6 +1309,20 @@ mod tests {
         )
         .unwrap();
         assert!(installed(Harness::Codex, &t).contains(&(MCP_SERVER.into(), State::Outdated)));
+
+        // Antigravity loads no plugin without its manifest.
+        let manifest = home.join(".gemini/config/plugins/lodestone/plugin.json");
+        let manifest_state = || {
+            installed(Harness::Antigravity, &t)
+                .into_iter()
+                .find(|(p, _)| p == "plugin manifest")
+                .map(|(_, s)| s)
+        };
+        assert_eq!(manifest_state(), Some(State::Current));
+        fs::write(&manifest, "{ not json").unwrap();
+        assert_eq!(manifest_state(), Some(State::Outdated));
+        fs::remove_file(&manifest).unwrap();
+        assert_eq!(manifest_state(), Some(State::Missing));
     }
 
     #[test]

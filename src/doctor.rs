@@ -4,7 +4,6 @@
 //! embedder).
 
 use std::any::Any;
-use std::collections::BTreeSet;
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
@@ -18,7 +17,6 @@ use crate::api::types::StatusReport;
 use crate::client::{self, Client};
 use crate::config::{Backend, Config, Endpoint};
 use crate::embed;
-use crate::index::{self, Manifest};
 use crate::registry::{self, Engine, Placement};
 use crate::text;
 use crate::update;
@@ -260,13 +258,15 @@ fn daemon(s: &Setup) -> anyhow::Result<Finding> {
     Ok(Finding::ok(format!("lode {version} at {at}")))
 }
 
-/// The embedding model: loaded by the daemon, or downloaded, or a remote embedder that answers.
+/// The embedding model: a remote embedder that answers, or loaded by the daemon, or downloaded.
 fn model(s: &Setup) -> anyhow::Result<Finding> {
-    let config = &s.config;
+    model_finding(&s.config, s.daemon.is_some())
+}
+
+/// [`model`], with a daemon running (`daemon`) or not. A running daemon has its local model
+/// loaded, but a remote embedder can stop answering at any time.
+fn model_finding(config: &Config, daemon: bool) -> anyhow::Result<Finding> {
     let name = format!("{} on {}", config.model, config.backend);
-    if s.daemon.is_some() {
-        return Ok(Finding::ok(format!("{name}, loaded by the daemon")));
-    }
     if config.model_config(&config.model).is_err() {
         return Ok(Finding::fail(
             format!("unknown model {}", config.model),
@@ -301,6 +301,9 @@ fn model(s: &Setup) -> anyhow::Result<Finding> {
                 "start the embedding server, or set `remote.url` in config.toml",
             )
         });
+    }
+    if daemon {
+        return Ok(Finding::ok(format!("{name}, loaded by the daemon")));
     }
     let missing = embed::missing_files(config, &config.model, config.backend)?;
     Ok(if missing.is_empty() {
@@ -458,8 +461,8 @@ fn install_finding(h: Harness, scope: Scope, pieces: &[(String, State)]) -> Find
     Finding::fail(format!("{scope} scope: {}", parts.join("; ")), fix)
 }
 
-/// Linux's inotify limit against the directories registered repositories have to watch (one
-/// watch each), as their manifests list them.
+/// Linux's inotify limit against the watches registered repositories take, one per directory a
+/// watcher covers (see [`watch::inotify_watches`]).
 fn watch_limit(s: &Setup) -> anyhow::Result<Finding> {
     let Ok(limit) = fs::read_to_string(INOTIFY_LIMIT) else {
         return Ok(Finding::skip("no per-user watch limit on this platform"));
@@ -467,29 +470,9 @@ fn watch_limit(s: &Setup) -> anyhow::Result<Finding> {
     let limit: usize = limit.trim().parse()?;
     let dirs: usize = registry::registered_roots(&s.config)
         .iter()
-        .filter_map(|root| {
-            Manifest::load(&index::index_dir(&s.config, root).join("manifest.json"))
-                .ok()
-                .flatten()
-        })
-        .map(|m| directories(&m))
+        .map(|root| watch::inotify_watches(root))
         .sum();
     Ok(limit_finding(limit, dirs))
-}
-
-/// The directories holding a manifest's files, the root included.
-fn directories(m: &Manifest) -> usize {
-    let mut dirs = BTreeSet::from([""]);
-    for file in m.files.keys() {
-        let mut path = file.as_str();
-        while let Some((parent, _)) = path.rsplit_once('/') {
-            if !dirs.insert(parent) {
-                break;
-            }
-            path = parent;
-        }
-    }
-    dirs.len()
 }
 
 fn limit_finding(limit: usize, dirs: usize) -> Finding {
@@ -534,9 +517,11 @@ fn version(s: &Setup) -> anyhow::Result<Finding> {
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
+    use std::net::TcpListener;
 
     use super::*;
-    use crate::index::{FileEntry, Progress};
+    use crate::config::RemoteConfig;
+    use crate::index::Progress;
 
     fn status() -> StatusReport {
         StatusReport {
@@ -674,14 +659,38 @@ mod tests {
     }
 
     #[test]
-    fn directories_counts_each_once() {
-        let mut m = Manifest::default();
-        for f in ["a.rs", "src/b.rs", "src/c.rs", "src/x/d.rs", "tests/e.rs"] {
-            m.files.insert(f.into(), FileEntry::default());
+    fn a_remote_embedder_is_probed_with_a_daemon_running() {
+        // A port nothing listens on any more.
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let config = Config {
+            backend: Backend::Remote,
+            remote: RemoteConfig {
+                url: format!("http://127.0.0.1:{port}/v1/embeddings"),
+                ..RemoteConfig::default()
+            },
+            data_dir: Some(crate::testutil::tempdir()),
+            ..Config::default()
+        };
+        for daemon in [false, true] {
+            assert_eq!(
+                model_finding(&config, daemon).unwrap().outcome,
+                Outcome::Fail,
+                "daemon: {daemon}"
+            );
         }
-        // "", src, src/x, tests
-        assert_eq!(directories(&m), 4);
-        assert_eq!(directories(&Manifest::default()), 1);
+
+        let local = Config {
+            data_dir: Some(crate::testutil::tempdir()),
+            ..Config::default()
+        };
+        assert_eq!(
+            model_finding(&local, true).unwrap().detail,
+            format!("{} on {}, loaded by the daemon", local.model, local.backend)
+        );
     }
 
     #[test]

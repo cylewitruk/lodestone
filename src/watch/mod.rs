@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
+use ignore::WalkBuilder;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use notify_debouncer_full::notify::RecursiveMode;
+use notify_debouncer_full::notify::{self, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 use tokio::sync::mpsc;
 
@@ -30,6 +31,37 @@ const POLLING: &str = "polling every 60s ";
 /// Whether watcher state `state`, as `status` reports it, says the watcher failed.
 pub fn failed(state: &str) -> bool {
     state.starts_with(DEGRADED) || state.starts_with(POLLING)
+}
+
+/// What [`Watchers::watch`] watches recursively for worktree `root`: the tree, and its git
+/// directory when that is outside it.
+fn watched_paths(root: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![root.to_path_buf()];
+    if let Some(g) = git_dir(root)
+        && !g.starts_with(root)
+        && g.exists()
+    {
+        paths.push(g);
+    }
+    paths
+}
+
+/// The directories an inotify watcher of worktree `root` takes a watch each for: every one under
+/// [`watched_paths`], ignored or not, walked as notify walks them (following symlinks as its
+/// default config, which the watcher uses, says).
+pub fn inotify_watches(root: &Path) -> usize {
+    let follow = notify::Config::default().follow_symlinks();
+    watched_paths(root)
+        .iter()
+        .flat_map(|path| {
+            WalkBuilder::new(path)
+                .standard_filters(false)
+                .follow_links(follow)
+                .build()
+        })
+        .flatten()
+        .filter(|e| e.file_type().is_some_and(|t| t.is_dir()))
+        .count()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,12 +307,8 @@ impl Watchers {
             }
         })
         .and_then(|mut d| {
-            d.watch(&w.root, RecursiveMode::Recursive)?;
-            if let Some(g) = git_dir(&w.root)
-                && !g.starts_with(&w.root)
-                && g.exists()
-            {
-                d.watch(&g, RecursiveMode::Recursive)?;
+            for path in watched_paths(&w.root) {
+                d.watch(&path, RecursiveMode::Recursive)?;
             }
             Ok(d)
         });
@@ -697,5 +725,26 @@ mod tests {
         let f = EventFilter::new(&root);
         assert!(f.classify([root.join("root.gen.rs").as_path()]).is_some());
         assert_eq!(f.classify([root.join("other.gen.rs").as_path()]), None);
+    }
+
+    #[test]
+    fn inotify_watches_count_every_watched_directory() {
+        let base = crate::testutil::tempdir();
+        let root = base.join("tree");
+        for dir in ["src/a", "node_modules/pkg/lib", ".hidden"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        // Ignored directories are watched all the same.
+        std::fs::write(root.join(".gitignore"), "node_modules/\n.hidden/\n").unwrap();
+        std::fs::write(root.join("src/a/f.rs"), "fn f() {}\n").unwrap();
+        // tree, src, src/a, node_modules, node_modules/pkg, node_modules/pkg/lib, .hidden
+        assert_eq!(inotify_watches(&root), 7);
+
+        // A git directory outside the tree is watched too.
+        std::fs::create_dir_all(base.join("tree.git/refs")).unwrap();
+        std::fs::write(root.join(".git"), "gitdir: ../tree.git\n").unwrap();
+        assert_eq!(inotify_watches(&root), 9);
+
+        assert_eq!(inotify_watches(&base.join("gone")), 0);
     }
 }
