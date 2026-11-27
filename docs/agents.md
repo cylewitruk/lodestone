@@ -7,6 +7,7 @@ lode install                      # every harness whose CLI is on PATH, user sco
 lode install --client codex       # one harness: claude, codex, antigravity (agy); repeatable
 lode install --scope project      # files to commit in the current repository
 lode uninstall                    # same flags; --dry-run prints the steps only
+lode doctor                       # whether each harness's install is current
 ```
 
 What it installs:
