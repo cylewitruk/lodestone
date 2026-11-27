@@ -53,6 +53,12 @@ struct Builtin {
     extensions: &'static [&'static str],
 }
 
+impl Builtin {
+    fn extensions(&self) -> Vec<String> {
+        self.extensions.iter().map(|e| e.to_string()).collect()
+    }
+}
+
 /// Supplementary queries shipped with lodestone, keyed by language name and query kind.
 const OVERLAYS: &[(&str, &str, &str)] = &[
     ("rust", "tags", include_str!("../../queries/rust/tags.scm")),
@@ -372,6 +378,45 @@ impl LanguageRegistry {
     /// Builds the registry from built-in grammars, user overlays under `<data_dir>/queries`,
     /// and grammars found via tree-sitter's config. Failures are recorded in `issues`.
     pub fn load(config: &LanguagesConfig, data_dir: &Path) -> Self {
+        Self::load_wanted(config, data_dir, &|_, _| true)
+    }
+
+    /// [`Self::load`] with only the languages a file named like `path` may be chunked with:
+    /// compiling every grammar's queries takes about a second.
+    pub fn load_for(config: &LanguagesConfig, data_dir: &Path, path: &Path) -> Self {
+        let Some(ext) = extension_of(path) else {
+            return Self::load_wanted(config, data_dir, &|_, _| false);
+        };
+        let mut names: Vec<&str> = config
+            .extensions
+            .iter()
+            .filter(|(e, _)| e.eq_ignore_ascii_case(&ext))
+            .map(|(_, lang)| lang.as_str())
+            .collect();
+        names.extend(
+            CONTENT_RULES
+                .iter()
+                .filter(|r| r.extension == ext)
+                .map(|r| r.language),
+        );
+        if components()
+            .iter()
+            .any(|c| c.extensions.contains(&ext.as_str()))
+        {
+            names.extend(component::SCRIPT_LANGUAGES);
+        }
+        let wanted = |name: &str, extensions: &[String]| {
+            names.contains(&name) || extensions.iter().any(|e| e.eq_ignore_ascii_case(&ext))
+        };
+        Self::load_wanted(config, data_dir, &wanted)
+    }
+
+    /// [`Self::load`], building only the languages `wanted` (by name and extensions) accepts.
+    fn load_wanted(
+        config: &LanguagesConfig,
+        data_dir: &Path,
+        wanted: &dyn Fn(&str, &[String]) -> bool,
+    ) -> Self {
         let mut reg = Self {
             text_extensions: config
                 .index_untagged_as_text
@@ -382,6 +427,10 @@ impl LanguageRegistry {
         };
         let user_overlays = data_dir.join("queries");
         for b in builtins() {
+            let extensions = b.extensions();
+            if !wanted(b.name, &extensions) {
+                continue;
+            }
             let mut tags_parts = vec![overlay(&user_overlays, b.name, "tags")];
             tags_parts.extend(b.tags.iter().map(|s| s.to_string()));
             let tests = overlay(&user_overlays, b.name, "tests");
@@ -391,7 +440,7 @@ impl LanguageRegistry {
                 &tags_parts.join("\n"),
                 b.locals,
                 &tests,
-                b.extensions.iter().map(|s| s.to_string()).collect(),
+                extensions,
                 Origin::Builtin,
             ) {
                 Ok(lang) => reg.add(lang),
@@ -400,7 +449,7 @@ impl LanguageRegistry {
         }
         reg.components = components().into_iter().map(Arc::new).collect();
         if let Some(ts_config) = &config.tree_sitter_config {
-            reg.load_external(&expand_home(ts_config), data_dir, &user_overlays);
+            reg.load_external(&expand_home(ts_config), data_dir, &user_overlays, wanted);
         }
         for (ext, lang) in &config.extensions {
             if let Some(idx) = reg.languages.iter().position(|l| &l.name == lang) {
@@ -438,7 +487,13 @@ impl LanguageRegistry {
         self.languages.push(Arc::new(lang));
     }
 
-    fn load_external(&mut self, ts_config: &Path, data_dir: &Path, user_overlays: &Path) {
+    fn load_external(
+        &mut self,
+        ts_config: &Path,
+        data_dir: &Path,
+        user_overlays: &Path,
+        wanted: &dyn Fn(&str, &[String]) -> bool,
+    ) {
         let Ok(text) = fs::read_to_string(ts_config) else {
             return;
         };
@@ -462,6 +517,14 @@ impl LanguageRegistry {
         for (conf, _) in loader.get_all_language_configurations() {
             let name = conf.language_name.clone();
             if known.contains(&name) || self.languages.iter().any(|l| l.name == name) {
+                continue;
+            }
+            // A built-in grammar `wanted` left out still wins over an external one.
+            if !wanted(&name, &conf.file_types)
+                || builtins()
+                    .iter()
+                    .any(|b| b.name == name && !wanted(b.name, &b.extensions()))
+            {
                 continue;
             }
             let grammar = match loader.language_for_configuration(conf) {
@@ -703,6 +766,32 @@ mod tests {
             ..LanguagesConfig::default()
         };
         LanguageRegistry::load(&cfg, data_dir)
+    }
+
+    #[cfg(all(
+        feature = "lang-rust",
+        feature = "lang-c",
+        feature = "lang-cpp",
+        feature = "lang-svelte"
+    ))]
+    #[test]
+    fn load_for_builds_only_the_languages_a_file_may_need() {
+        let cfg = LanguagesConfig {
+            tree_sitter_config: None,
+            extensions: BTreeMap::from([("RSX".into(), "rust".into())]),
+            ..LanguagesConfig::default()
+        };
+        let names = |file: &str| -> Vec<String> {
+            let reg = LanguageRegistry::load_for(&cfg, &tempdir(), Path::new(file));
+            reg.languages().iter().map(|l| l.name.clone()).collect()
+        };
+        assert_eq!(names("src/a.rs"), ["rust"]);
+        assert_eq!(names("a.rsx"), ["rust"]);
+        // `.h` is C++ when its content says so.
+        assert_eq!(names("a.h"), ["c", "cpp"]);
+        assert_eq!(names("App.svelte"), ["javascript", "typescript"]);
+        assert!(names("notes.unknown").is_empty());
+        assert!(names("Makefile").is_empty());
     }
 
     #[cfg(feature = "lang-svelte")]

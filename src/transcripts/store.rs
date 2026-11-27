@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::{Call, Kind};
 
 /// Bumped when parsing or the schema changes, so every transcript still on disk is read again.
-const PARSER_VERSION: u32 = 7;
+const PARSER_VERSION: u32 = 8;
 
 /// The parser version that last changed the schema; what an older one extracted is dropped.
 const SCHEMA_SINCE: u32 = 4;

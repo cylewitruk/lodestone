@@ -45,7 +45,7 @@ impl Harness {
 
     /// The hooks that add the reminder. Claude Code in the desktop app skips SessionStart hooks
     /// at startup, so Claude also gets the first-prompt hook; its subagents get their own, and
-    /// its shell commands the nudge.
+    /// its shell commands and file edits the `PreToolUse` hook.
     fn hook_events(self) -> &'static [HookEvent] {
         match self {
             Harness::Claude => &[
@@ -1198,7 +1198,7 @@ mod tests {
         );
         assert_eq!(
             read_json(&home.join(".claude/settings.json"))["hooks"]["PreToolUse"],
-            json!([{ "matcher": "Bash", "hooks": [{
+            json!([{ "matcher": "Bash|Edit|MultiEdit|Write", "hooks": [{
                 "type": "command",
                 "command": "'/opt/bin/lode' hook pre-tool-use || true",
                 "timeout": HOOK_TIMEOUT_SECS,
@@ -1727,6 +1727,21 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0]["hooks"], theirs);
         assert!(doc["hooks"]["Stop"].is_array());
+    }
+
+    #[test]
+    fn reinstalling_moves_our_hook_to_the_current_matcher() {
+        let ours = "'/opt/bin/lode' hook pre-tool-use || true";
+        let mut doc: Map<String, Value> =
+            serde_json::from_value(json!({ "hooks": { "PreToolUse": [
+            { "matcher": "Bash", "hooks": [ { "type": "command", "command": ours } ] }
+        ] } }))
+            .unwrap();
+        set_hook(&mut doc, HookEvent::PreToolUse, ours, true);
+        assert_eq!(
+            doc["hooks"]["PreToolUse"],
+            json!([{ "matcher": HookEvent::PreToolUse.matcher(), "hooks": [handler(ours)] }])
+        );
     }
 
     #[test]

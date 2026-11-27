@@ -9,7 +9,7 @@ use super::store::{CallRow, SessionRow};
 use super::{Kind, time};
 use crate::text::table;
 
-/// How soon after a nudge a lodestone search counts as following it.
+/// How soon after a nudge or edit hint a lodestone search counts as following it.
 const NUDGE_WINDOW_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Clone, Debug, Default)]
@@ -80,6 +80,10 @@ pub struct Group {
     pub nudges: usize,
     /// Nudges followed by a lodestone search in the same session within `NUDGE_WINDOW_MS`.
     pub nudges_searched: usize,
+    /// File edits lodestone's hook named existing definitions for.
+    pub edit_hints: usize,
+    /// Edit hints followed by a lodestone search in the same session within `NUDGE_WINDOW_MS`.
+    pub edit_hints_searched: usize,
     pub latency_ms_median: Option<i64>,
     pub latency_ms_p90: Option<i64>,
 }
@@ -179,6 +183,11 @@ fn tally(
             g.searched_before_grep += 1;
         }
     }
+    let searched_after = |c: &CallRow| {
+        calls
+            .iter()
+            .any(|o| o.kind.is_lodestone() && (c.ts..=c.ts + NUDGE_WINDOW_MS).contains(&o.ts))
+    };
     for c in calls {
         match c.kind {
             Kind::Semantic => g.semantic += 1,
@@ -189,10 +198,11 @@ fn tally(
             Kind::Read => g.reads += 1,
             Kind::Nudge => {
                 g.nudges += 1;
-                let followed = calls.iter().any(|o| {
-                    o.kind.is_lodestone() && (c.ts..=c.ts + NUDGE_WINDOW_MS).contains(&o.ts)
-                });
-                g.nudges_searched += usize::from(followed);
+                g.nudges_searched += usize::from(searched_after(c));
+            }
+            Kind::EditHint => {
+                g.edit_hints += 1;
+                g.edit_hints_searched += usize::from(searched_after(c));
             }
         }
         if !c.kind.is_lodestone() {
@@ -285,6 +295,10 @@ impl Report {
                 row("grep nudges", &|g| g.nudges.to_string()),
                 row("  searched within 5 min", &|g| {
                     share(g.nudges_searched, g.nudges)
+                }),
+                row("edit hints", &|g| g.edit_hints.to_string()),
+                row("  searched within 5 min", &|g| {
+                    share(g.edit_hints_searched, g.edit_hints)
                 }),
             ];
             out.push(repo.to_string());

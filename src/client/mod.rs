@@ -274,11 +274,29 @@ impl Client {
     }
 
     pub fn search(&self, req: &SearchRequest) -> anyhow::Result<SearchResponse> {
-        Self::decode(
-            self.agent
-                .post(format!("{}/v1/search", self.base))
-                .send_json(req)?,
-        )
+        self.search_until(req, None)
+    }
+
+    /// [`Self::search`], given up when the daemon has not answered by `deadline`.
+    pub fn search_before(
+        &self,
+        req: &SearchRequest,
+        deadline: Instant,
+    ) -> anyhow::Result<SearchResponse> {
+        self.search_until(req, Some(deadline))
+    }
+
+    fn search_until(
+        &self,
+        req: &SearchRequest,
+        deadline: Option<Instant>,
+    ) -> anyhow::Result<SearchResponse> {
+        let mut post = self.agent.post(format!("{}/v1/search", self.base));
+        if let Some(deadline) = deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            post = post.config().timeout_global(Some(left)).build();
+        }
+        Self::decode(post.send_json(req)?)
     }
 
     pub fn status(&self, repo: Option<&str>) -> anyhow::Result<StatusReport> {

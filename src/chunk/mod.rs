@@ -537,12 +537,13 @@ pub fn truncate(s: &str, max: usize) -> String {
     s[..end].to_string()
 }
 
-struct LineIndex {
+/// Line numbers of byte offsets in one text.
+pub struct LineIndex {
     starts: Vec<usize>,
 }
 
 impl LineIndex {
-    fn new(source: &[u8]) -> Self {
+    pub fn new(source: &[u8]) -> Self {
         let mut starts = vec![0];
         starts.extend(
             source
@@ -555,7 +556,7 @@ impl LineIndex {
     }
 
     /// 1-based line number containing byte offset `pos`.
-    fn line_of(&self, pos: usize) -> u32 {
+    pub fn line_of(&self, pos: usize) -> u32 {
         match self.starts.binary_search(&pos) {
             Ok(i) => i as u32 + 1,
             Err(i) => i as u32,

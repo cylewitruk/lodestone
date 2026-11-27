@@ -124,11 +124,23 @@ carry `line`, `line_end`, `name_line` and `name_column`.
   - Subagents don't see their session's reminder, so `lode hook subagent-start` adds it to each.
   - Antigravity gets the session-start reminder only: it has no subagent hook, and its
     `PreToolUse` hook cannot add context without deciding whether the tool runs.
+  - Codex gets neither the nudge nor the edit hint: its edits arrive as multi-file `apply_patch`
+    patches, which the hook would need its own parser for.
 - **Nudge:** for Claude, `lode hook pre-tool-use` runs before each shell command. When it searches
   a directory tree lodestone serves for three or more names (`grep -rn 'a\|b\|c' .`), it adds a
   line pointing at `semantic_code_search`, with `repo` when the search is in another checkout.
   It says nothing for any other command, such as a `git grep` over another revision, and never
   blocks one: the installed command ends in `|| true`.
+- **Edit hint:** the same hook runs before Claude's `Edit`, `MultiEdit` and `Write`. It applies
+  the edit to the file, chunks the result with the file's grammar, and searches the file's
+  repository for each definition on lines the edit writes (context repeated around a change
+  doesn't count). Tests and definitions holding others (an `impl` block, whose methods are each
+  checked) are skipped. When an existing definition in the same language scores at least
+  `[hooks] duplicate_similarity` (cosine, default 0.75), it adds one line naming up to three, as
+  `path:line name`, each with the new definition it resembles. The definitions the edit changes
+  don't count: those in the same scope under the same name, or on lines it replaces. Searches stop
+  after 2 s, and the line names what they found by then. It needs a running daemon and says
+  nothing on any error.
 - **Your files:** `lode install` and `uninstall` change only the hook commands lodestone wrote (a
   hook of yours that runs `lode` stays), a `SKILL.md` lodestone shipped, and its own link to the
   shared skill. They check every step first, and change nothing if anything else is in the way:
@@ -161,7 +173,8 @@ Name at least one source; a flag without a directory uses the harness's default:
 - searches whose results were later read, that returned nothing, or that failed or were denied
 - latency, and grep / glob / read calls
 - for Claude Code, the share of sessions with the tools loaded rather than deferred
-- for Claude Code, grep nudges, and how many a lodestone search followed within 5 minutes
+- for Claude Code, grep nudges and edit hints, and how many a lodestone search followed within
+  5 minutes; edit hints count towards the session's repository
 
 **What counts:**
 

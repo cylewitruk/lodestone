@@ -4,7 +4,8 @@
 //! `tool_result` blocks. A `Bash` call counts as the searches and file reads its command makes
 //! (see [`shell`]). Attachments list the tools a session has: `prompt_snapshot` those loaded,
 //! `deferred_tools_delta` those deferred behind ToolSearch. A `hook_additional_context` attachment
-//! holding lodestone's nudge counts as a [`Kind::Nudge`] call.
+//! holding lodestone's nudge counts as a [`Kind::Nudge`] call, one holding its edit hint as a
+//! [`Kind::EditHint`] call in the session's repository.
 
 use std::path::Path;
 
@@ -36,15 +37,15 @@ pub fn parse(line: &str) -> Vec<Event> {
         id: session.to_string(),
         loaded,
     }));
-    out.extend(nudged(&v["attachment"]).map(|call| {
+    out.extend(hinted(&v["attachment"]).map(|(call, kind)| {
         Event::Call(Call {
             id: format!("{call}:n"),
             session: session.to_string(),
-            kind: Kind::Nudge,
+            kind,
             ts,
             query: None,
             path: None,
-            target: Some(Target::Searches(call.to_string())),
+            target: (kind == Kind::Nudge).then(|| Target::Searches(call.to_string())),
             done: None,
         })
     }));
@@ -121,18 +122,27 @@ fn lodestone_tool(name: &str) -> Option<Kind> {
     Kind::lodestone(tool)
 }
 
-/// The call a `PreToolUse` hook's context attachment nudged, when the context is lodestone's nudge.
-fn nudged(attachment: &Value) -> Option<&str> {
+/// The call a `PreToolUse` hook's context attachment is about, and which of lodestone's contexts
+/// it holds: the nudge or the edit hint.
+fn hinted(attachment: &Value) -> Option<(&str, Kind)> {
     let a = attachment;
-    (a["type"] == "hook_additional_context"
-        && a["hookEvent"] == "PreToolUse"
-        && a["content"]
-            .as_array()?
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|c| c.starts_with(agents::NUDGE_OPENING)))
-    .then(|| a["toolUseID"].as_str())
-    .flatten()
+    if a["type"] != "hook_additional_context" || a["hookEvent"] != "PreToolUse" {
+        return None;
+    }
+    let kind = a["content"]
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .find_map(|c| {
+            if c.starts_with(agents::NUDGE_OPENING) {
+                Some(Kind::Nudge)
+            } else if c.starts_with(agents::EDIT_HINT_OPENING) {
+                Some(Kind::EditHint)
+            } else {
+                None
+            }
+        })?;
+    Some((a["toolUseID"].as_str()?, kind))
 }
 
 /// Whether an attachment lists a lodestone search tool as loaded (`true`) or deferred (`false`).

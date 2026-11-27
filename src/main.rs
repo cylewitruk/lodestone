@@ -18,6 +18,7 @@ use lodestone::index::IndexOptions;
 use lodestone::registry::{self, Engine};
 use lodestone::transcripts;
 use lodestone::update::{self, Upgrade};
+use serde_json::Value;
 
 #[derive(Parser)]
 #[command(
@@ -243,7 +244,8 @@ enum HookCmd {
     PromptSubmit,
     /// The same, for each subagent.
     SubagentStart,
-    /// Point a shell search by guessed names in an indexed repository at lodestone's search.
+    /// Point a shell search by guessed names in an indexed repository at lodestone's search, and
+    /// name existing definitions like those a file edit adds.
     PreToolUse,
     /// A hook this `lode` does not know, from a newer install: nothing to add.
     #[command(external_subcommand)]
@@ -482,10 +484,14 @@ fn run(cli: Cli, mut config: Config) -> anyhow::Result<()> {
                 HookCmd::Unknown(_) => return Ok(()),
             };
             let input = HookInput::read()?;
-            let context = match (event, &input.command) {
-                (HookEvent::PreToolUse, command) => command
-                    .as_deref()
-                    .and_then(|c| agents::nudge(c, &input.dir, &config, cli.config.as_deref())),
+            let context = match event {
+                HookEvent::PreToolUse => agents::pre_tool_use(
+                    &input.tool,
+                    &input.tool_input,
+                    &input.dir,
+                    &config,
+                    cli.config.as_deref(),
+                ),
                 _ => agents::hook(
                     event,
                     &input.dir,
@@ -803,8 +809,9 @@ struct HookInput {
     dir: PathBuf,
     /// The harness's session id.
     session: Option<String>,
-    /// The shell command a tool is about to run.
-    command: Option<String>,
+    /// The tool about to run (`tool_name`), and its input.
+    tool: String,
+    tool_input: Value,
 }
 
 impl HookInput {
@@ -814,7 +821,7 @@ impl HookInput {
         if !std::io::stdin().is_terminal() {
             std::io::stdin().read_to_string(&mut input)?;
         }
-        let json = serde_json::from_str::<serde_json::Value>(&input).unwrap_or_default();
+        let json = serde_json::from_str::<Value>(&input).unwrap_or_default();
         let cwd = json["cwd"].as_str().map(PathBuf::from);
         let dir = match cwd.or_else(|| std::env::var_os("CLAUDE_PROJECT_DIR").map(PathBuf::from)) {
             Some(dir) => dir,
@@ -827,7 +834,8 @@ impl HookInput {
                 .as_str()
                 .or_else(|| json["conversationId"].as_str())
                 .map(String::from),
-            command: json["tool_input"]["command"].as_str().map(String::from),
+            tool: json["tool_name"].as_str().unwrap_or_default().to_string(),
+            tool_input: json["tool_input"].clone(),
         })
     }
 }

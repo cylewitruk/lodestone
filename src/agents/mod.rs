@@ -1,14 +1,16 @@
 //! Integration with coding-agent harnesses (Claude Code, Codex, Antigravity): the lodestone skill,
 //! the session reminder hooks, the `lode mcp` stdio relay, and installing all three.
 
+mod edits;
 mod install;
 mod marker;
 mod relay;
 
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
+use serde_json::{Value, json};
 
+pub use edits::EDIT_HINT_OPENING;
 pub use install::{
     Harness, Scope, State, Step, Target, apply, check, find_program, has_lodestone, install,
     installed, uninstall,
@@ -69,7 +71,8 @@ pub enum HookEvent {
     UserPromptSubmit,
     /// Every subagent start: a subagent sees none of its parent session's reminders.
     SubagentStart,
-    /// Each shell command; adds [`nudge`] to one that searches by guessed names.
+    /// Each shell command and file edit; adds the [`nudge`] or the edit hint (see
+    /// [`pre_tool_use`]).
     PreToolUse,
 }
 
@@ -98,7 +101,7 @@ impl HookEvent {
     pub fn matcher(self) -> Option<&'static str> {
         match self {
             HookEvent::SessionStart => Some("startup|resume|clear|compact"),
-            HookEvent::PreToolUse => Some("Bash"),
+            HookEvent::PreToolUse => Some("Bash|Edit|MultiEdit|Write"),
             HookEvent::UserPromptSubmit | HookEvent::SubagentStart => None,
         }
     }
@@ -130,7 +133,7 @@ pub fn output(client: Harness, event: HookEvent, context: Option<&str>) -> Optio
 /// reminder only when it writes a session's first marker, so never without a session id;
 /// `SessionStart` always adds it, since a compacted session has lost it. `SubagentStart` always
 /// adds it too, and leaves the marker to the session. `PreToolUse` adds nothing here (see
-/// [`nudge`]).
+/// [`pre_tool_use`]).
 pub fn hook(
     event: HookEvent,
     dir: &Path,
@@ -163,6 +166,22 @@ pub fn hook(
     };
     let served = remind.then(|| serves(dir, config, config_path)).flatten()?;
     Some(reminder(&served))
+}
+
+/// The `PreToolUse` hook's context for tool `tool` called with `input` in `dir`: the [`nudge`] for
+/// a shell command, otherwise the edit hint, which names existing definitions like those a file
+/// edit adds. Neither decides anything about the call.
+pub fn pre_tool_use(
+    tool: &str,
+    input: &Value,
+    dir: &Path,
+    config: &Config,
+    config_path: Option<&Path>,
+) -> Option<String> {
+    match input["command"].as_str() {
+        Some(command) => nudge(command, dir, config, config_path),
+        None => edits::hint(tool, input, dir, config),
+    }
 }
 
 /// The `PreToolUse` hook's context for shell `command` run in `dir`: a pointer to

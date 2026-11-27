@@ -200,6 +200,23 @@ impl Default for SearchConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
+pub struct HooksConfig {
+    /// Cosine similarity from which the `PreToolUse` hook names an existing definition like one an
+    /// edit adds. Measured on jina-code-v2: rewrites of existing helpers scored 0.72 to 0.87,
+    /// unrelated code at most 0.71 (see docs/decision-log.md).
+    pub duplicate_similarity: f32,
+}
+
+impl Default for HooksConfig {
+    fn default() -> Self {
+        Self {
+            duplicate_similarity: 0.75,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct RemoteConfig {
     /// OpenAI-compatible `/v1/embeddings` endpoint.
     pub url: String,
@@ -265,6 +282,7 @@ pub struct Config {
     pub rerank: RerankConfig,
     pub search: SearchConfig,
     pub remote: RemoteConfig,
+    pub hooks: HooksConfig,
     /// Data directory; defaults to `$LODESTONE_HOME` or `~/.lodestone`.
     pub data_dir: Option<PathBuf>,
 }
@@ -305,6 +323,7 @@ impl Default for Config {
             rerank: RerankConfig::default(),
             search: SearchConfig::default(),
             remote: RemoteConfig::default(),
+            hooks: HooksConfig::default(),
             data_dir: None,
         }
     }
