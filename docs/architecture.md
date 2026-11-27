@@ -17,7 +17,7 @@ Without a daemon, `--local` runs the same engine in-process.
  │ embed/     candle (Metal / CPU) | fastembed | remote                 │
  │ cache/     content-addressed embeddings, shared by all worktrees     │
  │ search/    filtered kNN + BM25 → fusion → collapse → rerank → top-k  │
- │ graph/     project units (Cargo) for `from_unit`                     │
+ │ graph/     project units (Cargo, JS, Go, Python, JVM, .NET)          │
  └──────────────────────────────────────────────────────────────────────┘
 ```
 

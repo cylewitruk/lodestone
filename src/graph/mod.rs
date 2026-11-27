@@ -1,7 +1,19 @@
 //! Project unit graph from build-system providers. Providers are detected by marker files and
 //! may stack; with none matched the whole repository is one unit and layer filtering is a no-op.
+//!
+//! In a repo with several ecosystems every matching provider contributes: a file belongs to the
+//! unit with the deepest directory containing it, whatever its provider, and edges stay within
+//! a provider. Units of the same name from different providers (a Python package with a Rust
+//! extension, say) act as one unit: their files and dependencies combine.
 
 pub mod cargo;
+pub mod dotnet;
+pub mod go;
+pub mod gradle;
+pub mod maven;
+pub mod node;
+pub mod python;
+pub mod workspace;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
@@ -35,7 +47,15 @@ pub struct ProjectGraph {
 }
 
 pub fn providers() -> Vec<Box<dyn ProjectGraphProvider>> {
-    vec![Box::new(cargo::CargoProvider)]
+    vec![
+        Box::new(cargo::CargoProvider),
+        Box::new(node::NodeProvider),
+        Box::new(go::GoProvider),
+        Box::new(python::PythonProvider),
+        Box::new(maven::MavenProvider),
+        Box::new(gradle::GradleProvider),
+        Box::new(dotnet::DotnetProvider),
+    ]
 }
 
 impl ProjectGraph {
@@ -144,6 +164,37 @@ mod tests {
         assert_eq!(g.unit_of("b/sub/x.rs"), Some("b-sub"));
         assert_eq!(g.unit_of("b/x.rs"), Some("b"));
         assert_eq!(g.unit_of("bb/x.rs"), None);
+    }
+
+    #[test]
+    fn mixed_repo_combines_providers() {
+        let root = crate::testutil::tempdir();
+        crate::testutil::write_tree(
+            &root,
+            &[
+                // A Python package with a Rust extension, both named `fastlib`.
+                ("pyproject.toml", "[project]\nname = \"fastlib\"\n"),
+                (
+                    "Cargo.toml",
+                    "[workspace]\nmembers = [\"native\", \"helper\"]\n",
+                ),
+                ("helper/Cargo.toml", "[package]\nname = \"helper\"\n"),
+                (
+                    "native/Cargo.toml",
+                    "[package]\nname = \"fastlib\"\n[dependencies]\nhelper = { path = \"../helper\" }\n",
+                ),
+                ("tools/gen/go.mod", "module example.com/gen\n"),
+            ],
+        );
+        let g = ProjectGraph::build(&root);
+        assert_eq!(g.providers, ["cargo", "go", "python"]);
+        assert_eq!(g.unit_of("native/src/lib.rs"), Some("fastlib"));
+        assert_eq!(g.unit_of("fastlib/__init__.py"), Some("fastlib"));
+        assert_eq!(g.unit_of("tools/gen/main.go"), Some("example.com/gen"));
+        assert_eq!(
+            g.allowed_from("fastlib").unwrap(),
+            BTreeSet::from(["fastlib".into(), "helper".into()])
+        );
     }
 
     #[test]

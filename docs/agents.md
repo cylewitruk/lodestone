@@ -52,7 +52,7 @@ Both searches also take:
 | Input | Effect |
 | ---- | ---- |
 | `repo` | the repository to search; defaults to the session's |
-| `from_unit` | only code a given package, crate or module may depend on, per the build graph |
+| `from_unit` | only code a given package, crate, module or project may depend on, per the [build graph](#build-graphs) |
 | `language` | one language |
 | `paths` | repo-relative globs, e.g. `["crates/foo", "!**/generated/**"]` |
 | `include_tests` | include tests, ranked below other code |
@@ -64,6 +64,23 @@ Both searches also take:
 - **Several definitions:** `similar_code_search` returns a section per definition (24 results for
   one, fewer each for several, at least 5). Definitions matching the passed one (its own once
   indexed, or an existing copy) are listed apart, after the ranked results.
+
+### Build graphs
+
+`from_unit` takes a unit name from one of these; a repo with several ecosystems gets all of them,
+and a file belongs to the unit with the deepest directory containing it.
+
+| Ecosystem | Units | Unit name | Edges |
+| ---- | ---- | ---- | ---- |
+| Cargo | workspace members, root package | package name | dependencies on members |
+| npm, yarn, pnpm | `workspaces`, `pnpm-workspace.yaml` packages, root package | package name | `dependencies`, `devDependencies`, `peerDependencies` (incl. `workspace:`) |
+| Go | `go.work` modules, else `go.mod` up to two levels deep | module path | `require`, local `replace` |
+| Python | uv workspace members, else `pyproject.toml` up to two levels deep | project name | requirements, uv sources, uv and Poetry path dependencies |
+| Maven | root `pom.xml` and its `<modules>` | `artifactId` | `<dependency>` |
+| Gradle | `settings.gradle(.kts)` `include`s, root project | project path, e.g. `:libs:core` | `project(":x")`, `projects.x` |
+| .NET | `.sln` / `.slnx` projects, else project files up to two levels deep | project file name | `<ProjectReference>` |
+
+Path dependencies (Go, Python, .NET) are followed to packages outside those locations.
 
 ### Result format
 
