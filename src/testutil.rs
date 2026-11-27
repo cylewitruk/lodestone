@@ -1,6 +1,7 @@
 //! Helpers shared by unit and integration tests.
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -20,8 +21,17 @@ pub fn tempdir() -> PathBuf {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    std::fs::create_dir_all(&d).expect("create temp dir");
+    fs::create_dir_all(&d).expect("create temp dir");
     d
+}
+
+/// Writes each `(relative path, contents)` under `root`, creating directories.
+pub fn write_tree(root: &Path, files: &[(&str, &str)]) {
+    for (rel, text) in files {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().expect("file has a parent")).expect("create dirs");
+        fs::write(path, text).expect("write file");
+    }
 }
 
 /// An embedder that fails documents (not queries) while `flag` exists: an embedding service down
