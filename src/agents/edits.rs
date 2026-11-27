@@ -286,8 +286,10 @@ pub fn hint(tool: &str, input: &Value, dir: &Path, config: &Config) -> Option<St
         .iter()
         .take(MAX_MATCHES)
         .map(|(_, file, r, new)| {
-            let file = file.strip_prefix(&dir).unwrap_or(file);
-            format!("{}:{} {} (like `{new}`)", file.display(), r.line, r.name)
+            // `/`-separated like search results: joining onto a Windows verbatim root makes `\`.
+            let file = file.strip_prefix(&dir).unwrap_or(file).to_string_lossy();
+            let file = file.replace('\\', "/");
+            format!("{file}:{} {} (like `{new}`)", r.line, r.name)
         })
         .collect();
     Some(format!(
