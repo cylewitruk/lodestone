@@ -4,6 +4,13 @@ User-facing changes per release. Measurements and design decisions are in
 [docs/decision-log.md](docs/decision-log.md).
 
 ## [Unreleased]
+## [0.1.5](https://github.com/cylewitruk/lodestone/compare/v0.1.4...v0.1.5) - 2026-11-27
+
+### ✨ Added
+
+- *(cli)* add lode doctor ([#58](https://github.com/cylewitruk/lodestone/pull/58))
+- *(graph)* add JS, Go, Python, Maven, Gradle and .NET build graph providers ([#57](https://github.com/cylewitruk/lodestone/pull/57))
+- *(transcripts)* read Antigravity transcripts in lode transcript-stats ([#54](https://github.com/cylewitruk/lodestone/pull/54))
 ## [0.1.4](https://github.com/cylewitruk/lodestone/compare/v0.1.3...v0.1.4) - 2026-11-26
 
 ### ✨ Added
