@@ -68,7 +68,8 @@ Both searches also take:
 ### Build graphs
 
 `from_unit` takes a unit name from one of these; a repo with several ecosystems gets all of them,
-and a file belongs to the unit with the deepest directory containing it.
+and a file belongs to the unit with the deepest directory containing it. Units sharing a name or
+a directory act as one.
 
 | Ecosystem | Units | Unit name | Edges |
 | ---- | ---- | ---- | ---- |
@@ -77,7 +78,7 @@ and a file belongs to the unit with the deepest directory containing it.
 | Go | `go.work` modules, else `go.mod` up to two levels deep | module path | `require`, local `replace` (also `go.work`'s) |
 | Python | uv workspace members, else `pyproject.toml` up to two levels deep | project name | requirements, uv sources, uv and Poetry path dependencies |
 | Maven | root `pom.xml` and its `<modules>` | `artifactId` | `<dependency>` |
-| Gradle | `settings.gradle(.kts)` `include`s, root project | project path, e.g. `:libs:core` | `project(":x")`, `projects.x` |
+| Gradle | `settings.gradle(.kts)` `include`s and their parents, root project | project path, e.g. `:libs:core` | `project(":x")`, `projects.x`, also inside `project(":x") {}`, `subprojects {}`, `allprojects {}` |
 | .NET | `.sln` / `.slnx` projects, else project files up to two levels deep | project file name | `<ProjectReference>` |
 
 Path dependencies (Go, Python, .NET) are followed to packages outside those locations.
