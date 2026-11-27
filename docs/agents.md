@@ -74,7 +74,7 @@ and a file belongs to the unit with the deepest directory containing it.
 | ---- | ---- | ---- | ---- |
 | Cargo | workspace members, root package | package name | dependencies on members |
 | npm, yarn, pnpm | `workspaces`, `pnpm-workspace.yaml` packages, root package | package name | `dependencies`, `devDependencies`, `peerDependencies` (incl. `workspace:`) |
-| Go | `go.work` modules, else `go.mod` up to two levels deep | module path | `require`, local `replace` |
+| Go | `go.work` modules, else `go.mod` up to two levels deep | module path | `require`, local `replace` (also `go.work`'s) |
 | Python | uv workspace members, else `pyproject.toml` up to two levels deep | project name | requirements, uv sources, uv and Poetry path dependencies |
 | Maven | root `pom.xml` and its `<modules>` | `artifactId` | `<dependency>` |
 | Gradle | `settings.gradle(.kts)` `include`s, root project | project path, e.g. `:libs:core` | `project(":x")`, `projects.x` |
