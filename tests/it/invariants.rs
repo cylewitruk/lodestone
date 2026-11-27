@@ -1712,6 +1712,69 @@ fn files_missed_during_a_chunking_change_are_rechunked_later() {
     assert_eq!(r.files_changed, 1, "web/ui.ts, re-chunked");
 }
 
+/// `from_unit` outside Rust: in a pnpm workspace, `@acme/ui` sees itself and `@acme/core`, not
+/// the app that depends on it.
+#[test]
+fn from_unit_scopes_a_js_workspace() {
+    let root = tempdir().join("repo");
+    write(&root, "pnpm-workspace.yaml", "packages:\n  - packages/*\n");
+    write(
+        &root,
+        "packages/core/package.json",
+        r#"{"name": "@acme/core"}"#,
+    );
+    write(
+        &root,
+        "packages/ui/package.json",
+        r#"{"name": "@acme/ui", "dependencies": {"@acme/core": "workspace:*"}}"#,
+    );
+    write(
+        &root,
+        "packages/app/package.json",
+        r#"{"name": "@acme/app", "dependencies": {"@acme/ui": "workspace:*"}}"#,
+    );
+    write(
+        &root,
+        "packages/core/src/date.ts",
+        "/** Format a date for display. */\nexport function formatDate() {}\n",
+    );
+    write(
+        &root,
+        "packages/ui/src/label.ts",
+        "/** Render a label showing a formatted date. */\nexport function renderDateLabel() {}\n",
+    );
+    write(
+        &root,
+        "packages/app/src/main.ts",
+        "/** Start the app and format today's date. */\nexport function startApp() {}\n",
+    );
+    let data = tempdir();
+    let (e, _) = engine(&data);
+    let w = e.register(&root).unwrap();
+    e.index_blocking(&w, IndexOptions::default()).unwrap();
+    let resp = e
+        .search(&SearchRequest {
+            query: "format a date".into(),
+            repo: Some(root.to_string_lossy().to_string()),
+            from_unit: Some("@acme/ui".into()),
+            top_k: 50,
+            ..Default::default()
+        })
+        .unwrap();
+    let names: BTreeSet<&str> = resp.results.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(
+        names,
+        BTreeSet::from(["formatDate", "renderDateLabel"]),
+        "{:?}",
+        resp.notes
+    );
+    let units: BTreeSet<Option<&str>> = resp.results.iter().map(|r| r.unit.as_deref()).collect();
+    assert_eq!(
+        units,
+        BTreeSet::from([Some("@acme/core"), Some("@acme/ui")])
+    );
+}
+
 /// Units are checked against the build graph on the first pass, whatever graph the index was
 /// opened with (here none: `graph.json` is gone, and the graph built on opening is the new one).
 #[test]
