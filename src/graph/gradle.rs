@@ -36,10 +36,8 @@ static PROJECT_REF: LazyLock<Regex> = LazyLock::new(|| {
 });
 /// `project(":x") {`, `subprojects {` and `allprojects {`.
 static SCOPE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"\b(?:project\s*\(\s*["'](:?[^"']*)["']\s*\)|(subprojects|allprojects))\s*\{"#,
-    )
-    .unwrap()
+    Regex::new(r#"\b(?:project\s*\(\s*["'](:?[^"']*)["']\s*\)|(subprojects|allprojects))\s*\{"#)
+        .unwrap()
 });
 static ACCESSOR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\bprojects((?:\.[A-Za-z_][A-Za-z0-9_]*)+)").unwrap());
@@ -113,7 +111,11 @@ fn script_deps(
     accessors: &BTreeMap<String, String>,
 ) -> Vec<(String, String)> {
     let below = |p: &str| -> Vec<String> {
-        let prefix = if p == ":" { ":".into() } else { format!("{p}:") };
+        let prefix = if p == ":" {
+            ":".into()
+        } else {
+            format!("{p}:")
+        };
         projects
             .iter()
             .filter(|q| q.starts_with(&prefix) && q.as_str() != p)
@@ -127,7 +129,10 @@ fn script_deps(
             let targets = match (c.get(1), c.get(2).map(|k| k.as_str())) {
                 (Some(p), _) => vec![absolute(p.as_str())],
                 (None, Some("subprojects")) => below(owner),
-                _ => [owner.to_string()].into_iter().chain(below(owner)).collect(),
+                _ => [owner.to_string()]
+                    .into_iter()
+                    .chain(below(owner))
+                    .collect(),
             };
             Some(Scope {
                 selector: m.range(),
@@ -253,7 +258,10 @@ mod tests {
         let g = ProjectGraph::build(&root);
         assert_eq!(g.providers, ["gradle"]);
         let names: Vec<&str> = g.units.iter().map(|u| u.name.as_str()).collect();
-        assert_eq!(names, [":app", ":libs", ":libs:core", ":libs:my-util", ":tool"]);
+        assert_eq!(
+            names,
+            [":app", ":libs", ":libs:core", ":libs:my-util", ":tool"]
+        );
         assert_eq!(
             g.unit_of("tools/cli/src/main/kotlin/Main.kt"),
             Some(":tool")
@@ -273,7 +281,10 @@ mod tests {
         write_tree(
             &root,
             &[
-                ("settings.gradle", "include ':app', ':core', ':libs:a', ':libs:b'\n"),
+                (
+                    "settings.gradle",
+                    "include ':app', ':core', ':libs:a', ':libs:b'\n",
+                ),
                 (
                     "build.gradle",
                     "project(':app') {\n  dependencies {\n    implementation project(':core')\n  }\n}\nsubprojects {\n  if (name != 'core') { dependencies { testImplementation(projects.libs.a) } }\n}\ndependencies { implementation project(':libs:b') }\n",

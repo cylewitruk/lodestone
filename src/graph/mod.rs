@@ -231,7 +231,11 @@ mod tests {
             ],
         );
         let g = ProjectGraph::build(&root);
-        assert_eq!(g.unit_of("src/lib.rs"), Some("native"), "the first provider's");
+        assert_eq!(
+            g.unit_of("src/lib.rs"),
+            Some("native"),
+            "the first provider's"
+        );
         let both = BTreeSet::from(["native".to_string(), "frontend".to_string()]);
         assert_eq!(g.allowed_from("native").unwrap(), both);
         assert_eq!(g.allowed_from("frontend").unwrap(), both);

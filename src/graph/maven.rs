@@ -60,7 +60,11 @@ fn read(manifest: &Path) -> Option<(Package, Option<Parent>)> {
         let parent = xml_children(project, "parent").next().and_then(|p| {
             let pom = match xml_children(p, "relativePath").next() {
                 None => Some(pom_at(dir, "..")),
-                Some(r) => r.text().map(str::trim).filter(|t| !t.is_empty()).map(|t| pom_at(dir, t)),
+                Some(r) => r
+                    .text()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(|t| pom_at(dir, t)),
             };
             Some(Parent {
                 artifact_id: text_of(p, "artifactId")?.to_string(),
@@ -183,18 +187,33 @@ mod tests {
                     "pom.xml",
                     "<project><artifactId>root</artifactId><modules><module>core</module><module>extra</module><module>libs</module><module>apps/web</module></modules>\n<dependencies><dependency><artifactId>core</artifactId></dependency></dependencies>\n<dependencyManagement><dependencies><dependency><artifactId>extra</artifactId></dependency></dependencies></dependencyManagement></project>",
                 ),
-                ("core/pom.xml", &pom("root", "</parent><artifactId>core</artifactId>")),
-                ("extra/pom.xml", &pom("root", "</parent><artifactId>extra</artifactId>")),
+                (
+                    "core/pom.xml",
+                    &pom("root", "</parent><artifactId>core</artifactId>"),
+                ),
+                (
+                    "extra/pom.xml",
+                    &pom("root", "</parent><artifactId>extra</artifactId>"),
+                ),
                 // Default `relativePath`: `../pom.xml`.
                 (
                     "libs/pom.xml",
-                    &pom("root", "</parent><artifactId>libs</artifactId><modules><module>a</module></modules>"),
+                    &pom(
+                        "root",
+                        "</parent><artifactId>libs</artifactId><modules><module>a</module></modules>",
+                    ),
                 ),
-                ("libs/a/pom.xml", &pom("libs", "</parent><artifactId>a</artifactId>")),
+                (
+                    "libs/a/pom.xml",
+                    &pom("libs", "</parent><artifactId>a</artifactId>"),
+                ),
                 // An empty `relativePath`: found by `artifactId`.
                 (
                     "apps/web/pom.xml",
-                    &pom("root", "<relativePath/></parent><artifactId>web</artifactId>"),
+                    &pom(
+                        "root",
+                        "<relativePath/></parent><artifactId>web</artifactId>",
+                    ),
                 ),
             ],
         );
