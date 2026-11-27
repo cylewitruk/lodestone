@@ -77,7 +77,7 @@ a directory act as one.
 | npm, yarn, pnpm | `workspaces`, `pnpm-workspace.yaml` packages, root package | package name | `dependencies`, `devDependencies`, `peerDependencies` (incl. `workspace:`) |
 | Go | `go.work` modules, else `go.mod` up to two levels deep | module path | `require`, local `replace` (also `go.work`'s) |
 | Python | uv workspace members, else `pyproject.toml` up to two levels deep | project name | requirements, uv sources, uv and Poetry path dependencies |
-| Maven | root `pom.xml` and its `<modules>` | `artifactId` | `<dependency>` |
+| Maven | root `pom.xml` and its `<modules>` | `artifactId` | `<dependency>`, also inherited from a local `<parent>` |
 | Gradle | `settings.gradle(.kts)` `include`s and their parents, root project | project path, e.g. `:libs:core` | `project(":x")`, `projects.x`, also inside `project(":x") {}`, `subprojects {}`, `allprojects {}` |
 | .NET | `.sln` / `.slnx` projects, else project files up to two levels deep | project file name | `<ProjectReference>` |
 

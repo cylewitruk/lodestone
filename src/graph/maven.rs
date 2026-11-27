@@ -1,8 +1,10 @@
 //! Maven provider: the root `pom.xml` and its `<modules>`, recursively, are units named by
 //! `artifactId`; edges are `<dependency>` entries naming a sibling module's `artifactId`.
-//! Profiles' modules and dependencies count; `<dependencyManagement>` and plugins do not.
+//! Profiles' modules and dependencies count, and so do those inherited from a local
+//! `<parent>`; `<dependencyManagement>` and plugins do not.
 
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use roxmltree::Node;
 
@@ -18,7 +20,23 @@ fn text_of<'a>(node: Node<'a, '_>, tag: &str) -> Option<&'a str> {
         .map(str::trim)
 }
 
-fn read(manifest: &Path) -> Option<Package> {
+/// A `<module>` or `<relativePath>` resolved against `dir`: a POM file, or a directory's `pom.xml`.
+fn pom_at(dir: &Path, path: &str) -> PathBuf {
+    let path = workspace::join(dir, path);
+    match path.extension() {
+        Some(ext) if ext == "xml" => path,
+        _ => path.join("pom.xml"),
+    }
+}
+
+/// A POM's `<parent>`: its `artifactId`, and the POM `<relativePath>` names (`../pom.xml` by
+/// default; `None` when empty, which means the parent comes from a repository).
+struct Parent {
+    artifact_id: String,
+    pom: Option<PathBuf>,
+}
+
+fn read(manifest: &Path) -> Option<(Package, Option<Parent>)> {
     let dir = manifest.parent()?;
     workspace::read_xml(manifest, |project| {
         let mut pkg = Package::new(text_of(project, "artifactId")?, manifest);
@@ -28,14 +46,9 @@ fn read(manifest: &Path) -> Option<Package> {
             .chain([project]);
         for scope in scopes {
             for module in xml_children(scope, "modules").flat_map(|m| xml_children(m, "module")) {
-                let Some(path) = module.text().map(str::trim) else {
-                    continue;
-                };
-                let path = workspace::join(dir, path);
-                pkg.members.push(match path.extension() {
-                    Some(ext) if ext == "xml" => path,
-                    _ => path.join("pom.xml"),
-                });
+                if let Some(path) = module.text() {
+                    pkg.members.push(pom_at(dir, path));
+                }
             }
             pkg.deps.extend(
                 xml_children(scope, "dependencies")
@@ -44,9 +57,45 @@ fn read(manifest: &Path) -> Option<Package> {
                     .map(String::from),
             );
         }
-        Some(pkg)
+        let parent = xml_children(project, "parent").next().and_then(|p| {
+            let pom = match xml_children(p, "relativePath").next() {
+                None => Some(pom_at(dir, "..")),
+                Some(r) => r.text().map(str::trim).filter(|t| !t.is_empty()).map(|t| pom_at(dir, t)),
+            };
+            Some(Parent {
+                artifact_id: text_of(p, "artifactId")?.to_string(),
+                pom,
+            })
+        });
+        Some((pkg, parent))
     })
     .flatten()
+}
+
+/// Adds to each package the `<dependencies>` of its local parents, transitively. A parent is the
+/// package `<relativePath>` names, if its `artifactId` matches, else the package with that
+/// `artifactId`.
+fn inherit(packages: &mut [Package], parents: &BTreeMap<PathBuf, Parent>) {
+    let parent: Vec<Option<usize>> = packages
+        .iter()
+        .map(|pkg| {
+            let p = parents.get(&pkg.manifest)?;
+            let named = |q: &&Package| q.name == p.artifact_id;
+            packages
+                .iter()
+                .position(|q| named(&q) && p.pom.as_ref() == Some(&q.manifest))
+                .or_else(|| packages.iter().position(|q| named(&q)))
+        })
+        .collect();
+    let own: Vec<BTreeSet<String>> = packages.iter().map(|p| p.deps.clone()).collect();
+    for (i, pkg) in packages.iter_mut().enumerate() {
+        let mut seen = BTreeSet::from([i]);
+        let mut next = parent[i];
+        while let Some(j) = next.filter(|j| seen.insert(*j)) {
+            pkg.deps.extend(own[j].iter().cloned());
+            next = parent[j];
+        }
+    }
 }
 
 impl ProjectGraphProvider for MavenProvider {
@@ -55,7 +104,13 @@ impl ProjectGraphProvider for MavenProvider {
     }
 
     fn detect(&self, root: &Path) -> Option<(Vec<Unit>, Edges)> {
-        let packages = workspace::collect(root, [root.join("pom.xml")], read);
+        let mut parents = BTreeMap::new();
+        let mut packages = workspace::collect(root, [root.join("pom.xml")], |m| {
+            let (pkg, parent) = read(m)?;
+            parents.extend(parent.map(|p| (m.to_path_buf(), p)));
+            Some(pkg)
+        });
+        inherit(&mut packages, &parents);
         workspace::graph(self.name(), root, packages)
     }
 }
@@ -113,5 +168,42 @@ mod tests {
             ["app", "core"].map(String::from).into()
         );
         assert!(g.deps["core"].is_empty());
+    }
+
+    #[test]
+    fn inherited_dependencies() {
+        let root = tempdir();
+        let pom = |parent: &str, body: &str| {
+            format!("<project><parent><artifactId>{parent}</artifactId>{body}</project>")
+        };
+        write_tree(
+            &root,
+            &[
+                (
+                    "pom.xml",
+                    "<project><artifactId>root</artifactId><modules><module>core</module><module>extra</module><module>libs</module><module>apps/web</module></modules>\n<dependencies><dependency><artifactId>core</artifactId></dependency></dependencies>\n<dependencyManagement><dependencies><dependency><artifactId>extra</artifactId></dependency></dependencies></dependencyManagement></project>",
+                ),
+                ("core/pom.xml", &pom("root", "</parent><artifactId>core</artifactId>")),
+                ("extra/pom.xml", &pom("root", "</parent><artifactId>extra</artifactId>")),
+                // Default `relativePath`: `../pom.xml`.
+                (
+                    "libs/pom.xml",
+                    &pom("root", "</parent><artifactId>libs</artifactId><modules><module>a</module></modules>"),
+                ),
+                ("libs/a/pom.xml", &pom("libs", "</parent><artifactId>a</artifactId>")),
+                // An empty `relativePath`: found by `artifactId`.
+                (
+                    "apps/web/pom.xml",
+                    &pom("root", "<relativePath/></parent><artifactId>web</artifactId>"),
+                ),
+            ],
+        );
+        let g = ProjectGraph::build(&root);
+        let deps = |p: &str| -> Vec<&str> { g.deps[p].iter().map(String::as_str).collect() };
+        assert_eq!(deps("libs"), ["core"]);
+        assert_eq!(deps("a"), ["core"], "through libs");
+        assert_eq!(deps("web"), ["core"]);
+        assert!(deps("core").is_empty(), "not itself");
+        assert!(!g.allowed_from("a").unwrap().contains("extra"));
     }
 }
