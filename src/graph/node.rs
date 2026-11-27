@@ -18,6 +18,27 @@ fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
+/// `s` split at each `sep` outside single or double quotes.
+fn split_unquoted(s: &str, sep: char) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut quote = None;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == sep => {
+                out.push(&s[start..i]);
+                start = i + c.len_utf8();
+            }
+            None => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
 /// `packages:` entries of a `pnpm-workspace.yaml` (block or flow list).
 fn pnpm_packages(text: &str) -> Vec<String> {
     let unquote = |s: &str| s.trim().trim_matches(['"', '\'']).to_string();
@@ -34,8 +55,8 @@ fn pnpm_packages(text: &str) -> Vec<String> {
             if let Some(rest) = item.strip_prefix("packages:").map(str::trim) {
                 match rest.strip_prefix('[') {
                     Some(flow) => out.extend(
-                        flow.trim_end_matches(']')
-                            .split(',')
+                        split_unquoted(flow.trim_end_matches(']'), ',')
+                            .into_iter()
                             .map(unquote)
                             .filter(|s| !s.is_empty()),
                     ),
@@ -163,6 +184,20 @@ mod tests {
             ["packages/*", "!**/test/**", "tools"]
         );
         assert_eq!(pnpm_packages("packages: ['a/*', \"b\"]\n"), ["a/*", "b"]);
+        assert_eq!(
+            pnpm_packages("packages: ['{apps,packages}/*', \"x,y\", z]\n"),
+            ["{apps,packages}/*", "x,y", "z"]
+        );
+        let braces = tempdir();
+        write_tree(
+            &braces,
+            &[
+                ("pnpm-workspace.yaml", "packages: ['{apps,packages}/*']\n"),
+                ("apps/web/package.json", r#"{"name": "web"}"#),
+                ("packages/ui/package.json", r#"{"name": "ui"}"#),
+            ],
+        );
+        assert_eq!(ProjectGraph::build(&braces).units.len(), 2);
 
         let root = tempdir();
         write_tree(
